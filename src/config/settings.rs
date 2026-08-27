@@ -1,0 +1,195 @@
+//! Typed config structs matching `.cogz/config.toml`.
+//!
+//! Schema defined in `docs/architecture.md` → Configuration section.
+
+use serde::{Deserialize, Serialize};
+
+/// Top-level config. Loaded from `.cogz/config.toml`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Config {
+    pub project: ProjectConfig,
+    pub storage: StorageConfig,
+    pub embedding: EmbeddingConfig,
+    pub search: SearchConfig,
+    pub consolidation: ConsolidationConfig,
+    #[serde(default)]
+    pub index: IndexConfig,
+    pub retention: RetentionConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProjectConfig {
+    /// Autodetected on init, saved, versioned. Stable identifier that
+    /// survives folder renames. Metadata only — not a query filter.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StorageConfig {
+    /// Per-repo database path, relative to repo root.
+    pub db_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    pub code_model: String,
+    pub knowledge_model: String,
+    pub dimension: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchConfig {
+    pub fts_weight: f64,
+    pub vec_weight: f64,
+    pub rrf_k: u32,
+    pub max_results: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConsolidationConfig {
+    pub dedup_threshold: f64,
+    pub title_match_threshold: f64,
+    pub contradiction_check: bool,
+    pub promotion_threshold: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct IndexConfig {
+    /// Explicit gitignore overrides — paths to index despite being
+    /// gitignored.
+    #[serde(default)]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetentionConfig {
+    pub observation_prune_after_days: u32,
+    pub tombstone_max_count: u32,
+}
+
+impl Config {
+    /// Create a default config for a given project name.
+    pub fn default_for(project_name: &str) -> Self {
+        Self {
+            project: ProjectConfig {
+                name: project_name.to_string(),
+            },
+            storage: StorageConfig {
+                db_path: ".cogz/cogz.db".to_string(),
+            },
+            embedding: EmbeddingConfig {
+                code_model: "nomic-ai/CodeRankEmbed-int8".to_string(),
+                knowledge_model: "BAAI/bge-base-en-v1.5".to_string(),
+                dimension: 768,
+            },
+            search: SearchConfig {
+                fts_weight: 0.4,
+                vec_weight: 0.6,
+                rrf_k: 60,
+                max_results: 20,
+            },
+            consolidation: ConsolidationConfig {
+                dedup_threshold: 0.92,
+                title_match_threshold: 0.85,
+                contradiction_check: true,
+                promotion_threshold: 3,
+            },
+            index: IndexConfig { allow: vec![] },
+            retention: RetentionConfig {
+                observation_prune_after_days: 90,
+                tombstone_max_count: 1000,
+            },
+        }
+    }
+
+    /// Validate config values. Called after loading and after
+    /// generating defaults.
+    pub fn validate(&self) -> Result<(), super::ConfigError> {
+        if self.project.name.trim().is_empty() {
+            return Err(super::ConfigError::Validation(
+                "project name must not be empty".to_string(),
+            ));
+        }
+        if self.embedding.dimension == 0 {
+            return Err(super::ConfigError::Validation(
+                "embedding dimension must be greater than 0".to_string(),
+            ));
+        }
+        if self.search.rrf_k == 0 {
+            return Err(super::ConfigError::Validation(
+                "search.rrf_k must be greater than 0".to_string(),
+            ));
+        }
+        if self.search.max_results == 0 {
+            return Err(super::ConfigError::Validation(
+                "search.max_results must be greater than 0".to_string(),
+            ));
+        }
+        if self.consolidation.dedup_threshold < 0.0 || self.consolidation.dedup_threshold > 1.0 {
+            return Err(super::ConfigError::Validation(
+                "consolidation.dedup_threshold must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+        if self.consolidation.title_match_threshold < 0.0
+            || self.consolidation.title_match_threshold > 1.0
+        {
+            return Err(super::ConfigError::Validation(
+                "consolidation.title_match_threshold must be between 0.0 and 1.0".to_string(),
+            ));
+        }
+        if self.retention.observation_prune_after_days == 0 {
+            return Err(super::ConfigError::Validation(
+                "retention.observation_prune_after_days must be greater than 0".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serde_roundtrip() {
+        let config = Config::default_for("roundtrip-test");
+        let toml_str = toml::to_string(&config).unwrap();
+        let parsed: Config = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.project.name, "roundtrip-test");
+        assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn allow_defaults_to_empty() {
+        let toml_str = r#"
+[project]
+name = "test"
+
+[storage]
+db_path = ".cogz/cogz.db"
+
+[embedding]
+code_model = "test"
+knowledge_model = "test"
+dimension = 768
+
+[search]
+fts_weight = 0.4
+vec_weight = 0.6
+rrf_k = 60
+max_results = 20
+
+[consolidation]
+dedup_threshold = 0.92
+title_match_threshold = 0.85
+contradiction_check = true
+promotion_threshold = 3
+
+[retention]
+observation_prune_after_days = 90
+tombstone_max_count = 1000
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.index.allow.is_empty());
+    }
+}
