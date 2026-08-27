@@ -18,13 +18,19 @@ toml = "0.8"
 # File system / Git
 git2 = { version = "0.19", default-features = false }
 
+# Database
+rusqlite = { version = "0.40", features = ["bundled"] }
+sqlite-vec = "0.1"
+
 # Utilities
 uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zerocopy = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
