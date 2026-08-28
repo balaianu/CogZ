@@ -55,7 +55,8 @@ pub fn expand_with_paths(
 ///
 /// Uses `get_edges_involving_batch` to fetch all edges touching the
 /// frontier in a single query, then determines parent-child
-/// relationships in Rust — no per-neighbor SQL queries.
+/// relationships in Rust. Status filtering is batched per hop — one
+/// query for all newly discovered neighbors, not one per neighbor.
 fn bfs_from_seed(
     conn: &Connection,
     seed_id: &str,
@@ -86,6 +87,9 @@ fn bfs_from_seed(
         // endpoint is the parent.
         let frontier_set: HashSet<&String> = frontier.iter().collect();
         let mut next_neighbors: Vec<String> = Vec::new();
+        // Neighbors that need status checking before being added to
+        // discovered results. (neighbor_id, path, parent already known)
+        let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
 
         for (source, target, _) in &edges {
             let (parent, neighbor) = if frontier_set.contains(source) {
@@ -106,20 +110,40 @@ fn bfs_from_seed(
                 paths.insert(neighbor.clone(), path.clone());
 
                 if !exclude_ids.contains(neighbor) {
-                    let include = match status_filter {
-                        None | Some("all") => true,
-                        Some(status) => entity_has_status(conn, neighbor, status)?,
-                    };
-                    if include {
+                    candidates.push((neighbor.clone(), path));
+                }
+
+                next_neighbors.push(neighbor.clone());
+            }
+        }
+
+        // Batch status check: one query for all candidates in this hop
+        if !candidates.is_empty() {
+            match status_filter {
+                None | Some("all") => {
+                    // No filtering needed — all candidates are included
+                    for (id, path) in candidates {
                         discovered.push(ExpansionResult {
-                            entity_id: neighbor.clone(),
+                            entity_id: id,
                             graph_path: path,
                             seed_id: seed_id.to_string(),
                         });
                     }
                 }
-
-                next_neighbors.push(neighbor.clone());
+                Some(status) => {
+                    let ids: Vec<String> = candidates.iter().map(|(id, _)| id.clone()).collect();
+                    let matching = batch_check_status(conn, &ids, status)?;
+                    let include_set: HashSet<&String> = matching.iter().collect();
+                    for (id, path) in candidates {
+                        if include_set.contains(&id) {
+                            discovered.push(ExpansionResult {
+                                entity_id: id,
+                                graph_path: path,
+                                seed_id: seed_id.to_string(),
+                            });
+                        }
+                    }
+                }
             }
         }
 
@@ -132,24 +156,28 @@ fn bfs_from_seed(
     Ok(discovered)
 }
 
-/// Check if an entity has the given status.
-fn entity_has_status(
+/// Batch-check which entity IDs have the given status. Returns the
+/// subset of `ids` whose status matches. Single query instead of N.
+fn batch_check_status(
     conn: &Connection,
-    entity_id: &str,
+    ids: &[String],
     status: &str,
-) -> Result<bool, StorageError> {
-    let actual: Option<String> = conn
-        .query_row(
-            "SELECT status FROM entities WHERE id = ?1",
-            rusqlite::params![entity_id],
-            |r| r.get(0),
-        )
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(StorageError::from(other)),
-        })?;
-    Ok(actual.as_deref() == Some(status))
+) -> Result<Vec<String>, StorageError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut params: Vec<&dyn rusqlite::ToSql> =
+        ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    params.push(&status);
+    let sql = format!("SELECT id FROM entities WHERE id IN ({placeholders}) AND status = ?");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
+    let mut matching = Vec::new();
+    for row in rows {
+        matching.push(row?);
+    }
+    Ok(matching)
 }
 
 #[cfg(test)]

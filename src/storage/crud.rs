@@ -155,6 +155,25 @@ pub fn get_entity(conn: &Connection, id: &str) -> Result<Entity, StorageError> {
     })
 }
 
+/// Get multiple entities by ID in a single query. Returns only the
+/// entities that exist — missing IDs are silently skipped. Use this
+/// instead of calling `get_entity` in a loop.
+pub fn get_entities_batch(conn: &Connection, ids: &[String]) -> Result<Vec<Entity>, StorageError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let sql = format!("SELECT {ENTITY_COLUMNS} FROM entities WHERE id IN ({placeholders})");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params.as_slice(), row_to_entity)?;
+    let mut entities = Vec::new();
+    for row in rows {
+        entities.push(row?);
+    }
+    Ok(entities)
+}
+
 /// Update an entity's content, title, properties, status, content_hash,
 /// and updated_at. FTS5 trigger fires automatically on UPDATE.
 pub fn update_entity(conn: &Connection, entity: &Entity) -> Result<(), StorageError> {

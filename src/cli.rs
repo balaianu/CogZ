@@ -25,10 +25,7 @@ pub fn embed_synced(storage: &Storage, config: &Config, entity_ids: &[String]) -
     // Phase 1: fetch entity data under the lock, then drop it
     let entities: Vec<_> = {
         let conn = storage.conn();
-        entity_ids
-            .iter()
-            .filter_map(|id| cogz::storage::crud::get_entity(&conn, id).ok())
-            .collect()
+        cogz::storage::crud::get_entities_batch(&conn, entity_ids).unwrap_or_default()
     };
 
     let (code_entities, knowledge_entities): (Vec<_>, Vec<_>) =

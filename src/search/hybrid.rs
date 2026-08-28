@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use rusqlite::Connection;
 
 use crate::config::SearchConfig;
-use crate::storage::crud::{Entity, get_entity};
+use crate::storage::crud::{Entity, get_entities_batch};
 use crate::storage::embeddings::knn_search;
 use crate::storage::query::fts_search;
 
@@ -53,19 +53,24 @@ pub fn search(
         // Over-fetch to compensate for post-KNN status/type filtering
         let knn_limit = limit * 3;
         let knn_results = knn_search(conn, embedding, knn_limit)?;
+
+        // Batch-fetch entities not already in the cache from FTS results.
+        // This avoids N individual get_entity calls for KNN results.
+        let uncached_ids: Vec<String> = knn_results
+            .iter()
+            .map(|(id, _)| id.clone())
+            .filter(|id| !entity_map.contains_key(id))
+            .collect();
+        let fetched = get_entities_batch(conn, &uncached_ids)?;
+        for entity in fetched {
+            entity_map.insert(entity.id.clone(), entity);
+        }
+
         let mut filtered = Vec::new();
         for (id, _) in knn_results {
-            // Use cached entity from FTS if available, otherwise fetch
-            let entity = if let Some(e) = entity_map.get(&id) {
-                e.clone()
-            } else {
-                match get_entity(conn, &id) {
-                    Ok(e) => {
-                        entity_map.insert(id.clone(), e.clone());
-                        e
-                    }
-                    Err(_) => continue,
-                }
+            // Use cached entity (from FTS or batch fetch above)
+            let Some(entity) = entity_map.get(&id) else {
+                continue;
             };
             if type_filter.is_none_or(|t| entity.r#type == t)
                 && status_filter.is_none_or(|s| entity.status == s)
@@ -128,20 +133,25 @@ pub fn search(
             status_filter,
         )?;
 
-        // Fetch expanded entities and batch-build all path descriptions
-        let mut expanded_results: Vec<SearchResult> = Vec::new();
-        let mut paths_to_describe: Vec<Vec<String>> = Vec::new();
-
-        for exp in &expansions {
-            if let Ok(entity) = get_entity(conn, &exp.entity_id) {
-                entity_map.insert(exp.entity_id.clone(), entity);
-                paths_to_describe.push(exp.graph_path.clone());
-            }
+        // Batch-fetch expanded entities not already in the cache, then
+        // batch-build all path descriptions. Two queries total for N
+        // expansions instead of N+1.
+        let uncached_expansion_ids: Vec<String> = expansions
+            .iter()
+            .map(|e| e.entity_id.clone())
+            .filter(|id| !entity_map.contains_key(id))
+            .collect();
+        let fetched = get_entities_batch(conn, &uncached_expansion_ids)?;
+        for entity in fetched {
+            entity_map.insert(entity.id.clone(), entity);
         }
 
+        let paths_to_describe: Vec<Vec<String>> =
+            expansions.iter().map(|e| e.graph_path.clone()).collect();
         let descriptions =
             build_path_descriptions_batch(conn, &paths_to_describe).unwrap_or_default();
 
+        let mut expanded_results: Vec<SearchResult> = Vec::new();
         for (exp, desc) in expansions.iter().zip(descriptions.iter()) {
             if let Some(entity) = entity_map.get(&exp.entity_id) {
                 expanded_results.push(SearchResult {
