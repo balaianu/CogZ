@@ -1,4 +1,4 @@
-//! Graph traversal — multi-hop edge following.
+//! Graph traversal — multi-hop edge following and batched edge lookup.
 
 use std::collections::HashSet;
 
@@ -44,6 +44,51 @@ pub fn graph_traverse(
 
     visited.remove(start_id);
     Ok(visited.into_iter().collect())
+}
+
+/// Batched edge lookup — get all (source_id, target_id, edge_type) pairs
+/// where either endpoint is in the given node set. Single query.
+///
+/// Use this instead of `get_neighbors_batch` + `get_edge_type_between`
+/// when you need to know which frontier node each neighbor came from
+/// and what edge type connects them.
+pub fn get_edges_involving_batch(
+    conn: &Connection,
+    node_ids: &[String],
+) -> Result<Vec<(String, String, String)>, StorageError> {
+    if node_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = (0..node_ids.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    // Params are bound twice — once for source_id IN (...), once for target_id IN (...)
+    let params: Vec<&dyn rusqlite::ToSql> = node_ids
+        .iter()
+        .chain(node_ids.iter())
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let sql = format!(
+        "SELECT DISTINCT source_id, target_id, edge_type
+         FROM edges
+         WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params.as_slice(), |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut edges = Vec::new();
+    for row in rows {
+        edges.push(row?);
+    }
+    Ok(edges)
 }
 
 #[cfg(test)]
@@ -123,5 +168,27 @@ mod tests {
 
         let reachable = graph_traverse(&conn, "u1", 3).unwrap();
         assert!(reachable.is_empty());
+    }
+
+    #[test]
+    fn edges_involving_batch_returns_both_directions() {
+        let conn = setup();
+        for id in &["u1", "u2", "u3"] {
+            insert_entity(&conn, &Entity::new(id, "observation", id, "c")).unwrap();
+        }
+        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
+        insert_edge(&conn, &edge("u3", "u1", "calls")).unwrap();
+
+        let edges = get_edges_involving_batch(&conn, &["u1".to_string()]).unwrap();
+        assert_eq!(edges.len(), 2);
+        assert!(edges.contains(&("u1".to_string(), "u2".to_string(), "references".to_string())));
+        assert!(edges.contains(&("u3".to_string(), "u1".to_string(), "calls".to_string())));
+    }
+
+    #[test]
+    fn edges_involving_batch_empty() {
+        let conn = setup();
+        let edges = get_edges_involving_batch(&conn, &[]).unwrap();
+        assert!(edges.is_empty());
     }
 }

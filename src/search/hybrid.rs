@@ -15,7 +15,8 @@ use crate::storage::embeddings::knn_search;
 use crate::storage::query::fts_search;
 
 use super::SearchError;
-use super::expand::{build_path_description, expand_with_paths};
+use super::describe::build_path_descriptions_batch;
+use super::expand::expand_with_paths;
 use super::rrf::fuse;
 use super::{SearchMode, SearchParams, SearchResult, SearchResults};
 
@@ -37,26 +38,44 @@ pub fn search(
     let type_filter = params.entity_type.as_deref();
     let status_filter = resolve_status_filter(params.status.as_deref());
 
-    // 1. FTS search
+    // 1. FTS search — returns full entities, cached to avoid re-fetching
     let fts_entities = fts_search(conn, query, type_filter, status_filter, limit)?;
     let fts_ids: Vec<String> = fts_entities.iter().map(|e| e.id.clone()).collect();
+
+    // Seed entity_map with FTS results so we don't re-fetch them later
+    let mut entity_map: std::collections::HashMap<String, Entity> = fts_entities
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect();
 
     // 2. Vector search (if embedding available)
     let (vec_ids, search_mode) = if let Some(embedding) = query_embedding {
         // Over-fetch to compensate for post-KNN status/type filtering
         let knn_limit = limit * 3;
         let knn_results = knn_search(conn, embedding, knn_limit)?;
-        let filtered: Vec<String> = knn_results
-            .into_iter()
-            .filter_map(|(id, _)| {
-                get_entity(conn, &id)
-                    .ok()
-                    .filter(|e| type_filter.is_none_or(|t| e.r#type == t))
-                    .filter(|e| status_filter.is_none_or(|s| e.status == s))
-                    .map(|e| e.id)
-            })
-            .take(limit as usize)
-            .collect();
+        let mut filtered = Vec::new();
+        for (id, _) in knn_results {
+            // Use cached entity from FTS if available, otherwise fetch
+            let entity = if let Some(e) = entity_map.get(&id) {
+                e.clone()
+            } else {
+                match get_entity(conn, &id) {
+                    Ok(e) => {
+                        entity_map.insert(id.clone(), e.clone());
+                        e
+                    }
+                    Err(_) => continue,
+                }
+            };
+            if type_filter.is_none_or(|t| entity.r#type == t)
+                && status_filter.is_none_or(|s| entity.status == s)
+            {
+                filtered.push(id);
+                if filtered.len() >= limit as usize {
+                    break;
+                }
+            }
+        }
         (filtered, SearchMode::Hybrid)
     } else {
         (Vec::new(), SearchMode::FtsOnly)
@@ -80,18 +99,10 @@ pub fn search(
             .collect::<Vec<_>>()
     };
 
-    // 4. Fetch entities for the top results
+    // 4. Select top results
     let top_n: Vec<(String, f64)> = fused.into_iter().take(params.limit as usize).collect();
 
-    let mut entity_map: std::collections::HashMap<String, Entity> =
-        std::collections::HashMap::new();
-    for (id, _) in &top_n {
-        if let Ok(entity) = get_entity(conn, id) {
-            entity_map.insert(id.clone(), entity);
-        }
-    }
-
-    // 5. Build direct search results
+    // 5. Build direct search results (entities already in entity_map)
     let mut results: Vec<SearchResult> = top_n
         .iter()
         .filter_map(|(id, score)| {
@@ -117,17 +128,31 @@ pub fn search(
             status_filter,
         )?;
 
-        for exp in expansions {
+        // Fetch expanded entities and batch-build all path descriptions
+        let mut expanded_results: Vec<SearchResult> = Vec::new();
+        let mut paths_to_describe: Vec<Vec<String>> = Vec::new();
+
+        for exp in &expansions {
             if let Ok(entity) = get_entity(conn, &exp.entity_id) {
-                let description = build_path_description(conn, &exp.graph_path).unwrap_or_default();
-                results.push(SearchResult {
-                    entity,
+                entity_map.insert(exp.entity_id.clone(), entity);
+                paths_to_describe.push(exp.graph_path.clone());
+            }
+        }
+
+        let descriptions =
+            build_path_descriptions_batch(conn, &paths_to_describe).unwrap_or_default();
+
+        for (exp, desc) in expansions.iter().zip(descriptions.iter()) {
+            if let Some(entity) = entity_map.get(&exp.entity_id) {
+                expanded_results.push(SearchResult {
+                    entity: entity.clone(),
                     relevance: 0.0,
-                    graph_path: exp.graph_path,
-                    graph_path_description: description,
+                    graph_path: exp.graph_path.clone(),
+                    graph_path_description: desc.clone(),
                 });
             }
         }
+        results.extend(expanded_results);
     }
 
     Ok(SearchResults {

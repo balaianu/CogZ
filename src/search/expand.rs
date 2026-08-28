@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::Connection;
 
 use crate::storage::StorageError;
-use crate::storage::edges::get_neighbors_batch;
+use crate::storage::graph::get_edges_involving_batch;
 
 /// A graph-expanded entity with its provenance path.
 #[derive(Debug, Clone)]
@@ -52,6 +52,10 @@ pub fn expand_with_paths(
 }
 
 /// BFS from a single seed, recording the path to each discovered entity.
+///
+/// Uses `get_edges_involving_batch` to fetch all edges touching the
+/// frontier in a single query, then determines parent-child
+/// relationships in Rust — no per-neighbor SQL queries.
 fn bfs_from_seed(
     conn: &Connection,
     seed_id: &str,
@@ -69,71 +73,63 @@ fn bfs_from_seed(
     let mut frontier = vec![seed_id.to_string()];
     let mut discovered = Vec::new();
 
-    for hop in 0..max_hops {
-        let (outgoing, incoming) = get_neighbors_batch(conn, &frontier)?;
+    for _ in 0..max_hops {
+        // Single query: all edges where either endpoint is in the frontier
+        let edges = get_edges_involving_batch(conn, &frontier)?;
+        if edges.is_empty() {
+            break;
+        }
 
-        let mut next_frontier = Vec::new();
+        // Build neighbor → parent_id map from the edge list.
+        // For each edge (source, target, _type), if one endpoint is in
+        // the frontier and the other isn't visited yet, the frontier
+        // endpoint is the parent.
+        let frontier_set: HashSet<&String> = frontier.iter().collect();
+        let mut next_neighbors: Vec<String> = Vec::new();
 
-        for neighbor_id in outgoing.into_iter().chain(incoming) {
-            if visited.insert(neighbor_id.clone()) {
-                // Find which frontier node this came from
-                let parent_path = find_parent_path(conn, &frontier, &neighbor_id, &paths)?;
-                let mut path = parent_path.clone();
-                path.push(neighbor_id.clone());
+        for (source, target, _) in &edges {
+            let (parent, neighbor) = if frontier_set.contains(source) {
+                (source, target)
+            } else if frontier_set.contains(target) {
+                (target, source)
+            } else {
+                continue;
+            };
 
-                paths.insert(neighbor_id.clone(), path.clone());
+            if visited.insert(neighbor.clone()) {
+                let parent_path = paths
+                    .get(parent)
+                    .cloned()
+                    .ok_or(StorageError::EntityNotFound(parent.clone()))?;
+                let mut path = parent_path;
+                path.push(neighbor.clone());
+                paths.insert(neighbor.clone(), path.clone());
 
-                // Include in results if not excluded and matches status filter
-                if !exclude_ids.contains(&neighbor_id) {
+                if !exclude_ids.contains(neighbor) {
                     let include = match status_filter {
                         None | Some("all") => true,
-                        Some(status) => entity_has_status(conn, &neighbor_id, status)?,
+                        Some(status) => entity_has_status(conn, neighbor, status)?,
                     };
                     if include {
                         discovered.push(ExpansionResult {
-                            entity_id: neighbor_id.clone(),
+                            entity_id: neighbor.clone(),
                             graph_path: path,
                             seed_id: seed_id.to_string(),
                         });
                     }
                 }
 
-                next_frontier.push(neighbor_id);
+                next_neighbors.push(neighbor.clone());
             }
         }
 
-        if next_frontier.is_empty() {
+        if next_neighbors.is_empty() {
             break;
         }
-        // Suppress unused hop warning — hop is used for loop control
-        let _ = hop;
-        frontier = next_frontier;
+        frontier = next_neighbors;
     }
 
     Ok(discovered)
-}
-
-/// Find which frontier node connects to the given neighbor, and return
-/// its path. Tries each frontier node until an edge is found.
-fn find_parent_path(
-    conn: &Connection,
-    frontier: &[String],
-    neighbor_id: &str,
-    paths: &HashMap<String, Vec<String>>,
-) -> Result<Vec<String>, StorageError> {
-    for parent_id in frontier {
-        if crate::storage::edges::get_edge_type_between(conn, parent_id, neighbor_id)?.is_some()
-            && let Some(path) = paths.get(parent_id)
-        {
-            return Ok(path.clone());
-        }
-    }
-    // Fallback: use the first frontier node's path (shouldn't happen
-    // since the neighbor was discovered from the frontier)
-    paths
-        .get(&frontier[0])
-        .cloned()
-        .ok_or(StorageError::EntityNotFound(frontier[0].clone()))
 }
 
 /// Check if an entity has the given status.
@@ -154,54 +150,6 @@ fn entity_has_status(
             other => Err(StorageError::from(other)),
         })?;
     Ok(actual.as_deref() == Some(status))
-}
-
-/// Build a human-readable description of a graph path.
-///
-/// Format: `entity_title → edge_type → entity_title → edge_type → ...`
-/// Uses entity titles (falling back to IDs) and edge types between
-/// consecutive entities.
-pub fn build_path_description(conn: &Connection, path: &[String]) -> Result<String, StorageError> {
-    if path.len() <= 1 {
-        return Ok(String::new());
-    }
-
-    let mut parts = Vec::new();
-
-    for i in 0..path.len() {
-        // Add entity title
-        let title = get_entity_title(conn, &path[i])?;
-        parts.push(title);
-
-        // Add edge type to next entity (if not last)
-        if i + 1 < path.len() {
-            let edge_type =
-                crate::storage::edges::get_edge_type_between(conn, &path[i], &path[i + 1])?;
-            parts.push(
-                edge_type
-                    .unwrap_or_else(|| "→".to_string())
-                    .replace('_', " "),
-            );
-        }
-    }
-
-    Ok(parts.join(" → "))
-}
-
-/// Get an entity's title, falling back to its ID if no title.
-fn get_entity_title(conn: &Connection, id: &str) -> Result<String, StorageError> {
-    let title: Option<String> = conn
-        .query_row(
-            "SELECT title FROM entities WHERE id = ?1",
-            rusqlite::params![id],
-            |r| r.get(0),
-        )
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(StorageError::from(other)),
-        })?;
-    Ok(title.unwrap_or_else(|| id.to_string()))
 }
 
 #[cfg(test)]
@@ -316,42 +264,12 @@ mod tests {
         insert_edge(&conn, &edge("obs1", "func1", "references")).unwrap();
 
         let exclude = HashSet::new();
-        // Active filter should exclude stale entity
         let results =
             expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, Some("active")).unwrap();
         assert!(results.is_empty());
 
-        // Stale filter should include it
         let results =
             expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, Some("stale")).unwrap();
         assert_eq!(results.len(), 1);
-    }
-
-    #[test]
-    fn path_description_includes_titles_and_edge_types() {
-        let conn = setup();
-        insert_entity(
-            &conn,
-            &Entity::new("obs1", "observation", "Bug Report", "c"),
-        )
-        .unwrap();
-        insert_entity(&conn, &Entity::new("func1", "function", "build_sql", "c")).unwrap();
-
-        insert_edge(&conn, &edge("obs1", "func1", "references")).unwrap();
-
-        let desc =
-            build_path_description(&conn, &["obs1".to_string(), "func1".to_string()]).unwrap();
-        assert!(desc.contains("Bug Report"));
-        assert!(desc.contains("references"));
-        assert!(desc.contains("build_sql"));
-    }
-
-    #[test]
-    fn path_description_empty_for_single_node() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("obs1", "observation", "Bug", "c")).unwrap();
-
-        let desc = build_path_description(&conn, &["obs1".to_string()]).unwrap();
-        assert!(desc.is_empty());
     }
 }

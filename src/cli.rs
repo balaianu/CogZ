@@ -135,7 +135,7 @@ pub fn run_search(
     repo: &std::path::Path,
     entity_type: Option<String>,
     status: Option<String>,
-    limit: u32,
+    limit: Option<u32>,
     no_expand: bool,
 ) -> anyhow::Result<()> {
     let cogz_dir = repo.join(".cogz");
@@ -165,7 +165,7 @@ pub fn run_search(
     let params = cogz::search::SearchParams {
         entity_type,
         status,
-        limit,
+        limit: limit.unwrap_or(config.search.max_results),
         expand: !no_expand,
         max_hops: if no_expand { 0 } else { 2 },
     };

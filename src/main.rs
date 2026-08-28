@@ -73,9 +73,9 @@ enum Commands {
         #[arg(long)]
         status: Option<String>,
 
-        /// Max results before graph expansion.
-        #[arg(long, default_value = "20")]
-        limit: u32,
+        /// Max results before graph expansion. Defaults to search.max_results from config.
+        #[arg(long)]
+        limit: Option<u32>,
 
         /// Disable graph expansion.
         #[arg(long)]
