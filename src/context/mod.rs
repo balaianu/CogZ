@@ -44,7 +44,9 @@ pub struct ContextSection {
 pub struct PackMetadata {
     /// Estimated token count of the pack (chars/4 heuristic).
     pub size_tokens: usize,
-    /// Source types of the included sections (e.g. "observation", "rule").
+    /// Unique source types of the included sections (e.g. "observation", "rule").
+    /// Deduplicated — each type appears once regardless of how many sections
+    /// of that type are included.
     pub selected_sources: Vec<String>,
     /// Entities that were dropped to fit the token budget, with reasons.
     pub dropped_sources: Vec<String>,

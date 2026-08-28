@@ -107,7 +107,15 @@ pub fn assemble_context(
     let (kept, dropped) = fit_budget(sections, token_budget);
 
     let size_tokens = kept.iter().map(section_tokens).sum();
-    let selected_sources = kept.iter().map(|s| s.source.clone()).collect();
+    let selected_sources: Vec<String> = {
+        let mut seen: Vec<String> = Vec::new();
+        for s in &kept {
+            if !seen.contains(&s.source) {
+                seen.push(s.source.clone());
+            }
+        }
+        seen
+    };
 
     Ok(ContextPack {
         query: params.query.unwrap_or("").to_string(),

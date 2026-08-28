@@ -22,19 +22,27 @@ pub fn embed_entities(
     cache: &EmbeddingCache,
     entities: &[Entity],
 ) -> Vec<(String, Vec<f32>)> {
-    let mut results = Vec::new();
-    for entity in entities {
-        let text = match &entity.title {
-            Some(t) => format!("{}\n\n{}", t, entity.content),
-            None => entity.content.clone(),
-        };
+    // Build texts and track which entity each corresponds to.
+    let texts: Vec<String> = entities
+        .iter()
+        .map(|e| match &e.title {
+            Some(t) => format!("{}\n\n{}", t, e.content),
+            None => e.content.clone(),
+        })
+        .collect();
+    let text_refs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
 
-        match cache.embed_cached(model, &text) {
-            Ok(embedding) => results.push((entity.id.clone(), embedding)),
-            Err(e) => tracing::warn!("embedding failed for {}: {}", entity.id, e),
+    match cache.embed_batch_cached(model, &text_refs) {
+        Ok(embeddings) => entities
+            .iter()
+            .zip(embeddings)
+            .map(|(entity, embedding)| (entity.id.clone(), embedding))
+            .collect(),
+        Err(e) => {
+            tracing::warn!("batch embedding failed: {}", e);
+            Vec::new()
         }
     }
-    results
 }
 
 /// Store embeddings in the vec0 table. Replaces any existing

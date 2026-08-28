@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 use crate::storage;
 use crate::storage::crud::{ENTITY_COLUMNS, Entity, EntityType};
 
-use super::entities::{EntityFile, FileEntityType, fm_value_to_json, read_entity_file};
+use super::entities::{EntityFile, FileEntityType, fm_value_to_json};
 
 /// Subdirectories of `.cogz/` that contain entity files.
 const ENTITY_DIRS: &[&str] = &["knowledge", "rules", "observations"];
@@ -169,8 +169,8 @@ fn sync_one_file_inner(
     cogz_dir: &Path,
     incremental: bool,
 ) -> Result<(SyncAction, EntityFile), SyncError> {
-    let entity_file = read_entity_file(file_path)?;
     let raw_content = std::fs::read_to_string(file_path)?;
+    let entity_file = EntityFile::from_content(&raw_content)?;
     let hash = content_hash(&raw_content);
     let relative_path = file_path
         .strip_prefix(cogz_dir)

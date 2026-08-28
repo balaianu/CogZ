@@ -3,8 +3,8 @@
 mod settings;
 
 pub use settings::{
-    Config, ConsolidationConfig, EmbeddingConfig, IndexConfig, ProjectConfig, RetentionConfig,
-    SearchConfig, StorageConfig,
+    Config, ConsolidationConfig, ContextConfig, EmbeddingConfig, IndexConfig, ProjectConfig,
+    RetentionConfig, SearchConfig, StorageConfig,
 };
 
 use std::path::Path;

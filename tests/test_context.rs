@@ -300,7 +300,7 @@ fn fts_only_search_mode_in_metadata() {
 }
 
 #[test]
-fn selected_sources_lists_source_types() {
+fn selected_sources_lists_unique_source_types() {
     let storage = Storage::open_memory().unwrap();
     let conn = storage.conn();
     insert_entity(&conn, &Entity::new("r1", "rule", "R1", "content")).unwrap();
@@ -313,9 +313,18 @@ fn selected_sources_lists_source_types() {
     };
     let pack = assemble_context(&conn, &params, &config).unwrap();
 
-    // selected_sources contains source types, not entity IDs
-    assert_eq!(pack.metadata.selected_sources.len(), pack.sections.len());
-    for section in &pack.sections {
-        assert!(pack.metadata.selected_sources.contains(&section.source));
-    }
+    // selected_sources contains unique source types, not per-section entries.
+    // With 2 rules + identity, sections = 3 but source types = 2 (identity + rule).
+    assert!(
+        pack.metadata
+            .selected_sources
+            .contains(&"identity".to_string())
+    );
+    assert!(pack.metadata.selected_sources.contains(&"rule".to_string()));
+    assert_eq!(
+        pack.metadata.selected_sources.len(),
+        2,
+        "expected deduplicated source types, got {:?}",
+        pack.metadata.selected_sources
+    );
 }

@@ -27,18 +27,6 @@ impl FmValue {
         }
     }
 
-    /// Get as a string slice for any scalar type (converts numbers
-    /// and bools to their string representation).
-    pub fn as_string(&self) -> String {
-        match self {
-            Self::String(s) => s.clone(),
-            Self::Float(f) => f.to_string(),
-            Self::Int(i) => i.to_string(),
-            Self::Bool(b) => b.to_string(),
-            Self::Array(_) => String::new(),
-        }
-    }
-
     /// Get as a float if applicable.
     pub fn as_float(&self) -> Option<f64> {
         match self {
