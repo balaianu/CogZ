@@ -17,6 +17,8 @@ toml = "0.8"
 
 # File system / Git
 git2 = { version = "0.19", default-features = false }
+walkdir = "2"
+slug = "0.1"
 
 # Database
 rusqlite = { version = "0.40", features = ["bundled"] }

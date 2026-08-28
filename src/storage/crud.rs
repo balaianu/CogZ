@@ -217,7 +217,7 @@ pub fn count_all(conn: &Connection) -> Result<i64, StorageError> {
 
 // --- Helper ---
 
-pub(super) fn row_to_entity(row: &rusqlite::Row<'_>) -> Result<Entity, rusqlite::Error> {
+pub fn row_to_entity(row: &rusqlite::Row<'_>) -> Result<Entity, rusqlite::Error> {
     let props_str: String = row.get(4)?;
     let properties = serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
     Ok(Entity {

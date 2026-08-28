@@ -27,6 +27,32 @@ enum Commands {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
+
+    /// Index the repository — scan .cogz/ files and sync to DB.
+    Index {
+        /// Repository root directory. Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+
+    /// Re-index changed files only (incremental sync).
+    Reindex {
+        /// Repository root directory. Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
+
+    /// Drop the database (rebuildable from files via `cogz index`).
+    Reset {
+        /// Repository root directory. Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+
+        /// Also remove observations and the generated .gitignore.
+        /// Keeps knowledge, rules, and config.
+        #[arg(long)]
+        purge: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -42,6 +68,9 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Init { repo } => cogz::init::run(&repo),
         Commands::Status { repo } => run_status(&repo),
+        Commands::Index { repo } => run_index(&repo),
+        Commands::Reindex { repo } => run_reindex(&repo),
+        Commands::Reset { repo, purge } => run_reset(&repo, purge),
     }
 }
 
@@ -69,12 +98,12 @@ fn run_status(repo: &std::path::Path) -> anyhow::Result<()> {
     }
 
     let storage = cogz::storage::Storage::open(&db_path)?;
-    let conn = storage.conn();
 
     println!("CogZ status for project: {}\n", config.project.name);
     println!("  DB: {}", db_path.display());
     println!("  DB size: {} bytes", storage.db_size_bytes());
 
+    let conn = storage.conn();
     let schema_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     println!("  Schema version: {}", schema_version);
 
@@ -99,6 +128,132 @@ fn run_status(repo: &std::path::Path) -> anyhow::Result<()> {
 
     let events = cogz::storage::events::count_events(&conn)?;
     println!("  Events: {}", events);
+
+    Ok(())
+}
+
+fn run_index(repo: &std::path::Path) -> anyhow::Result<()> {
+    let cogz_dir = repo.join(".cogz");
+    let config_path = cogz_dir.join("config.toml");
+
+    if !config_path.exists() {
+        anyhow::bail!(
+            "No .cogz/ directory found in {}. Run `cogz init` first.",
+            repo.display()
+        );
+    }
+
+    let config = cogz::config::load(&config_path)?;
+    let db_path = repo.join(&config.storage.db_path);
+    let storage = cogz::storage::Storage::open(&db_path)?;
+
+    println!("Indexing {}...", cogz_dir.display());
+    let result = cogz::files::sync_all(&storage, &cogz_dir);
+
+    println!(
+        "  Created: {}\n  Updated: {}\n  Stale: {}\n  Skipped: {}",
+        result.created, result.updated, result.marked_stale, result.skipped
+    );
+
+    if !result.errors.is_empty() {
+        println!("\n  Errors ({}):", result.errors.len());
+        for err in &result.errors {
+            println!("    {}: {}", err.file_path.display(), err.message);
+        }
+    }
+
+    let conn = storage.conn();
+    let total = cogz::storage::crud::count_all(&conn)?;
+    println!("\n  Total entities: {}", total);
+
+    Ok(())
+}
+
+fn run_reindex(repo: &std::path::Path) -> anyhow::Result<()> {
+    let cogz_dir = repo.join(".cogz");
+    let config_path = cogz_dir.join("config.toml");
+
+    if !config_path.exists() {
+        anyhow::bail!(
+            "No .cogz/ directory found in {}. Run `cogz init` first.",
+            repo.display()
+        );
+    }
+
+    let config = cogz::config::load(&config_path)?;
+    let db_path = repo.join(&config.storage.db_path);
+
+    if !db_path.exists() {
+        anyhow::bail!(
+            "Database not found at {}. Run `cogz index` first.",
+            db_path.display()
+        );
+    }
+
+    let storage = cogz::storage::Storage::open(&db_path)?;
+
+    println!("Reindexing (incremental) {}...", cogz_dir.display());
+    let result = cogz::files::sync_incremental(&storage, &cogz_dir);
+
+    println!(
+        "  Created: {}\n  Updated: {}\n  Stale: {}\n  Skipped: {}",
+        result.created, result.updated, result.marked_stale, result.skipped
+    );
+
+    if !result.errors.is_empty() {
+        println!("\n  Errors ({}):", result.errors.len());
+        for err in &result.errors {
+            println!("    {}: {}", err.file_path.display(), err.message);
+        }
+    }
+
+    Ok(())
+}
+
+fn run_reset(repo: &std::path::Path, purge: bool) -> anyhow::Result<()> {
+    let cogz_dir = repo.join(".cogz");
+    let config_path = cogz_dir.join("config.toml");
+
+    if !config_path.exists() {
+        anyhow::bail!(
+            "No .cogz/ directory found in {}. Run `cogz init` first.",
+            repo.display()
+        );
+    }
+
+    let config = cogz::config::load(&config_path)?;
+    let db_path = repo.join(&config.storage.db_path);
+
+    // Drop the database
+    for suffix in &["", "-wal", "-shm"] {
+        let path = format!("{}{}", db_path.display(), suffix);
+        let path = std::path::Path::new(&path);
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+    }
+    println!("Dropped database: {}", db_path.display());
+
+    if purge {
+        // Remove observations directory
+        let obs_dir = cogz_dir.join("observations");
+        if obs_dir.exists() {
+            std::fs::remove_dir_all(&obs_dir)?;
+            std::fs::create_dir_all(&obs_dir)?;
+            println!("Purged observations: {}", obs_dir.display());
+        }
+
+        // Remove generated .gitignore
+        let gitignore = cogz_dir.join(".gitignore");
+        if gitignore.exists() {
+            std::fs::remove_file(&gitignore)?;
+            println!("Removed generated .gitignore");
+        }
+
+        println!("\n  Knowledge and rules preserved.");
+    }
+
+    println!("\nRun `cogz index` to rebuild the database from files.");
 
     Ok(())
 }
