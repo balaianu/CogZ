@@ -104,6 +104,97 @@ core promises. The compiler won't catch most of them.
 
 ---
 
+## Code Comments and Doc Comments
+
+Comments explain **why**, never **what**. The code already says what.
+If a comment restates the line below it, delete the comment.
+
+### Module doc comments (`//!`)
+
+1–3 sentences. What the module is for. One non-obvious constraint if
+relevant. No architecture walkthroughs, no "how it works", no
+citations to design docs. The code stands on its own.
+
+### Item doc comments (`///`)
+
+First line: what the function/struct/enum does, imperative mood.
+Include `# Arguments` / `# Returns` / `# Errors` only when the
+signature is non-obvious or it's public API. For trait methods with
+default implementations, a one-liner is sufficient.
+
+### Inline comments
+
+Only for **why**. Never for **what**. Use them to explain non-obvious
+decisions, bug-prevention context, or subtle ordering constraints.
+Section dividers (`// ── Section ───`) are fine in long files for
+navigation.
+
+### Test comments
+
+Don't restate the test function name. Most tests don't need a
+comment. Only add one if the test has non-obvious setup, a subtle
+assertion, or an edge case not clear from the name.
+
+### Tone
+
+Neutral, imperative. No "per architecture.md section X", no "per
+entity-spec". Say what something IS, not what it isn't. No defensive
+disclaimers.
+
+---
+
+## Testing Philosophy
+
+`testing-strategy.md` defines *what* to test per phase. This section
+defines *how to think about* testing.
+
+### Test when
+
+- There is a non-obvious correctness invariant that could break
+  silently (content-hash skip, status lifecycle, stale marking)
+- There is branching logic where one branch is rarely exercised
+  (error paths, fallback logic, edge cases)
+- It is a public contract that other code depends on (sync semantics,
+  status transitions, edge integrity)
+- It involves SQL, concurrency, state transitions, or external I/O
+  error handling
+
+### Don't test when
+
+- The code is a straight-line assignment or return with no branches
+- The test would only fail if Rust itself were broken (`String::len`,
+  `Vec::push`, `HashMap::insert`)
+- The test is a duplicate with trivially different input hitting the
+  same code path — use a loop over cases in one test instead
+- The test requires external resources that can't be meaningfully
+  tested without production infrastructure
+
+### How to test
+
+- **Prefer integration over isolation.** A test that chains
+  file-read → sync → DB-query and verifies DB state catches more than
+  three unit tests testing each in isolation. This aligns with
+  `testing-strategy.md`: real SQLite, real filesystem.
+- **Loop over cases, don't duplicate.** One test function with a
+  `for (input, expected) in cases` loop beats N copy-pasted test
+  functions.
+- **Verify output state, not implementation details.** Assert what
+  the result is (DB rows, return values, file contents), not which
+  internal methods were called or in what order.
+- **Test the contract, not the wrapper.** A function that delegates
+  to a `HashMap` doesn't need its own test. The code that depends on
+  the contract does.
+- **Every test must have a failure mode.** If you can't describe what
+  bug the test would catch, delete it.
+
+### The ratio test
+
+If you removed a test, would you lose confidence in the correctness
+of the system? If no, the test is there for coverage, not for value.
+Delete it.
+
+---
+
 ## Before Committing Any Phase
 
 - [ ] `cargo build --release` succeeds
