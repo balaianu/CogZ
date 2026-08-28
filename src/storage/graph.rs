@@ -1,9 +1,11 @@
 //! Graph traversal — multi-hop edge following.
 
+use std::collections::HashSet;
+
 use rusqlite::Connection;
 
 use super::StorageError;
-use super::edges::{get_edges_from, get_edges_to};
+use super::edges::get_neighbors_batch;
 
 /// Graph traversal — get entities N hops away from a starting entity,
 /// following edges of any type (both outgoing and incoming).
@@ -14,29 +16,26 @@ pub fn graph_traverse(
     start_id: &str,
     max_hops: usize,
 ) -> Result<Vec<String>, StorageError> {
-    let mut visited = std::collections::HashSet::new();
+    let mut visited = HashSet::new();
     visited.insert(start_id.to_string());
 
     let mut frontier = vec![start_id.to_string()];
 
     for _ in 0..max_hops {
+        let (outgoing, incoming) = get_neighbors_batch(conn, &frontier)?;
+
         let mut next_frontier = Vec::new();
-        for node_id in &frontier {
-            // Follow outgoing edges
-            for edge in get_edges_from(conn, node_id)? {
-                if !visited.contains(&edge.target_id) {
-                    visited.insert(edge.target_id.clone());
-                    next_frontier.push(edge.target_id);
-                }
-            }
-            // Follow incoming edges
-            for edge in get_edges_to(conn, node_id)? {
-                if !visited.contains(&edge.source_id) {
-                    visited.insert(edge.source_id.clone());
-                    next_frontier.push(edge.source_id);
-                }
+        for target_id in outgoing {
+            if visited.insert(target_id.clone()) {
+                next_frontier.push(target_id);
             }
         }
+        for source_id in incoming {
+            if visited.insert(source_id.clone()) {
+                next_frontier.push(source_id);
+            }
+        }
+
         if next_frontier.is_empty() {
             break;
         }

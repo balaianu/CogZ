@@ -11,6 +11,24 @@ use uuid::Uuid;
 use super::FrontmatterError;
 use super::frontmatter::{FmValue, Frontmatter};
 
+/// Convert a frontmatter value to a JSON value for storage in the
+/// entity `properties` field.
+pub fn fm_value_to_json(value: &FmValue) -> serde_json::Value {
+    match value {
+        FmValue::String(s) => serde_json::Value::String(s.clone()),
+        FmValue::Float(f) => {
+            serde_json::Value::Number(serde_json::Number::from_f64(*f).unwrap_or(0.into()))
+        }
+        FmValue::Int(i) => serde_json::Value::Number((*i).into()),
+        FmValue::Bool(b) => serde_json::Value::Bool(*b),
+        FmValue::Array(a) => serde_json::Value::Array(
+            a.iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        ),
+    }
+}
+
 /// Maximum slug length (per entity-spec.md).
 const MAX_SLUG_LEN: usize = 60;
 

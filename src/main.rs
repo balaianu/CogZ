@@ -1,5 +1,7 @@
 //! CogZ CLI entry point.
 
+mod cli;
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
@@ -130,7 +132,7 @@ fn run_status(repo: &std::path::Path) -> anyhow::Result<()> {
     println!("  Events: {}", events);
 
     // Model availability
-    let models_dir = dirs_models_dir();
+    let models_dir = cli::models_dir();
     let code_model = cogz::embed::OnnxEmbeddingModel::new(
         cogz::embed::ModelType::Code,
         &models_dir,
@@ -190,13 +192,13 @@ fn run_index(repo: &std::path::Path) -> anyhow::Result<()> {
     if !result.errors.is_empty() {
         println!("\n  Errors ({}):", result.errors.len());
         for err in &result.errors {
-            println!("    {}: {}", err.file_path.display(), err.message);
+            println!("    {}: {}", err.file_path.display(), err.error);
         }
     }
 
     // Embed synced entities (graceful degradation if model unavailable)
     if !result.synced_entity_ids.is_empty() {
-        let embedded = embed_synced(&storage, &config, &result.synced_entity_ids);
+        let embedded = cli::embed_synced(&storage, &config, &result.synced_entity_ids);
         if embedded > 0 {
             println!("  Embedded: {}", embedded);
         }
@@ -243,13 +245,13 @@ fn run_reindex(repo: &std::path::Path) -> anyhow::Result<()> {
     if !result.errors.is_empty() {
         println!("\n  Errors ({}):", result.errors.len());
         for err in &result.errors {
-            println!("    {}: {}", err.file_path.display(), err.message);
+            println!("    {}: {}", err.file_path.display(), err.error);
         }
     }
 
     // Embed synced entities (graceful degradation if model unavailable)
     if !result.synced_entity_ids.is_empty() {
-        let embedded = embed_synced(&storage, &config, &result.synced_entity_ids);
+        let embedded = cli::embed_synced(&storage, &config, &result.synced_entity_ids);
         if embedded > 0 {
             println!("  Embedded: {}", embedded);
         }
@@ -304,66 +306,4 @@ fn run_reset(repo: &std::path::Path, purge: bool) -> anyhow::Result<()> {
     println!("\nRun `cogz index` to rebuild the database from files.");
 
     Ok(())
-}
-
-/// Embed synced entities using the knowledge model. Returns the count
-/// of entities successfully embedded. If the model is unavailable,
-/// returns 0 (graceful degradation).
-fn embed_synced(
-    storage: &cogz::storage::Storage,
-    config: &cogz::config::Config,
-    entity_ids: &[String],
-) -> usize {
-    use cogz::embed::{EmbeddingCache, ModelType, OnnxEmbeddingModel};
-
-    let models_dir = dirs_models_dir();
-    let model = OnnxEmbeddingModel::new(
-        ModelType::Knowledge,
-        &models_dir,
-        config.embedding.dimension,
-    );
-
-    // If model files aren't present, skip embedding silently
-    if !model.model_files_exist() {
-        return 0;
-    }
-
-    let cache = EmbeddingCache::new();
-    let conn = storage.conn();
-
-    // Fetch entities from DB
-    let mut entities = Vec::with_capacity(entity_ids.len());
-    for id in entity_ids {
-        if let Ok(entity) = cogz::storage::crud::get_entity(&conn, id) {
-            entities.push(entity);
-        }
-    }
-
-    cogz::files::embed_sync::embed_synced_entities(&conn, &model, &cache, &entities)
-}
-
-/// Get the models directory: `~/.local/share/cogz/models/`
-fn dirs_models_dir() -> std::path::PathBuf {
-    if let Some(dir) = dirs_data_dir() {
-        dir.join("cogz").join("models")
-    } else {
-        std::path::PathBuf::from(".cogz/models")
-    }
-}
-
-/// Get the user's data directory cross-platform.
-fn dirs_data_dir() -> Option<std::path::PathBuf> {
-    #[cfg(unix)]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Some(std::path::PathBuf::from(home).join(".local/share"));
-        }
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
-            return Some(std::path::PathBuf::from(appdata));
-        }
-    }
-    None
 }

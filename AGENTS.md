@@ -195,6 +195,90 @@ Delete it.
 
 ---
 
+## Codebase Patterns
+
+These patterns are established in the current codebase and must be
+followed in all new code. They exist because they prevent real bugs
+or performance problems that have been identified during review.
+
+### Typed errors, no String error types
+
+Library modules use `thiserror` enums with `#[from]` for automatic
+conversion. The CLI binary (`main.rs`) uses `anyhow` for top-level
+error handling.
+
+- **Never use `String` as an error type.** If a function can fail in
+  multiple ways, define an error enum. If it delegates to another
+  module's error, use `#[from]` or `.map_err()`.
+- **Error variants should be specific.** `StorageError::EntityNotFound`
+  is useful; `StorageError::Generic("entity not found")` is not.
+- **`#[from]` ambiguity:** if an enum has `#[from]` for `StorageError`
+  and `StorageError` itself has `#[from]` for `rusqlite::Error`, you
+  cannot also add `#[from]` for `rusqlite::Error` to the outer enum.
+  Convert manually with `.map_err(|e| OuterError::Storage(e.into()))`.
+
+### Mutex and I/O
+
+The single SQLite `Connection` is behind `std::sync::Mutex`. Any
+function that needs the connection acquires it via `storage.conn()`.
+
+- **Don't hold the mutex during filesystem or network I/O.** Acquire
+  the lock, get the data you need (e.g. a file path), drop the lock,
+  then do the I/O. Holding the lock during I/O blocks all other
+  callers and can deadlock.
+- **The `db_size_bytes` function is the reference pattern:** it
+  queries `PRAGMA database_list` under the lock, extracts the path,
+  drops the guard via a block scope, then calls `std::fs::metadata`
+  outside the lock.
+
+### Query batching
+
+When processing a collection of items that each need a SQL query,
+batch them into a single query using `IN (?, ?, ...)` instead of
+one query per item.
+
+- **The `get_neighbors_batch` function is the reference pattern:**
+  instead of calling `get_edges_from` per frontier node (N queries),
+  it fetches all neighbors for all frontier nodes in 2 queries
+  (one outgoing, one incoming).
+- **Build placeholders dynamically:** `(0..n).map(|_| "?").join(",")`
+  and bind params via `Vec<&dyn rusqlite::ToSql>`.
+- **Apply this proactively** to any new code that loops over a
+  collection and queries the DB per item.
+
+### Read once, pass forward
+
+When a file is read during sync, the parsed result should be returned
+to the caller so it doesn't need to be re-read.
+
+- **The `sync_one_file_inner` function is the reference pattern:** it
+  returns `(SyncAction, EntityFile)` so callers can use the entity ID
+  for `seen_ids` and `synced_entity_ids` without reading the file
+  again.
+- **Applies to any I/O:** if a function reads a file or queries the
+  DB, return the result. Don't make callers repeat the work.
+
+### Logging
+
+Library code uses `tracing` macros (`warn!`, `debug!`, `info!`).
+CLI code uses `println!` for user-facing output.
+
+- **`tracing::warn!`** for recoverable failures (model unavailable,
+  embedding failed for one entity).
+- **`tracing::debug!`** for diagnostic detail that's noisy by default
+  (cache hit/miss, sync skip reasons).
+- **Never use `println!` in library code.** Library modules don't
+  know if they're being called from a CLI, an MCP server, or a test.
+
+### File size
+
+- **400 lines max per file.** If a file approaches this, extract
+  self-contained functions to a new module in the same directory.
+  The `files/refs.rs` extraction from `files/sync.rs` is the
+  reference pattern.
+
+---
+
 ## Before Committing Any Phase
 
 - [ ] `cargo build --release` succeeds

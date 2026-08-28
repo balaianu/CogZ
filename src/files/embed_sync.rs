@@ -9,47 +9,46 @@ use rusqlite::Connection;
 use crate::embed::{EmbeddingCache, EmbeddingModel};
 use crate::storage::{self, crud::Entity};
 
-/// Embed entities that were created or updated during sync.
+/// Compute embeddings for a list of entities. Pure computation —
+/// no DB access. Returns `(entity_id, embedding)` pairs for entities
+/// that were successfully embedded.
 ///
-/// For each entity, checks the content-hash cache. If the content
-/// hasn't been embedded before (by this model), embeds it and stores
-/// the vector. If the model is unavailable, logs a warning and
-/// returns Ok — sync succeeds without embeddings (graceful
-/// degradation).
-pub fn embed_synced_entities(
-    conn: &Connection,
+/// If the model is unavailable, `embed()` returns
+/// `EmbeddingError::ModelUnavailable` on the first call, which is
+/// logged and skipped. The caller is responsible for DB storage via
+/// `store_embeddings`.
+pub fn embed_entities(
     model: &dyn EmbeddingModel,
     cache: &EmbeddingCache,
     entities: &[Entity],
-) -> usize {
-    if !model.is_available() {
-        tracing::debug!("embedding model unavailable, skipping embedding");
-        return 0;
-    }
-
-    let mut embedded = 0;
+) -> Vec<(String, Vec<f32>)> {
+    let mut results = Vec::new();
     for entity in entities {
-        // Use title + content as the text to embed
         let text = match &entity.title {
             Some(t) => format!("{}\n\n{}", t, entity.content),
             None => entity.content.clone(),
         };
 
         match cache.embed_cached(model, &text) {
-            Ok(embedding) => {
-                // Delete old embedding first (in case of re-embed)
-                let _ = storage::embeddings::delete_embedding(conn, &entity.id);
-                if let Err(e) = storage::embeddings::insert_embedding(conn, &entity.id, &embedding)
-                {
-                    tracing::warn!("failed to store embedding for {}: {}", entity.id, e);
-                } else {
-                    embedded += 1;
-                }
-            }
-            Err(e) => {
-                tracing::warn!("embedding failed for {}: {}", entity.id, e);
-            }
+            Ok(embedding) => results.push((entity.id.clone(), embedding)),
+            Err(e) => tracing::warn!("embedding failed for {}: {}", entity.id, e),
         }
     }
-    embedded
+    results
+}
+
+/// Store embeddings in the vec0 table. Replaces any existing
+/// embedding for each entity. Requires a DB connection — caller
+/// is responsible for lock acquisition.
+pub fn store_embeddings(conn: &Connection, embeddings: &[(String, Vec<f32>)]) -> usize {
+    let mut stored = 0;
+    for (entity_id, embedding) in embeddings {
+        let _ = storage::embeddings::delete_embedding(conn, entity_id);
+        if let Err(e) = storage::embeddings::insert_embedding(conn, entity_id, embedding) {
+            tracing::warn!("failed to store embedding for {}: {}", entity_id, e);
+        } else {
+            stored += 1;
+        }
+    }
+    stored
 }

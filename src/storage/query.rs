@@ -3,7 +3,7 @@
 use rusqlite::{Connection, params};
 
 use super::StorageError;
-use super::crud::{Entity, row_to_entity};
+use super::crud::{ENTITY_COLUMNS, Entity, row_to_entity};
 
 /// Filter criteria for querying entities.
 pub struct EntityFilter<'a> {
@@ -32,10 +32,7 @@ pub fn query_entities(
     conn: &Connection,
     filter: &EntityFilter<'_>,
 ) -> Result<Vec<Entity>, StorageError> {
-    let mut sql = String::from(
-        "SELECT id, type, title, content, properties, file_path, status, content_hash, created_at, updated_at
-         FROM entities WHERE 1=1",
-    );
+    let mut sql = format!("SELECT {ENTITY_COLUMNS} FROM entities WHERE 1=1");
     let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
     if let Some(et) = filter.entity_type {
@@ -100,12 +97,12 @@ pub fn fts_search(
     status_filter: Option<&str>,
     limit: i64,
 ) -> Result<Vec<Entity>, StorageError> {
-    let mut sql = String::from(
-        "SELECT e.id, e.type, e.title, e.content, e.properties, e.file_path, e.status, e.content_hash, e.created_at, e.updated_at
+    // Mirrors ENTITY_COLUMNS with `e.` prefix for the JOIN.
+    let mut sql = "SELECT e.id, e.type, e.title, e.content, e.properties, e.file_path, e.status, e.content_hash, e.created_at, e.updated_at
          FROM entities_fts fts
          JOIN entities e ON e.rowid = fts.rowid
-         WHERE entities_fts MATCH ?1",
-    );
+         WHERE entities_fts MATCH ?1"
+        .to_string();
     let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.to_string())];
 
     if let Some(et) = type_filter {

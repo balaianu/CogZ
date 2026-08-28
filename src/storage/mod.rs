@@ -109,11 +109,15 @@ impl Storage {
 
     /// Database file size in bytes (0 for in-memory).
     pub fn db_size_bytes(&self) -> u64 {
-        // In-memory DBs have no file path
-        let conn = self.conn();
-        let path: Option<String> = conn
-            .query_row("PRAGMA database_list", [], |r| r.get::<_, String>(2))
-            .ok();
+        // Get the file path under the lock, then drop it before
+        // doing filesystem I/O to avoid blocking other callers.
+        let path = {
+            let conn = self.conn();
+            let path: Option<String> = conn
+                .query_row("PRAGMA database_list", [], |r| r.get::<_, String>(2))
+                .ok();
+            path
+        };
         match path {
             Some(ref p) if !p.is_empty() => std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
             _ => 0,

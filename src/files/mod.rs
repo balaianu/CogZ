@@ -3,14 +3,12 @@
 //! Files are the source of truth. The database is a derived index.
 //! This module handles reading, writing, and syncing entity files
 //! to the storage layer.
-//!
-//! See `docs/entity-spec.md` for the file format specification and
-//! `docs/architecture.md` → "File → DB sync" for sync rules.
 
 pub mod embed_sync;
 pub mod entities;
 pub mod events;
 pub mod frontmatter;
+pub mod refs;
 pub mod sync;
 
 pub use entities::{EntityFile, FileEntityType, read_entity_file, slugify, write_entity_file};

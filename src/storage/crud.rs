@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 
 use super::StorageError;
 
+/// Column list for SELECT queries that return full Entity rows.
+/// Used by `get_entity`, `query_entities`, `fts_search`, and
+/// `get_file_backed_entities` to avoid column-list drift.
+pub const ENTITY_COLUMNS: &str =
+    "id, type, title, content, properties, file_path, status, content_hash, created_at, updated_at";
+
 /// Valid entity types. Code entities (function, class, file, module)
 /// are extracted from source; knowledge entities (observation, rule,
 /// knowledge) are file-backed.
@@ -37,6 +43,15 @@ impl EntityType {
 
     pub fn parse(s: &str) -> Result<Self, StorageError> {
         Self::from_str(s).map_err(|_| StorageError::InvalidEntityType(s.to_string()))
+    }
+
+    /// Whether this entity type is extracted from source code rather
+    /// than file-backed markdown. Determines which embedding model to use.
+    pub fn is_code(&self) -> bool {
+        matches!(
+            self,
+            Self::Function | Self::Class | Self::File | Self::Module
+        )
     }
 }
 
@@ -130,8 +145,7 @@ pub fn insert_entity(conn: &Connection, entity: &Entity) -> Result<(), StorageEr
 /// Get an entity by ID.
 pub fn get_entity(conn: &Connection, id: &str) -> Result<Entity, StorageError> {
     conn.query_row(
-        "SELECT id, type, title, content, properties, file_path, status, content_hash, created_at, updated_at
-         FROM entities WHERE id = ?1",
+        &format!("SELECT {ENTITY_COLUMNS} FROM entities WHERE id = ?1"),
         params![id],
         row_to_entity,
     )
@@ -344,5 +358,16 @@ mod tests {
         );
         assert_eq!(EntityType::Observation.as_str(), "observation");
         assert!(EntityType::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn is_code_distinguishes_entity_kinds() {
+        assert!(!EntityType::Observation.is_code());
+        assert!(!EntityType::Rule.is_code());
+        assert!(!EntityType::Knowledge.is_code());
+        assert!(EntityType::Function.is_code());
+        assert!(EntityType::Class.is_code());
+        assert!(EntityType::File.is_code());
+        assert!(EntityType::Module.is_code());
     }
 }
