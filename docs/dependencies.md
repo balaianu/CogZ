@@ -165,6 +165,10 @@ protocol level, sync at the DB level.
 rmcp's `#[tool]` macro to generate `inputSchema` for tool definitions.
 Derives `JsonSchema` on tool parameter structs alongside `serde::Deserialize`.
 
+**Dev-dependency:** `rmcp` is also listed in `[dev-dependencies]` with
+the `client` feature enabled, for integration tests that use
+`tokio::io::duplex` to connect a test client to the server.
+
 ### File System / Git
 
 ```toml

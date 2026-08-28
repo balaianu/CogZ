@@ -196,9 +196,16 @@ command.
 **Goal:** MCP server exposes all tools, agent can interact with CogZ.
 
 **What's built:**
-- `src/mcp/server.rs` — MCP protocol server (stdio)
-- `src/mcp/tools.rs` — all 13 tool definitions (per mcp-contract.md)
-- `cogz mcp-stdio` — runs the MCP server
+- `src/mcp/server.rs` — MCP protocol server (stdio), `ServerHandler` impl
+- `src/mcp/tools.rs` — 11 tool handlers (Phase 7 scope; `consolidate`
+  deferred to Phase 9, `capture_event` to Phase 11)
+- `src/mcp/params.rs` — parameter structs (`serde::Deserialize` +
+  `schemars::JsonSchema`)
+- `src/mcp/helpers.rs` — file-first write logic, response builders,
+  error helpers, embedding helper
+- `src/mcp/dedup.rs` — title match (exact + fuzzy) + embedding
+  similarity dedup
+- `cogz mcp-stdio` — runs the MCP server over stdio transport
 - Integration with all layers: storage, files, search, context
 - Concurrency: single SQLite `Connection` behind `Mutex`, DB calls
   via `tokio::task::spawn_blocking` from async MCP handlers
@@ -207,26 +214,33 @@ command.
 - Basic dedup in insert path: title match (exact + fuzzy) + embedding
   similarity > threshold → `duplicate_warning` returned to caller.
   This is lightweight, synchronous, and does not require NLI.
-- Uses status state machine from Phase 2 (`transition_status()`)
+- Graceful degradation: missing embedding models → FTS-only search,
+  title-only dedup
+- 16 integration tests via `tokio::io::duplex` transport
+
+**Tools implemented (11):**
+1. `record_observation` 2. `query_observations` 3. `create_rule`
+4. `query_rules` 5. `create_knowledge` 6. `update_knowledge`
+7. `query_knowledge` 8. `search` 9. `get_context` 10. `get_status`
+11. `list_entities`
 
 **Verification:**
-- MCP server starts and responds to tool list request (13 tools)
+- MCP server starts and responds to tool list request (11 tools)
 - Each tool works correctly (record_observation creates file + DB
   entry, search returns results, get_context returns a pack,
   update_knowledge edits a knowledge file in-place)
-- Duplicate detection: create knowledge with same title as existing
+- Duplicate detection: create observation with same title as existing
   → `duplicate_warning` returned
-- Status state machine: illegal transition (rejected → active)
-  returns error
 - Error handling: invalid parameters return proper MCP errors
-- Server handles concurrent requests (Rust threads)
 - `cogz mcp-stdio` works when configured in an agent's MCP config
+- Rebuildability: files written by MCP tools can be re-synced to a
+  fresh DB via `cogz index`
 
 **What's NOT built yet:** Code indexing, full consolidation
 (contradiction detection, promotion, merge), hooks. MCP tools work
 for file-based entities but code entities don't exist yet. Basic
 dedup (title + embedding similarity) is built here; full consolidation
-is Phase 9.
+is Phase 9. `consolidate` and `capture_event` tools deferred.
 
 ---
 
