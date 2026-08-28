@@ -19,6 +19,11 @@ toml = "0.8"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = "0.21"
 
+# MCP server
+rmcp = { version = "3.1.2", features = ["transport-io"] }
+tokio = { version = "1", features = ["full"] }
+schemars = "1"
+
 # File system / Git
 git2 = { version = "0.19", default-features = false }
 walkdir = "2"

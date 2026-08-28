@@ -138,23 +138,32 @@ before embedding. Used by the ONNX embedding pipeline.
 ### MCP Server
 
 ```toml
-rmcp = { version = "1.7", features = ["server"] }
+rmcp = { version = "3.1.2", features = ["transport-io"] }
 tokio = { version = "1", features = ["full"] }
+schemars = "1"
 ```
 
-**rmcp 1.7** (latest: 1.7.0, published 2026-05-13)
+**rmcp 3.1.2** (published 2026-08-07, 341K downloads)
 
-Official Rust MCP SDK. Implements the MCP 2025-11-25 stable spec
-and 2026-07-28 draft. Features:
-- `server` — server-side implementation (tool definitions, handler
-  traits)
+Official Rust MCP SDK. Implements the MCP 2026-07-28 spec. The SDK
+went through 2.x and 3.x major cycles since the initial docs were
+written. We pin to 3.1.2 rather than 3.1.4 (2026-08-20, only 9 days
+old) to stay conservative on the 7-day rule. Features:
+- `server` (default) — server-side implementation, tool handler traits
+- `macros` (default) — `#[tool]` and `#[tool_router]` attribute macros
+- `transport-io` — stdio transport for `cogz mcp-stdio`
 
 The SDK uses tokio async runtime. Our MCP tools are async handlers
-that call into the synchronous storage layer. The boundary is clean:
-async at the protocol level, sync at the DB level.
+that call into the synchronous storage layer via
+`tokio::task::spawn_blocking`. The boundary is clean: async at the
+protocol level, sync at the DB level.
 
-**tokio 1** — async runtime. `full` features for stdio transport
-and concurrent request handling.
+**tokio 1** — async runtime. `full` features for stdio transport,
+`spawn_blocking`, and concurrent request handling.
+
+**schemars 1** — JSON Schema generation from Rust types. Used by
+rmcp's `#[tool]` macro to generate `inputSchema` for tool definitions.
+Derives `JsonSchema` on tool parameter structs alongside `serde::Deserialize`.
 
 ### File System / Git
 
@@ -332,8 +341,9 @@ tokenizers = "0.21"
 ndarray = "0.16"
 
 # MCP server
-rmcp = { version = "1.7", features = ["server"] }
+rmcp = { version = "3.1.2", features = ["transport-io"] }
 tokio = { version = "1", features = ["full"] }
+schemars = "1"
 
 # File system / Git
 walkdir = "2"
@@ -393,12 +403,12 @@ debug = true
 | Config/Serialization | serde, serde_json, toml | 3 |
 | Code parsing | tree-sitter + 10 language crates | 11 |
 | Embedding/ML | ort, tokenizers | 2 |
-| MCP server | rmcp, tokio | 2 |
+| MCP server | rmcp, tokio, schemars | 3 |
 | File system/Git | walkdir, git2, ignore | 3 |
 | Utilities | uuid, sha2, chrono, anyhow, thiserror, tracing, tracing-subscriber, slug, zerocopy | 9 |
 | HTTP | reqwest | 1 |
 | Dev | tempfile, pretty_assertions | 2 |
-| **Total** | | **36** |
+| **Total** | | **37** |
 
-36 direct dependencies. Transitive count will be higher but
+37 direct dependencies. Transitive count will be higher but
 manageable. The binary will be ~15-25 MB with static linking.
