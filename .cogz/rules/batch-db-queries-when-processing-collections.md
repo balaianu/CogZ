@@ -1,6 +1,6 @@
 ---
 id: ac57f6c8-0669-4062-a9f5-315b419f7c73
-title: "Batch DB queries when processing collections"
+title: Batch DB queries when processing collections
 type: rule
 status: active
 created_at: 2026-08-28T19:32:00Z

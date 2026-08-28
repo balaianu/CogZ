@@ -15,6 +15,8 @@ pub struct Config {
     #[serde(default)]
     pub index: IndexConfig,
     pub retention: RetentionConfig,
+    #[serde(default)]
+    pub context: ContextConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -67,6 +69,39 @@ pub struct RetentionConfig {
     pub tombstone_max_count: u32,
 }
 
+/// Context assembly configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextConfig {
+    /// Default token budget for context packs.
+    pub default_token_budget: usize,
+    /// Number of recent rules to include in cold_start mode.
+    pub cold_start_rules: usize,
+    /// Number of recent observations to include in cold_start mode.
+    pub cold_start_observations: usize,
+    /// Max search results in task mode before expansion.
+    pub task_max_results: u32,
+    /// Graph expansion hops in task mode.
+    pub task_max_hops: usize,
+    /// Max search results in escalation mode before expansion.
+    pub escalation_max_results: u32,
+    /// Graph expansion hops in escalation mode.
+    pub escalation_max_hops: usize,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            default_token_budget: 4096,
+            cold_start_rules: 5,
+            cold_start_observations: 5,
+            task_max_results: 10,
+            task_max_hops: 2,
+            escalation_max_results: 20,
+            escalation_max_hops: 3,
+        }
+    }
+}
+
 impl Config {
     /// Create a default config for a given project name.
     pub fn default_for(project_name: &str) -> Self {
@@ -99,6 +134,7 @@ impl Config {
                 observation_prune_after_days: 90,
                 tombstone_max_count: 1000,
             },
+            context: ContextConfig::default(),
         }
     }
 
@@ -140,6 +176,11 @@ impl Config {
         if self.retention.observation_prune_after_days == 0 {
             return Err(super::ConfigError::Validation(
                 "retention.observation_prune_after_days must be greater than 0".to_string(),
+            ));
+        }
+        if self.context.default_token_budget == 0 {
+            return Err(super::ConfigError::Validation(
+                "context.default_token_budget must be greater than 0".to_string(),
             ));
         }
         Ok(())
@@ -191,5 +232,6 @@ tombstone_max_count = 1000
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.index.allow.is_empty());
+        assert_eq!(config.context, ContextConfig::default());
     }
 }

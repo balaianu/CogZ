@@ -1,6 +1,6 @@
 ---
 id: d494d63a-05f4-41fc-91a8-c56b5e525107
-title: "Why CogZ has a custom frontmatter parser instead of a YAML crate"
+title: Why CogZ has a custom frontmatter parser instead of a YAML crate
 type: knowledge
 status: active
 created_at: 2026-08-28T19:26:00Z

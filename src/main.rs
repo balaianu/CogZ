@@ -81,6 +81,29 @@ enum Commands {
         #[arg(long)]
         no_expand: bool,
     },
+
+    /// Assemble a context pack for agent consumption.
+    Context {
+        /// Context mode: cold_start, task, or escalation.
+        /// Default: task. cold_start doesn't require a query.
+        #[arg(long, default_value = "task")]
+        mode: String,
+
+        /// Search query (required for task and escalation modes).
+        query: Option<String>,
+
+        /// Repository root directory. Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+
+        /// Include stale entities in the context pack.
+        #[arg(long)]
+        include_stale: bool,
+
+        /// Override the token budget from config.
+        #[arg(long)]
+        max_tokens: Option<usize>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -107,6 +130,13 @@ fn main() -> anyhow::Result<()> {
             limit,
             no_expand,
         } => cli::run_search(&query, &repo, entity_type, status, limit, no_expand),
+        Commands::Context {
+            mode,
+            query,
+            repo,
+            include_stale,
+            max_tokens,
+        } => cli::run_context(&mode, query.as_deref(), &repo, include_stale, max_tokens),
     }
 }
 

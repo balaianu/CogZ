@@ -911,6 +911,15 @@ promotion_threshold = 3          # min supporting observations to promote
 [index]
 allow = []                       # explicit gitignore overrides (paths to index despite being gitignored)
 
+[context]
+default_token_budget = 4096      # default token budget for context packs
+cold_start_rules = 5             # recent rules in cold_start mode
+cold_start_observations = 5      # recent observations in cold_start mode
+task_max_results = 10            # max search results in task mode
+task_max_hops = 2                # graph expansion hops in task mode
+escalation_max_results = 20      # max search results in escalation mode
+escalation_max_hops = 3          # graph expansion hops in escalation mode
+
 [retention]
 observation_prune_after_days = 90  # prune rejected/superseded observations older than this
 tombstone_max_count = 1000         # cap on tombstones; oldest removed when exceeded

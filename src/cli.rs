@@ -213,3 +213,119 @@ pub fn run_search(
 
     Ok(())
 }
+
+/// Run the `cogz context` command.
+pub fn run_context(
+    mode_str: &str,
+    query: Option<&str>,
+    repo: &std::path::Path,
+    include_stale: bool,
+    max_tokens: Option<usize>,
+) -> anyhow::Result<()> {
+    use cogz::context::{AssembleError, ContextMode};
+
+    let mode = ContextMode::parse(mode_str).ok_or_else(|| {
+        anyhow::anyhow!(
+            "invalid mode '{}': expected cold_start, task, or escalation",
+            mode_str
+        )
+    })?;
+
+    if mode.requires_query() && query.is_none() {
+        anyhow::bail!("query is required for {} mode", mode);
+    }
+
+    let cogz_dir = repo.join(".cogz");
+    let config_path = cogz_dir.join("config.toml");
+
+    if !config_path.exists() {
+        anyhow::bail!(
+            "No .cogz/ directory found in {}. Run `cogz init` first.",
+            repo.display()
+        );
+    }
+
+    let config = cogz::config::load(&config_path)?;
+    let db_path = repo.join(&config.storage.db_path);
+
+    if !db_path.exists() {
+        anyhow::bail!(
+            "Database not found at {}. Run `cogz index` first.",
+            db_path.display()
+        );
+    }
+
+    let storage = Storage::open(&db_path)?;
+
+    let query_embedding = query.and_then(|q| embed_query(&config, q));
+
+    let params = cogz::context::AssembleParams {
+        mode,
+        query,
+        query_embedding: query_embedding.as_deref(),
+        max_tokens,
+        include_stale,
+    };
+
+    let pack = {
+        let conn = storage.conn();
+        cogz::context::assemble_context(&conn, &params, &config).map_err(|e| match e {
+            AssembleError::QueryRequired(m) => {
+                anyhow::anyhow!("query is required for {} mode", m)
+            }
+            other => anyhow::anyhow!("{other}"),
+        })?
+    };
+
+    println!("Context pack (mode: {})", pack.mode);
+    println!(
+        "Query: {}",
+        if pack.query.is_empty() {
+            "(none)"
+        } else {
+            &pack.query
+        }
+    );
+    println!("Search mode: {}", pack.metadata.search_mode);
+    println!("Sections: {}", pack.sections.len());
+    println!("Token estimate: {}", pack.metadata.size_tokens);
+
+    if !pack.metadata.dropped_sources.is_empty() {
+        println!(
+            "\nDropped sources ({}):",
+            pack.metadata.dropped_sources.len()
+        );
+        for src in &pack.metadata.dropped_sources {
+            println!("  - {}", src);
+        }
+    }
+
+    println!("\n---\n");
+    for (i, section) in pack.sections.iter().enumerate() {
+        let relevance = if section.relevance > 0.0 {
+            format!("{:.4}", section.relevance)
+        } else {
+            "recent".to_string()
+        };
+
+        println!(
+            "## {}. [{}] {} (relevance: {})\n",
+            i + 1,
+            section.source,
+            section.title,
+            relevance
+        );
+
+        if section.graph_path.len() > 1 {
+            println!(
+                "  graph path: {} -> {}\n",
+                section.graph_path.first().unwrap_or(&section.entity_id),
+                section.entity_id
+            );
+        }
+
+        println!("{}\n", section.content);
+    }
+
+    Ok(())
+}

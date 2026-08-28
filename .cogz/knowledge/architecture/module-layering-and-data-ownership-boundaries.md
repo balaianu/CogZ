@@ -1,6 +1,6 @@
 ---
 id: a9d8f4cd-a22a-4e0c-a25a-418c92564dcd
-title: "Module layering and data ownership boundaries"
+title: Module layering and data ownership boundaries
 type: knowledge
 status: active
 created_at: 2026-08-28T19:20:00Z

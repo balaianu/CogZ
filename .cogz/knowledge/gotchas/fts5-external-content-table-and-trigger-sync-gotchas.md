@@ -1,6 +1,6 @@
 ---
 id: 06dd8275-c7a2-4b4f-b5a4-455b762062e9
-title: "FTS5 external content table and trigger sync gotchas"
+title: FTS5 external content table and trigger sync gotchas
 type: knowledge
 status: active
 created_at: 2026-08-28T19:28:00Z

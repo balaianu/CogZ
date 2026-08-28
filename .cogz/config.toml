@@ -24,6 +24,15 @@ promotion_threshold = 3
 [index]
 allow = []
 
+[context]
+default_token_budget = 4096
+cold_start_rules = 5
+cold_start_observations = 5
+task_max_results = 10
+task_max_hops = 2
+escalation_max_results = 20
+escalation_max_hops = 3
+
 [retention]
 observation_prune_after_days = 90
 tombstone_max_count = 1000

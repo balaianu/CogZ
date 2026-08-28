@@ -1,6 +1,6 @@
 ---
 id: 5a2bdf52-00e5-4ff6-8749-65282c5e048b
-title: "No direct DB writes outside the storage layer"
+title: No direct DB writes outside the storage layer
 type: rule
 status: active
 created_at: 2026-08-28T19:33:00Z

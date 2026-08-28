@@ -1,6 +1,6 @@
 ---
 id: 78fe7be0-c777-4c7b-afab-1d378f16daeb
-title: "Files are canonical — DB is disposable and derived"
+title: Files are canonical — DB is disposable and derived
 type: rule
 status: active
 created_at: 2026-08-28T19:34:00Z
