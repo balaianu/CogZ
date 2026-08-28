@@ -22,7 +22,7 @@ use crate::mcp::server::CogzServer;
 use crate::search::{SearchParams, search as search_entities};
 use crate::storage::{crud, events, query};
 
-#[tool_router]
+#[tool_router(vis = "pub")]
 impl CogzServer {
     #[tool(
         name = "record_observation",
