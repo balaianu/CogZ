@@ -48,7 +48,7 @@ pub fn build_path_descriptions_batch(
             descriptions.push(String::new());
             continue;
         }
-        let mut parts = Vec::new();
+        let mut parts = Vec::with_capacity(path.len() * 2 - 1);
         for i in 0..path.len() {
             parts.push(
                 titles
@@ -70,7 +70,9 @@ pub fn build_path_descriptions_batch(
     Ok(descriptions)
 }
 
-/// Batch-fetch titles for a set of entity IDs.
+/// Batch-fetch titles for a set of entity IDs. Returns a map of
+/// ID → title for entities that exist. Missing entities are absent
+/// from the map; the caller falls back to the ID itself.
 fn batch_get_titles(
     conn: &Connection,
     ids: &HashSet<&String>,
@@ -92,10 +94,6 @@ fn batch_get_titles(
         let (id, title): (String, Option<String>) = row?;
         titles.insert(id, title.unwrap_or_default());
     }
-    // Fill in missing IDs with empty strings (will fall back to ID in description)
-    for id in ids {
-        titles.entry(id.to_string()).or_default();
-    }
     Ok(titles)
 }
 
@@ -113,11 +111,8 @@ fn batch_get_edge_types(
         all_nodes.insert(a);
         all_nodes.insert(b);
     }
-    let node_vec: Vec<&String> = all_nodes.iter().copied().collect();
-    let edges = get_edges_involving_batch(
-        conn,
-        &node_vec.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-    )?;
+    let node_vec: Vec<String> = all_nodes.iter().map(|s| s.to_string()).collect();
+    let edges = get_edges_involving_batch(conn, &node_vec)?;
     for (source, target, etype) in &edges {
         if pairs.contains(&(source, target)) {
             result.insert((source.clone(), target.clone()), etype.clone());

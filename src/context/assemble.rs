@@ -151,23 +151,25 @@ fn cold_start_sections(
     });
 
     for entity in rules {
+        let id = entity.id;
         sections.push(ContextSection {
             source: "rule".to_string(),
-            entity_id: entity.id.clone(),
-            title: entity.title.clone().unwrap_or_default(),
-            content: entity.content.clone(),
+            entity_id: id.clone(),
+            title: entity.title.unwrap_or_default(),
+            content: entity.content,
             relevance: 0.0,
-            graph_path: vec![entity.id],
+            graph_path: vec![id],
         });
     }
     for entity in observations {
+        let id = entity.id;
         sections.push(ContextSection {
             source: "observation".to_string(),
-            entity_id: entity.id.clone(),
-            title: entity.title.clone().unwrap_or_default(),
-            content: entity.content.clone(),
+            entity_id: id.clone(),
+            title: entity.title.unwrap_or_default(),
+            content: entity.content,
             relevance: 0.0,
-            graph_path: vec![entity.id],
+            graph_path: vec![id],
         });
     }
     Ok(sections)
@@ -197,20 +199,21 @@ fn query_sections(
     let sections = results
         .results
         .into_iter()
-        .map(|r| search_result_to_section(&r))
+        .map(search_result_to_section)
         .collect();
 
     Ok((sections, search_mode))
 }
 
 /// Convert a search result to a context section.
-fn search_result_to_section(result: &SearchResult) -> ContextSection {
+/// Takes ownership to avoid cloning — the caller's results are consumed.
+fn search_result_to_section(result: SearchResult) -> ContextSection {
     ContextSection {
-        source: result.entity.r#type.clone(),
-        entity_id: result.entity.id.clone(),
-        title: result.entity.title.clone().unwrap_or_default(),
-        content: result.entity.content.clone(),
+        source: result.entity.r#type,
+        entity_id: result.entity.id,
+        title: result.entity.title.unwrap_or_default(),
+        content: result.entity.content,
         relevance: result.relevance,
-        graph_path: result.graph_path.clone(),
+        graph_path: result.graph_path,
     }
 }

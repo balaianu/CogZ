@@ -61,7 +61,7 @@ pub fn fit_budget(
     sections: Vec<ContextSection>,
     token_budget: usize,
 ) -> (Vec<ContextSection>, Vec<String>) {
-    let mut kept = Vec::new();
+    let mut kept = Vec::with_capacity(sections.len());
     let mut dropped = Vec::new();
     let mut used = 0usize;
 

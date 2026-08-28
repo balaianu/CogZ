@@ -152,13 +152,13 @@ pub fn search(
             build_path_descriptions_batch(conn, &paths_to_describe).unwrap_or_default();
 
         let mut expanded_results: Vec<SearchResult> = Vec::new();
-        for (exp, desc) in expansions.iter().zip(descriptions.iter()) {
+        for (exp, desc) in expansions.into_iter().zip(descriptions) {
             if let Some(entity) = entity_map.get(&exp.entity_id) {
                 expanded_results.push(SearchResult {
                     entity: entity.clone(),
                     relevance: 0.0,
-                    graph_path: exp.graph_path.clone(),
-                    graph_path_description: desc.clone(),
+                    graph_path: exp.graph_path,
+                    graph_path_description: desc,
                 });
             }
         }
