@@ -90,5 +90,3 @@ pub enum SearchError {
     #[error("storage error: {0}")]
     Storage(#[from] crate::storage::StorageError),
 }
-
-pub type SearchResultType<T> = std::result::Result<T, SearchError>;

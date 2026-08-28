@@ -117,7 +117,11 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { repo } => cogz::init::run(&repo),
+        Commands::Init { repo } => {
+            let msg = cogz::init::run(&repo)?;
+            println!("{}", msg);
+            Ok(())
+        }
         Commands::Status { repo } => run_status(&repo),
         Commands::Index { repo } => run_index(&repo),
         Commands::Reindex { repo } => run_reindex(&repo),

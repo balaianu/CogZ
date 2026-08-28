@@ -30,7 +30,10 @@ cogz.db-shm
 /// - Generates `config.toml` with autodetected project name
 /// - Generates `.gitignore` for gitignored paths
 /// - Refuses to run if `.cogz/` already exists (use `cogz reset` first)
-pub fn run(repo_root: &Path) -> Result<()> {
+///
+/// Returns the success message to print. The caller (CLI) is
+/// responsible for printing it.
+pub fn run(repo_root: &Path) -> Result<String> {
     let cogz_dir = repo_root.join(".cogz");
 
     if cogz_dir.exists() {
@@ -63,15 +66,13 @@ pub fn run(repo_root: &Path) -> Result<()> {
     fs::write(&gitignore_path, GITIGNORE_CONTENT)
         .with_context(|| format!("failed to write {}", gitignore_path.display()))?;
 
-    println!(
+    Ok(format!(
         "Initialized CogZ in {}\n  project: {}\n  config:  {}\n  gitignore: {}",
         cogz_dir.display(),
         project_name,
         config_path.display(),
         gitignore_path.display()
-    );
-
-    Ok(())
+    ))
 }
 
 /// Autodetect the project name.

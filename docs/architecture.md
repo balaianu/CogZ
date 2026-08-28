@@ -609,6 +609,7 @@ pub struct ContextPack {
 pub struct ContextSection {
     pub source: String,            // "observation", "rule", "function", etc.
     pub entity_id: String,         // UUID
+    pub title: String,             // entity title (for display)
     pub content: String,
     pub relevance: f32,
     pub graph_path: Vec<String>,   // UUIDs showing how we got here
@@ -616,8 +617,9 @@ pub struct ContextSection {
 
 pub struct PackMetadata {
     pub size_tokens: usize,
-    pub selected_sources: Vec<String>,
-    pub dropped_sources: Vec<String>,
+    pub selected_sources: Vec<String>,   // source types of included sections
+    pub dropped_sources: Vec<String>,    // "source:title (reason)" for dropped sections
+    pub search_mode: String,             // "hybrid" or "fts_only"
 }
 ```
 
