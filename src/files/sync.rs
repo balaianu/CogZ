@@ -105,17 +105,31 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
 
     let disk_files = scan_entity_files(cogz_dir);
     let mut seen_ids: HashMap<String, PathBuf> = HashMap::new();
+    let mut synced_files: Vec<EntityFile> = Vec::new();
 
     for file_path in &disk_files {
         match sync_one_file_inner(&conn, file_path, cogz_dir, incremental) {
             Ok((action, ef)) => {
                 record_action(&mut result, action, &ef.id);
-                seen_ids.insert(ef.id, file_path.clone());
+                seen_ids.insert(ef.id.clone(), file_path.clone());
+                synced_files.push(ef);
             }
             Err(error) => result.errors.push(SyncFailure {
                 file_path: file_path.clone(),
                 error,
             }),
+        }
+    }
+
+    // Second pass: re-sync reference edges now that all entities exist.
+    // Forward references to not-yet-synced entities are silently skipped
+    // in the first pass; this pass picks them up.
+    for ef in &synced_files {
+        if let Err(e) = super::refs::sync_references(&conn, ef) {
+            result.errors.push(SyncFailure {
+                file_path: ef.file_path(cogz_dir),
+                error: SyncError::Storage(e),
+            });
         }
     }
 

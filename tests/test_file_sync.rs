@@ -237,6 +237,37 @@ fn sync_references_edges() {
 }
 
 #[test]
+fn sync_forward_reference_edge_created() {
+    // Knowledge is processed before rules (ENTITY_DIRS order).
+    // A knowledge file referencing a rule is a forward reference —
+    // the rule doesn't exist yet when the knowledge is synced.
+    // The second pass must create the edge.
+    let storage = setup_storage();
+    let dir = tempfile::tempdir().unwrap();
+
+    write_file(
+        dir.path(),
+        "knowledge/architecture/overview.md",
+        "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"r1-uuid\"]\ncategory: architecture\n---\n\nContent",
+    );
+    write_file(
+        dir.path(),
+        "rules/ref-rule.md",
+        "---\nid: r1-uuid\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: []\n---\n\nRule body",
+    );
+
+    let result = sync_all(&storage, dir.path());
+    assert_eq!(result.created, 2);
+    assert_eq!(result.errors.len(), 0);
+
+    let conn = storage.conn();
+    let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(edges[0].target_id, "r1-uuid");
+    assert_eq!(edges[0].edge_type, "references");
+}
+
+#[test]
 fn sync_observations_with_properties() {
     let storage = setup_storage();
     let dir = tempfile::tempdir().unwrap();
