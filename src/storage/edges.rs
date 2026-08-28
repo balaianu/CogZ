@@ -88,6 +88,29 @@ pub fn insert_edge_skip_fk_violation(conn: &Connection, edge: &Edge) -> Result<(
     Ok(())
 }
 
+/// Get the edge type between two entities, checking both directions.
+/// Returns `Some(edge_type)` if an edge exists (either a→b or b→a),
+/// `None` if no edge connects them.
+pub fn get_edge_type_between(
+    conn: &Connection,
+    a: &str,
+    b: &str,
+) -> Result<Option<String>, StorageError> {
+    conn.query_row(
+        "SELECT edge_type FROM edges
+         WHERE (source_id = ?1 AND target_id = ?2)
+            OR (source_id = ?2 AND target_id = ?1)
+         LIMIT 1",
+        params![a, b],
+        |r| r.get::<_, String>(0),
+    )
+    .map(Some)
+    .or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        other => Err(other.into()),
+    })
+}
+
 /// Count all edges.
 pub fn count_edges(conn: &Connection) -> Result<i64, StorageError> {
     let count: i64 = conn.query_row("SELECT COUNT(*) FROM edges", [], |r| r.get(0))?;
@@ -293,5 +316,40 @@ mod tests {
         let (outgoing, incoming) = get_neighbors_batch(&conn, &[]).unwrap();
         assert!(outgoing.is_empty());
         assert!(incoming.is_empty());
+    }
+
+    #[test]
+    fn edge_type_between_outgoing() {
+        let conn = setup();
+        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
+        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
+        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
+
+        assert_eq!(
+            get_edge_type_between(&conn, "u1", "u2").unwrap(),
+            Some("references".to_string())
+        );
+    }
+
+    #[test]
+    fn edge_type_between_incoming() {
+        let conn = setup();
+        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
+        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
+        insert_edge(&conn, &edge("u2", "u1", "references")).unwrap();
+
+        assert_eq!(
+            get_edge_type_between(&conn, "u1", "u2").unwrap(),
+            Some("references".to_string())
+        );
+    }
+
+    #[test]
+    fn edge_type_between_none() {
+        let conn = setup();
+        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
+        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
+
+        assert_eq!(get_edge_type_between(&conn, "u1", "u2").unwrap(), None);
     }
 }

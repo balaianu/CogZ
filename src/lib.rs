@@ -7,4 +7,5 @@ pub mod config;
 pub mod embed;
 pub mod files;
 pub mod init;
+pub mod search;
 pub mod storage;

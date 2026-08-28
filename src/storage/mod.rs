@@ -43,7 +43,7 @@ pub enum StorageError {
 /// Connection is opened.
 static VEC_INIT: Once = Once::new();
 
-fn ensure_vec_extension() {
+pub(crate) fn ensure_vec_extension() {
     VEC_INIT.call_once(|| {
         // SAFETY: sqlite3_vec_init is the C entrypoint for the sqlite-vec
         // extension. sqlite3_auto_extension registers it so every new

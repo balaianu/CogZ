@@ -55,6 +55,32 @@ enum Commands {
         #[arg(long)]
         purge: bool,
     },
+
+    /// Search entities with hybrid FTS + vector search.
+    Search {
+        /// Search query.
+        query: String,
+
+        /// Repository root directory. Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+
+        /// Filter by entity type (observation, rule, knowledge, function, class, file, module).
+        #[arg(long)]
+        entity_type: Option<String>,
+
+        /// Filter by status. Default: active. Use "all" for everything.
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Max results before graph expansion.
+        #[arg(long, default_value = "20")]
+        limit: u32,
+
+        /// Disable graph expansion.
+        #[arg(long)]
+        no_expand: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -73,6 +99,14 @@ fn main() -> anyhow::Result<()> {
         Commands::Index { repo } => run_index(&repo),
         Commands::Reindex { repo } => run_reindex(&repo),
         Commands::Reset { repo, purge } => run_reset(&repo, purge),
+        Commands::Search {
+            query,
+            repo,
+            entity_type,
+            status,
+            limit,
+            no_expand,
+        } => cli::run_search(&query, &repo, entity_type, status, limit, no_expand),
     }
 }
 
