@@ -1,11 +1,8 @@
 //! MCP tool router — tool handler methods on `CogzServer`.
-//!
-//! Each tool is annotated with `#[tool]`. Parameter structs live in
-//! `params.rs`. Helper functions live in `helpers.rs`.
+//! Parameter structs live in `params.rs`; helpers in `helpers.rs`.
 
 use rmcp::{
-    ErrorData as McpError, RoleServer, handler::server::wrapper::Parameters, model::*,
-    service::RequestContext, tool, tool_router,
+    ErrorData as McpError, handler::server::wrapper::Parameters, model::*, tool, tool_router,
 };
 use serde_json::json;
 
@@ -329,12 +326,21 @@ impl CogzServer {
         name = "get_status",
         description = "Get CogZ system status: database stats, model availability, entity counts by type, stale entity count."
     )]
-    async fn get_status(
-        &self,
-        _ctx: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
+    async fn get_status(&self) -> Result<CallToolResult, McpError> {
         let storage = self.storage.clone();
         let status = tokio::task::spawn_blocking(move || {
+            let db_path = {
+                let conn = storage.conn();
+                let path: Option<String> = conn
+                    .query_row("PRAGMA database_list", [], |r| r.get::<_, String>(2))
+                    .ok();
+                path
+            };
+            let db_size = match db_path {
+                Some(ref p) if !p.is_empty() => std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
+                _ => 0,
+            };
+
             let conn = storage.conn();
             let counts = query::entity_counts_by_type(&conn)?;
             let total = crud::count_all(&conn)?;
@@ -342,7 +348,6 @@ impl CogzServer {
             let edges = crate::storage::edges::count_edges(&conn)?;
             let events_count = events::count_events(&conn)?;
             let schema_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            let db_size = storage.db_size_bytes();
 
             Ok::<_, crate::storage::StorageError>(json!({
                 "version": env!("CARGO_PKG_VERSION"),

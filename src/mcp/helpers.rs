@@ -147,7 +147,7 @@ pub fn update_knowledge_file(
     let abs_path = if file_path.starts_with(".cogz") {
         cogz_dir.parent().unwrap_or(cogz_dir).join(file_path)
     } else {
-        std::path::PathBuf::from(file_path)
+        cogz_dir.join(file_path)
     };
 
     let mut entity_file = read_entity_file(&abs_path)

@@ -50,6 +50,7 @@ ndarray = "0.16"
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
+rmcp = { version = "3.1.2", features = ["transport-io", "client"] }
 
 [profile.release]
 opt-level = 3
