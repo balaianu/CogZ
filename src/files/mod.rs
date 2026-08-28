@@ -7,6 +7,7 @@
 //! See `docs/entity-spec.md` for the file format specification and
 //! `docs/architecture.md` → "File → DB sync" for sync rules.
 
+pub mod embed_sync;
 pub mod entities;
 pub mod events;
 pub mod frontmatter;

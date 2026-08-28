@@ -100,8 +100,9 @@ is compatible with our 0.25.x pin. If any language crate requires
 ### Embedding / ML
 
 ```toml
-ort = { version = "2.0.0-rc.10", features = ["download-binaries"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = "0.21"
+ndarray = "0.16"
 ```
 
 **ort 2.0.0-rc.10** (latest: 2.0.0-rc.13, published 2026-07-28)
@@ -114,13 +115,22 @@ rather than rc.13 because:
   (just not API stable)."
 
 Features:
-- `download-binaries` — downloads pre-built ONNX Runtime shared
-  library at build time. Avoids requiring ONNX Runtime as a system
-  dependency.
+- `load-dynamic` — loads ONNX Runtime at runtime via `dlopen()`
+  instead of linking at build time. Avoids the `download-binaries`
+  feature's build-time TLS dependency (openssl-sys via ureq/native-tls),
+  which requires `pkg-config` and OpenSSL dev headers on the build
+  machine. The user must have `libonnxruntime.so` available at
+  runtime (or set `ORT_DYLIB_PATH`). This aligns with the graceful
+  degradation design: if the library isn't found, the system falls
+  back to FTS-only search.
+- `ndarray` — enables ndarray-based tensor operations.
 
 We use `=2.0.0-rc.10` (exact pin) because pre-release versions can
 have breaking changes between release candidates. We upgrade
 deliberately, not via floating ranges.
+
+**ndarray 0.16** — required by ort for tensor creation and
+extraction. Pinned to match ort's internal ndarray version.
 
 **tokenizers 0.21** — HuggingFace tokenizers for text tokenization
 before embedding. Used by the ONNX embedding pipeline.
@@ -227,13 +237,17 @@ pretty_assertions = "1"
   system SQLite dependency.
 - **sqlite-vec**: Compiled from C source at build time via the `cc`
   crate. Statically linked.
-- **ONNX Runtime**: `download-binaries` feature in ort. Downloads
-  pre-built shared library at build time, bundled into the release.
+- **ONNX Runtime**: `load-dynamic` feature in ort. Loaded at runtime
+  via `dlopen()` — not bundled. The user must have
+  `libonnxruntime.so` available (or set `ORT_DYLIB_PATH`). This
+  avoids the build-time OpenSSL dependency and aligns with graceful
+  degradation.
 - **libgit2**: `git2` crate bundles libgit2 via the `bundled` feature
   (enabled by default in recent versions).
 
 Result: the release binary has minimal runtime dependencies. Only
-system libc and the ONNX Runtime shared library (which we bundle).
+system libc. ONNX Runtime is loaded dynamically at runtime if
+available; the system functions without it (FTS-only mode).
 
 ### MSRV (Minimum Supported Rust Version)
 
@@ -313,8 +327,9 @@ tree-sitter-php = "0.23"
 tree-sitter-c-sharp = "0.23"
 
 # Embedding / ML
-ort = { version = "=2.0.0-rc.10", features = ["download-binaries"] }
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = "0.21"
+ndarray = "0.16"
 
 # MCP server
 rmcp = { version = "1.7", features = ["server"] }

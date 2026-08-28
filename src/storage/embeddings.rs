@@ -28,6 +28,11 @@ pub fn delete_embedding(conn: &Connection, entity_id: &str) -> Result<(), Storag
     Ok(())
 }
 
+/// Count total embeddings stored.
+pub fn count_embeddings(conn: &Connection) -> Result<i64, StorageError> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM entity_embeddings", [], |r| r.get(0))?)
+}
+
 /// K-nearest-neighbor search. Returns (entity_id, distance) pairs
 /// sorted by ascending distance.
 pub fn knn_search(

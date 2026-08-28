@@ -15,6 +15,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 
+# Embedding / ML
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
+tokenizers = "0.21"
+
 # File system / Git
 git2 = { version = "0.19", default-features = false }
 walkdir = "2"
@@ -23,6 +27,9 @@ slug = "0.1"
 # Database
 rusqlite = { version = "0.40", features = ["bundled"] }
 sqlite-vec = "0.1"
+
+# HTTP (model download)
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
@@ -33,6 +40,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zerocopy = "0.8"
+ndarray = "0.16"
 
 [dev-dependencies]
 tempfile = "3"

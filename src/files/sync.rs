@@ -37,6 +37,8 @@ pub struct SyncResult {
     pub marked_stale: usize,
     pub skipped: usize,
     pub errors: Vec<SyncError>,
+    /// IDs of entities that were created or updated (for embedding).
+    pub synced_entity_ids: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -90,8 +92,18 @@ pub fn sync_all(storage: &storage::Storage, cogz_dir: &Path) -> SyncResult {
 
     for file_path in &disk_files {
         match sync_one_file(&conn, file_path, cogz_dir) {
-            Ok(SyncAction::Created) => result.created += 1,
-            Ok(SyncAction::Updated) => result.updated += 1,
+            Ok(SyncAction::Created) => {
+                result.created += 1;
+                if let Ok(ef) = read_entity_file(file_path) {
+                    result.synced_entity_ids.push(ef.id);
+                }
+            }
+            Ok(SyncAction::Updated) => {
+                result.updated += 1;
+                if let Ok(ef) = read_entity_file(file_path) {
+                    result.synced_entity_ids.push(ef.id);
+                }
+            }
             Ok(SyncAction::Skipped) => result.skipped += 1,
             Err(message) => result.errors.push(SyncError {
                 file_path: file_path.clone(),
@@ -123,8 +135,18 @@ pub fn sync_incremental(storage: &storage::Storage, cogz_dir: &Path) -> SyncResu
 
     for file_path in &disk_files {
         match sync_one_file_incremental(&conn, file_path, cogz_dir) {
-            Ok(SyncAction::Created) => result.created += 1,
-            Ok(SyncAction::Updated) => result.updated += 1,
+            Ok(SyncAction::Created) => {
+                result.created += 1;
+                if let Ok(ef) = read_entity_file(file_path) {
+                    result.synced_entity_ids.push(ef.id);
+                }
+            }
+            Ok(SyncAction::Updated) => {
+                result.updated += 1;
+                if let Ok(ef) = read_entity_file(file_path) {
+                    result.synced_entity_ids.push(ef.id);
+                }
+            }
             Ok(SyncAction::Skipped) => result.skipped += 1,
             Err(message) => result.errors.push(SyncError {
                 file_path: file_path.clone(),
