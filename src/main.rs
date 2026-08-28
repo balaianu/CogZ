@@ -104,6 +104,13 @@ enum Commands {
         #[arg(long)]
         max_tokens: Option<usize>,
     },
+
+    /// Run the MCP server over stdio (for AI agent integration).
+    McpStdio {
+        /// Repository root directory. Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -141,6 +148,7 @@ fn main() -> anyhow::Result<()> {
             include_stale,
             max_tokens,
         } => cli::run_context(&mode, query.as_deref(), &repo, include_stale, max_tokens),
+        Commands::McpStdio { repo } => cli::run_mcp_stdio(&repo),
     }
 }
 

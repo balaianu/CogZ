@@ -305,3 +305,38 @@ pub fn run_context(
 
     Ok(())
 }
+
+/// Run the MCP server over stdio. Requires an initialized .cogz/
+/// directory and an indexed database.
+pub fn run_mcp_stdio(repo: &std::path::Path) -> anyhow::Result<()> {
+    let cogz_dir = repo.join(".cogz");
+    let config_path = cogz_dir.join("config.toml");
+
+    if !config_path.exists() {
+        anyhow::bail!(
+            "No .cogz/ directory found in {}. Run `cogz init` first.",
+            repo.display()
+        );
+    }
+
+    let config = cogz::config::load(&config_path)?;
+    let db_path = repo.join(&config.storage.db_path);
+
+    if !db_path.exists() {
+        anyhow::bail!(
+            "Database not found at {}. Run `cogz index` first.",
+            db_path.display()
+        );
+    }
+
+    let storage = std::sync::Arc::new(Storage::open(&db_path)?);
+    let server = cogz::mcp::CogzServer::new(storage, config, cogz_dir);
+
+    // tracing must go to stderr, not stdout — stdout is the MCP transport
+    tracing::info!("Starting CogZ MCP server over stdio");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(cogz::mcp::server::run_stdio(server))
+}
