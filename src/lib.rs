@@ -8,5 +8,6 @@ pub mod context;
 pub mod embed;
 pub mod files;
 pub mod init;
+pub mod mcp;
 pub mod search;
 pub mod storage;
