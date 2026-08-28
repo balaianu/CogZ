@@ -75,11 +75,7 @@ pub fn embed_synced(storage: &Storage, config: &Config, entity_ids: &[String]) -
 
 /// Get the models directory: `~/.local/share/cogz/models/`
 pub fn models_dir() -> std::path::PathBuf {
-    if let Some(dir) = data_dir() {
-        dir.join("cogz").join("models")
-    } else {
-        std::path::PathBuf::from(".cogz/models")
-    }
+    cogz::embed::models_dir()
 }
 
 /// Embed a search query using the knowledge model (bge-base).
@@ -106,23 +102,6 @@ pub fn embed_query(config: &Config, query: &str) -> Option<Vec<f32>> {
             None
         }
     }
-}
-
-/// Get the user's data directory cross-platform.
-fn data_dir() -> Option<std::path::PathBuf> {
-    #[cfg(unix)]
-    {
-        if let Ok(home) = std::env::var("HOME") {
-            return Some(std::path::PathBuf::from(home).join(".local/share"));
-        }
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
-            return Some(std::path::PathBuf::from(appdata));
-        }
-    }
-    None
 }
 
 /// Run the `cogz search` command.

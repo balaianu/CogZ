@@ -1,0 +1,119 @@
+//! MCP tool parameter structs.
+//!
+//! Each struct derives `serde::Deserialize` and `schemars::JsonSchema`
+//! for automatic JSON Schema generation by rmcp's `#[tool]` macro.
+
+use rmcp::schemars;
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RecordObservationParams {
+    pub content: String,
+    /// Short title. Auto-generated from content if omitted.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub references: Option<Vec<String>>,
+    /// Who or what produced this observation. Default: "agent".
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct QueryObservationsParams {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub references: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateRuleParams {
+    pub content: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub references: Option<Vec<String>>,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct QueryRulesParams {
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub references: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateKnowledgeParams {
+    pub title: String,
+    pub content: String,
+    pub category: String,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub references: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UpdateKnowledgeParams {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub references: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct QueryKnowledgeParams {
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SearchToolParams {
+    pub query: String,
+    #[serde(default)]
+    pub entity_type: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub expand: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetContextParams {
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub include_stale: Option<bool>,
+    #[serde(default)]
+    pub max_tokens: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListEntitiesParams {
+    pub entity_type: String,
+    #[serde(default)]
+    pub status: Option<String>,
+}
