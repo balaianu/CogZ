@@ -140,7 +140,12 @@ fn extract_rust_edges(
                 extract_rust_import(&node, source, &file_uuid, name_to_uuid, edges);
             }
             "function_item" => {
-                extract_rust_calls_in_node(&node, source, name_to_uuid, edges);
+                let func_name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| node_text(&n, source))
+                    .unwrap_or_default();
+                let source_id = code_entity_uuid(file_path, "function", &func_name);
+                extract_rust_calls_in_node(&node, source, &source_id, name_to_uuid, edges);
             }
             "impl_item" => {
                 extract_rust_extends_in_impl(&node, source, name_to_uuid, edges);
@@ -148,7 +153,24 @@ fn extract_rust_edges(
                 let mut impl_cursor = node.walk();
                 for child in node.named_children(&mut impl_cursor) {
                     if child.kind() == "function_item" {
-                        extract_rust_calls_in_node(&child, source, name_to_uuid, edges);
+                        let method_name = child
+                            .child_by_field_name("name")
+                            .and_then(|n| node_text(&n, source))
+                            .unwrap_or_default();
+                        // For methods, the qualified_name is Type::method
+                        let type_name = node
+                            .child_by_field_name("type")
+                            .and_then(|n| node_text(&n, source))
+                            .unwrap_or_default();
+                        let qualified = format!("{type_name}::{method_name}");
+                        let source_id = code_entity_uuid(file_path, "function", &qualified);
+                        extract_rust_calls_in_node(
+                            &child,
+                            source,
+                            &source_id,
+                            name_to_uuid,
+                            edges,
+                        );
                     }
                 }
             }
@@ -189,6 +211,7 @@ fn extract_rust_import(
 fn extract_rust_calls_in_node(
     node: &Node,
     source: &[u8],
+    source_id: &str,
     name_to_uuid: &HashMap<String, String>,
     edges: &mut Vec<CodeEdge>,
 ) {
@@ -198,8 +221,21 @@ fn extract_rust_calls_in_node(
         if desc.kind() == "call_expression" {
             if let Some(func_node) = desc.child_by_field_name("function") {
                 let call_name = node_text(&func_node, source).unwrap_or_default();
+                // Try full path, then last segment.
                 if let Some(target_id) = name_to_uuid.get(&call_name) {
-                    let _ = target_id;
+                    edges.push(CodeEdge {
+                        source_id: source_id.to_string(),
+                        target_id: target_id.clone(),
+                        edge_type: "calls",
+                    });
+                } else if let Some(last) = call_name.rsplit("::").next() {
+                    if let Some(target_id) = name_to_uuid.get(last) {
+                        edges.push(CodeEdge {
+                            source_id: source_id.to_string(),
+                            target_id: target_id.clone(),
+                            edge_type: "calls",
+                        });
+                    }
                 }
             }
         }

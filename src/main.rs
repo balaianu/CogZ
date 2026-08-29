@@ -280,6 +280,22 @@ fn run_index(repo: &std::path::Path) -> anyhow::Result<()> {
         }
     }
 
+    // Index code entities
+    println!("\nIndexing source code...");
+    let code_result = cogz::index::index_code(&storage, repo, &config);
+    println!(
+        "  Code entities: {} created, {} updated, {} stale, {} skipped",
+        code_result.created, code_result.updated, code_result.marked_stale, code_result.skipped
+    );
+
+    // Embed code entities (graceful degradation)
+    if !code_result.synced_entity_ids.is_empty() {
+        let embedded = cli::embed_synced(&storage, &config, &code_result.synced_entity_ids);
+        if embedded > 0 {
+            println!("  Code embedded: {}", embedded);
+        }
+    }
+
     let conn = storage.conn();
     let total = cogz::storage::crud::count_all(&conn)?;
     println!("\n  Total entities: {}", total);
@@ -330,6 +346,22 @@ fn run_reindex(repo: &std::path::Path) -> anyhow::Result<()> {
         let embedded = cli::embed_synced(&storage, &config, &result.synced_entity_ids);
         if embedded > 0 {
             println!("  Embedded: {}", embedded);
+        }
+    }
+
+    // Reindex code entities
+    println!("\nReindexing source code...");
+    let code_result = cogz::index::index_code(&storage, repo, &config);
+    println!(
+        "  Code entities: {} created, {} updated, {} stale, {} skipped",
+        code_result.created, code_result.updated, code_result.marked_stale, code_result.skipped
+    );
+
+    // Embed code entities (graceful degradation)
+    if !code_result.synced_entity_ids.is_empty() {
+        let embedded = cli::embed_synced(&storage, &config, &code_result.synced_entity_ids);
+        if embedded > 0 {
+            println!("  Code embedded: {}", embedded);
         }
     }
 
