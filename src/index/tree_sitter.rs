@@ -215,6 +215,13 @@ fn extract_rust_impl(
         None => format!("impl {type_name}"),
     };
 
+    // Qualified name includes "impl" prefix to distinguish from the
+    // struct/class entity with the same type name.
+    let qualified_name = match &trait_name {
+        Some(trait_) => format!("impl {trait_} for {type_name}"),
+        None => format!("impl {type_name}"),
+    };
+
     Some(CodeEntity {
         entity_type: "class",
         title,
@@ -224,7 +231,7 @@ fn extract_rust_impl(
             "line_start": line_start,
             "line_end": line_end,
             "language": "rust",
-            "qualified_name": type_name,
+            "qualified_name": qualified_name,
             "kind": "impl",
             "trait": trait_name,
         }),
