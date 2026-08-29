@@ -55,18 +55,26 @@ impl Point {
     sync_code(&storage, &files);
 
     let conn = storage.conn();
-    let functions = storage::query::get_entities_by_type(&conn, "function", Some("active"), 100)
-        .unwrap();
-    let classes = storage::query::get_entities_by_type(&conn, "class", Some("active"), 100)
-        .unwrap();
+    let functions =
+        storage::query::get_entities_by_type(&conn, "function", Some("active"), 100).unwrap();
+    let classes =
+        storage::query::get_entities_by_type(&conn, "class", Some("active"), 100).unwrap();
     let files = storage::query::get_entities_by_type(&conn, "file", Some("active"), 100).unwrap();
     let modules =
         storage::query::get_entities_by_type(&conn, "module", Some("active"), 100).unwrap();
 
     // Should have: add, new (functions); Point struct + Point impl (classes);
     // file entity; no module (no mod declaration)
-    assert!(functions.len() >= 2, "expected >= 2 functions, got {}", functions.len());
-    assert!(classes.len() >= 2, "expected >= 2 classes, got {}", classes.len());
+    assert!(
+        functions.len() >= 2,
+        "expected >= 2 functions, got {}",
+        functions.len()
+    );
+    assert!(
+        classes.len() >= 2,
+        "expected >= 2 classes, got {}",
+        classes.len()
+    );
     assert_eq!(files.len(), 1, "expected 1 file entity");
     assert!(modules.is_empty(), "expected no modules");
 }
@@ -95,14 +103,18 @@ class Point:
     sync_code(&storage, &files);
 
     let conn = storage.conn();
-    let functions = storage::query::get_entities_by_type(&conn, "function", Some("active"), 100)
-        .unwrap();
-    let classes = storage::query::get_entities_by_type(&conn, "class", Some("active"), 100)
-        .unwrap();
+    let functions =
+        storage::query::get_entities_by_type(&conn, "function", Some("active"), 100).unwrap();
+    let classes =
+        storage::query::get_entities_by_type(&conn, "class", Some("active"), 100).unwrap();
     let files = storage::query::get_entities_by_type(&conn, "file", Some("active"), 100).unwrap();
 
     // Should have: add, __init__, distance (functions); Point (class); file
-    assert!(functions.len() >= 3, "expected >= 3 functions, got {}", functions.len());
+    assert!(
+        functions.len() >= 3,
+        "expected >= 3 functions, got {}",
+        functions.len()
+    );
     assert_eq!(classes.len(), 1, "expected 1 class, got {}", classes.len());
     assert_eq!(files.len(), 1, "expected 1 file entity");
 }
@@ -224,9 +236,15 @@ fn gitignored_files_not_indexed() {
         allow: &config.index.allow,
     });
 
-    assert!(source_paths.iter().any(|p| p == &std::path::PathBuf::from("src/main.rs")));
     assert!(
-        !source_paths.iter().any(|p| p == &std::path::PathBuf::from("src/secret.rs")),
+        source_paths
+            .iter()
+            .any(|p| p == &std::path::PathBuf::from("src/main.rs"))
+    );
+    assert!(
+        !source_paths
+            .iter()
+            .any(|p| p == &std::path::PathBuf::from("src/secret.rs")),
         "gitignored file should not be scanned"
     );
 }
@@ -254,7 +272,9 @@ fn allow_overrides_gitignore() {
     });
 
     assert!(
-        source_paths.iter().any(|p| p == &std::path::PathBuf::from("src/secret.rs")),
+        source_paths
+            .iter()
+            .any(|p| p == &std::path::PathBuf::from("src/secret.rs")),
         "allow-list should override gitignore"
     );
 }
@@ -268,16 +288,17 @@ fn cogz_dir_not_indexed_as_source() {
     std::fs::write(root.join(".cogz/config.toml"), "# config\n").unwrap();
     std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
 
-    let source_paths = cogz::index::gitignore::scan_source_files(&ScanConfig {
-        root,
-        allow: &[],
-    });
+    let source_paths = cogz::index::gitignore::scan_source_files(&ScanConfig { root, allow: &[] });
 
     assert!(
         !source_paths.iter().any(|p| p.starts_with(".cogz")),
         ".cogz/ should not be indexed as source"
     );
-    assert!(source_paths.iter().any(|p| p == &std::path::PathBuf::from("main.rs")));
+    assert!(
+        source_paths
+            .iter()
+            .any(|p| p == &std::path::PathBuf::from("main.rs"))
+    );
 }
 
 #[test]
@@ -302,8 +323,8 @@ fn build_sql_query(table: &str) -> String {
     // Embed with mock model so vector search works
     let model = MockEmbeddingModel::new();
     let conn = storage.conn();
-    let functions = storage::query::get_entities_by_type(&conn, "function", Some("active"), 100)
-        .unwrap();
+    let functions =
+        storage::query::get_entities_by_type(&conn, "function", Some("active"), 100).unwrap();
     for func in &functions {
         let text = format!(
             "{}\n\n{}",
@@ -533,8 +554,8 @@ fn code_entity_types_are_is_code() {
     sync_code(&storage, &files);
 
     let conn = storage.conn();
-    let entities = storage::query::get_entities_by_type(&conn, "function", Some("active"), 100)
-        .unwrap();
+    let entities =
+        storage::query::get_entities_by_type(&conn, "function", Some("active"), 100).unwrap();
     for e in &entities {
         let etype = EntityType::parse(&e.r#type).unwrap();
         assert!(etype.is_code(), "function should be code entity");

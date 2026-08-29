@@ -184,10 +184,7 @@ pub fn get_neighbors_batch(
     let mut incoming = Vec::new();
 
     for chunk in node_ids.chunks(CHUNK_SIZE) {
-        let placeholders = (0..chunk.len())
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         let params: Vec<&dyn rusqlite::ToSql> =
             chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
 

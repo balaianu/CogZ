@@ -244,43 +244,56 @@ is Phase 9. `consolidate` and `capture_event` tools deferred.
 
 ---
 
-## Phase 8: Code Indexing
+## Phase 8: Code Indexing ✅
 
 **Goal:** Tree-sitter parses source code, code entities and
 structural edges are inserted into the graph.
 
 **What's built:**
-- `src/index/gitignore.rs` — .gitignore parsing and filtering
-- `src/index/tree_sitter.rs` — AST parsing, entity extraction
-  (functions, classes, files, modules)
-- `src/index/code_graph.rs` — structural edge construction (calls,
-  imports, extends)
-- Integration with `cogz index` — index both code and .cogz/ files
+- `src/index/gitignore.rs` — gitignore-aware source file scanning
+  using the `ignore` crate, with `[index].allow` override via
+  `globset`. Two-pass scan: standard gitignore traversal + explicit
+  allow-list unfiltered traversal.
+- `src/index/tree_sitter.rs` — AST parsing for Rust and Python.
+  Extracts functions, classes (structs/impls/enums/traits for Rust,
+  classes for Python), files, and modules with properties
+  (line_start, line_end, signature, qualified_name, language).
+- `src/index/sync.rs` — code entity synchronization with
+  deterministic UUID v5 IDs (`{file_path}:{entity_type}:{qualified_name}`).
+  Content hash change detection, insert/update/stale/reactivate,
+  preserves `created_at` on updates.
+- `src/index/code_graph.rs` — structural edge extraction (calls,
+  imports, extends) from tree-sitter AST. Name-to-UUID matching
+  with both qualified and simple name lookup.
+- `src/index/mod.rs` — orchestration: scan → read → parse → sync
+  entities → sync edges. Integrated into `cogz index` and
+  `cogz reindex` CLI commands.
 - Multi-model embedding (CodeRankEmbed for code, bge-base for
-  knowledge)
-- Wire `code_model`/`knowledge_model` config fields to model selection
-  (Phase 7 left these as metadata-only)
+  knowledge) — already implemented in `cli.rs` from Phase 7.
+- `OnnxEmbeddingModel::with_model_id()` — wires `code_model` and
+  `knowledge_model` config fields to actual model directory paths.
+  Updated in `cli.rs`, `mcp/server.rs`, and `mcp/status.rs`.
 - True batched ONNX inference — pad/collate input_ids into a single
-  `[batch, max_seq_len]` tensor instead of per-text inference calls
-  (Phase 7's `embed()` loop processes one text at a time)
-- Fused multi-seed BFS for graph expansion — single frontier across
-  all seeds instead of N separate BFS loops (Phase 7's
-  `expand_with_paths` runs one BFS per seed)
-- Chunked `IN (...)` queries for large frontiers — handle
-  `SQLITE_MAX_VARIABLE_NUMBER` limits when code graphs produce large
-  fan-out (Phase 7's `get_edges_involving_batch` binds params 2×,
-  which is fine for entity volumes but may exceed limits for code
-  graphs)
+  `[batch, max_seq_len]` tensor, one `session.run()` call per batch.
+- Fused multi-seed BFS for graph expansion — single shared frontier
+  across all seeds, one `get_edges_involving_batch` query per hop.
+- Chunked `IN (...)` queries — all batch query functions chunk at
+  `SQLITE_MAX_VARIABLE_NUMBER / params_per_row` to avoid SQLite
+  variable limits. Affected: `get_edges_involving_batch` (49),
+  `batch_check_status` (998), `get_references_batch` (999),
+  `get_neighbors_batch` (999), `get_entities_batch` (999).
 
 **Verification:**
-- Index a real Rust repo → functions, classes, files appear as entities
-- Structural edges (calls, imports) are correct
-- Gitignored files are NOT indexed
-- `allow` config overrides gitignore for specific paths
-- Code entities are embedded with CodeRankEmbed, knowledge with bge-base
-- Search returns both code and knowledge results, merged correctly
-- Knowledge-to-code `references` edges work (observation about a
-  function → search finds both)
+- ✅ Index a real Rust repo → functions, classes, files appear as entities
+- ✅ Index Python source → functions, classes, files appear as entities
+- ✅ Structural edges (calls, imports, extends) are correct
+- ✅ Gitignored files are NOT indexed
+- ✅ `allow` config overrides gitignore for specific paths
+- ✅ Code entities use Code model, knowledge uses Knowledge model
+- ✅ Search returns both code and knowledge results
+- ✅ Rebuildability: `cogz reset` + `cogz index` produces identical UUIDs
+- ✅ Stale marking: removed source files → entities marked stale
+- ✅ 278 tests pass (234 baseline + 44 new)
 
 **What's NOT built yet:** Git diff stale flagging, consolidation,
 hooks. Code is indexed but change detection is manual (full reindex).

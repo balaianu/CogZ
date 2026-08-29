@@ -71,11 +71,11 @@ cogz/
       status.rs          — status state machine validation
 
     index/
-      mod.rs             — indexing root
-      tree_sitter.rs     — AST parsing, entity extraction
-      code_graph.rs      — structural edge construction (calls, imports, extends)
-      git_diff.rs        — change detection, stale knowledge flagging
-      gitignore.rs       — .gitignore parsing and filtering
+      mod.rs             — orchestration: scan → parse → sync → edges
+      gitignore.rs       — gitignore-aware source file scanner
+      tree_sitter.rs     — AST parsing (Rust + Python), entity extraction
+      sync.rs            — code entity sync (UUID v5, content hash, stale)
+      code_graph.rs      — structural edge extraction (calls, imports, extends)
 
     embed/
       mod.rs             — embedding root

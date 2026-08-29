@@ -196,12 +196,14 @@ impl EmbeddingModel for OnnxEmbeddingModel {
             batch_input_ids.extend_from_slice(input_ids);
             batch_input_ids.extend(std::iter::repeat_n(0i64, max_seq_len - input_ids.len()));
             batch_attention_mask.extend_from_slice(attention_mask);
-            batch_attention_mask.extend(std::iter::repeat_n(0i64, max_seq_len - attention_mask.len()));
+            batch_attention_mask.extend(std::iter::repeat_n(
+                0i64,
+                max_seq_len - attention_mask.len(),
+            ));
         }
 
-        let input_ids_tensor =
-            Tensor::from_array((vec![batch_size, padded_len], batch_input_ids))
-                .map_err(|e| EmbeddingError::InferenceFailed(format!("input tensor: {}", e)))?;
+        let input_ids_tensor = Tensor::from_array((vec![batch_size, padded_len], batch_input_ids))
+            .map_err(|e| EmbeddingError::InferenceFailed(format!("input tensor: {}", e)))?;
         let attention_mask_tensor =
             Tensor::from_array((vec![batch_size, padded_len], batch_attention_mask.clone()))
                 .map_err(|e| EmbeddingError::InferenceFailed(format!("mask tensor: {}", e)))?;

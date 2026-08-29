@@ -223,7 +223,27 @@ and exist only in the database. Source code is their canonical store.
   "line_start": 12,
   "line_end": 156,
   "language": "rust",
-  "qualified_name": "cogz::search::hybrid::HybridSearch"
+  "qualified_name": "cogz::search::hybrid::HybridSearch",
+  "kind": "struct_item"
+}
+```
+
+For Rust `impl` blocks, the `qualified_name` includes an `impl` prefix
+(e.g. `impl Point` or `impl Display for Point`) to distinguish from
+the struct/trait entity with the same type name. The `kind` property
+is `impl`, and the `trait` property holds the trait name when present.
+
+For Python classes, the `superclasses` property lists parent class
+names (used for `extends` edge extraction):
+
+```json
+{
+  "file_path": "src/models.py",
+  "line_start": 5,
+  "line_end": 20,
+  "language": "python",
+  "qualified_name": "Dog",
+  "superclasses": ["Animal"]
 }
 ```
 
@@ -281,7 +301,9 @@ This creates:
 Entity IDs are UUID v4 strings, generated on creation and stored in
 the file's `id` field. They are stable across DB rebuilds — the same
 UUID in the file always maps to the same entity. Code entities (no
-file on disk) get UUIDs assigned by the indexer on first sync.
+file on disk) get deterministic UUID v5 values derived from
+`{file_path}:{entity_type}:{qualified_name}`, ensuring the same code
+entity gets the same UUID across rebuilds.
 
 ### Referencing code entities
 

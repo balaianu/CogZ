@@ -114,8 +114,7 @@ pub fn expand_with_paths(
                     }
                 }
                 Some(status) => {
-                    let ids: Vec<String> =
-                        candidates.iter().map(|(id, _, _)| id.clone()).collect();
+                    let ids: Vec<String> = candidates.iter().map(|(id, _, _)| id.clone()).collect();
                     let matching = batch_check_status(conn, &ids, status)?;
                     let include_set: HashSet<&String> = matching.iter().collect();
                     for (id, path, seed_id) in candidates {

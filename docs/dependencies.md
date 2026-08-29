@@ -63,22 +63,15 @@ toml = "0.8"
 **serde_json 1** — JSON for entity properties and event payloads.
 **toml 0.8** — TOML parsing for config files.
 
-### Code Parsing (Phase 8 — not yet in Cargo.toml)
+### Code Parsing (Phase 8)
 
 ```toml
-# These will be added in Phase 8 (code indexing):
-# tree-sitter = "0.25"
-# tree-sitter-rust = "0.23"
-# tree-sitter-python = "0.23"
-# tree-sitter-javascript = "0.23"
-# tree-sitter-typescript = "0.23"
-# tree-sitter-go = "0.23"
-# tree-sitter-c = "0.23"
-# tree-sitter-cpp = "0.23"
-# tree-sitter-java = "0.23"
-# tree-sitter-php = "0.23"
-# tree-sitter-c-sharp = "0.23"
-# ignore = "0.4"
+tree-sitter = "0.25"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+ignore = "0.4"
+globset = "0.4"
 ```
 
 **tree-sitter 0.25** (latest: 0.26.13, published 2026-08-23)
@@ -91,18 +84,29 @@ We pin to 0.25.x (latest stable in the 0.25 line: 0.25.10, published
 - We can upgrade to 0.26 once all language crates confirm
   compatibility.
 
+**tree-sitter-language 0.1** — language trait abstraction for
+tree-sitter. Provides the `LanguageFn` type used to set parser
+languages uniformly across language crates.
+
+**tree-sitter-rust 0.24** (latest: 0.24.2) — Rust grammar for
+tree-sitter. Compatible with tree-sitter 0.25.x.
+
+**tree-sitter-python 0.25** (latest: 0.25.0) — Python grammar for
+tree-sitter. Compatible with tree-sitter 0.25.x.
+
 Language crates are pinned to versions compatible with tree-sitter
 0.25.x. Each language crate depends on `tree-sitter ^0.25.8` or
 similar. We verify compatibility at build time.
 
-Note: tree-sitter-python 0.25.0 requires tree-sitter ^0.25.8, which
-is compatible with our 0.25.x pin. If any language crate requires
-0.26.x, we'll upgrade the whole stack together.
+**ignore 0.4** (latest: 0.4.33) — `.gitignore` parsing and matching.
+Uses the same crate as ripgrep. Handles gitignore syntax correctly
+including negation, nested gitignores, and global gitignore. Used
+for gitignore-aware source file scanning in Phase 8.
 
-**ignore 0.4** — `.gitignore` parsing and matching. Uses the same
-crate as ripgrep. Handles gitignore syntax correctly including
-negation, nested gitignores, and global gitignore. Will be added in
-Phase 8 alongside tree-sitter.
+**globset 0.4** (latest: 0.4.20) — glob pattern matching for the
+`[index].allow` configuration override. Although `globset` is
+transitively available through `ignore`, we declare it explicitly
+because we use it directly for allow-list matching.
 
 ### Embedding / ML
 
@@ -208,7 +212,7 @@ zerocopy = "0.8"
 
 | Crate | Purpose |
 |---|---|
-| `uuid` | UUID v4 generation for entity IDs |
+| `uuid` | UUID v4/v5 generation for entity IDs (v4 for file-backed, v5 deterministic for code) |
 | `sha2` | SHA-256 content hashing for change detection |
 | `chrono` | Timestamps (ISO 8601, serde-compatible) |
 | `anyhow` | Application-level error handling (CLI, MCP handlers) |
@@ -352,8 +356,16 @@ sqlite-vec = "0.1"
 # HTTP (model download — deferred to Phase 12)
 # reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 
+# Code parsing (Phase 8)
+tree-sitter = "0.25"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+ignore = "0.4"
+globset = "0.4"
+
 # Utilities
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
@@ -401,15 +413,15 @@ debug = true
 | Database | rusqlite, sqlite-vec | 2 |
 | CLI | clap | 1 |
 | Config/Serialization | serde, serde_json, toml | 3 |
+| Code Parsing | tree-sitter, tree-sitter-language, tree-sitter-rust, tree-sitter-python, ignore, globset | 6 |
 | Embedding/ML | ort, tokenizers, ndarray | 3 |
 | MCP server | rmcp, tokio, schemars | 3 |
 | File system/Git | git2, walkdir, slug | 3 |
 | Utilities | uuid, sha2, chrono, anyhow, thiserror, tracing, tracing-subscriber, zerocopy | 8 |
 | HTTP | _(deferred to Phase 12)_ | 0 |
 | Dev | tempfile, pretty_assertions, rmcp (client feature) | 3 |
-| **Total** | | **26** |
+| **Total** | | **32** |
 
-26 direct dependencies (Phase 7 scope). Tree-sitter and `ignore`
-crates will be added in Phase 8 (code indexing). `reqwest` will be
-added in Phase 12 (model download). Transitive count will be higher
-but manageable. The binary will be ~15-25 MB with static linking.
+32 direct dependencies (Phase 8 scope). `reqwest` will be added in
+Phase 12 (model download). Transitive count will be higher but
+manageable. The binary will be ~15-25 MB with static linking.

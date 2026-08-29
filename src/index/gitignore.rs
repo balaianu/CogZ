@@ -96,10 +96,10 @@ pub fn scan_source_files(config: &ScanConfig<'_>) -> Vec<PathBuf> {
             continue;
         }
 
-        if is_source_file(path) {
-            if let Ok(rel) = path.strip_prefix(config.root) {
-                files.push(rel.to_path_buf());
-            }
+        if is_source_file(path)
+            && let Ok(rel) = path.strip_prefix(config.root)
+        {
+            files.push(rel.to_path_buf());
         }
     }
 

@@ -24,11 +24,7 @@ pub use sync::CodeSyncResult;
 /// and extracts structural edges (calls, imports, extends).
 ///
 /// Returns the sync result with counts for the CLI output.
-pub fn index_code(
-    storage: &storage::Storage,
-    repo_root: &Path,
-    config: &Config,
-) -> CodeSyncResult {
+pub fn index_code(storage: &storage::Storage, repo_root: &Path, config: &Config) -> CodeSyncResult {
     // Phase 1: scan for source files (no lock held).
     let source_paths = gitignore::scan_source_files(&gitignore::ScanConfig {
         root: repo_root,
@@ -48,7 +44,7 @@ pub fn index_code(
             }
         };
         let language = match gitignore::language_for_path(rel_path) {
-            Some(lang) => match self::tree_sitter::Language::from_str(lang) {
+            Some(lang) => match self::tree_sitter::Language::parse_str(lang) {
                 Some(l) => l,
                 None => continue,
             },

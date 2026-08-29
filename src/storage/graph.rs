@@ -73,10 +73,7 @@ pub fn get_edges_involving_batch(
     let mut edges = Vec::new();
 
     for chunk in node_ids.chunks(CHUNK_SIZE) {
-        let placeholders = (0..chunk.len())
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         // Params are bound twice — once for source_id IN (...), once for target_id IN (...)
         let params: Vec<&dyn rusqlite::ToSql> = chunk
             .iter()
@@ -125,14 +122,9 @@ pub fn get_references_batch(
     }
 
     for chunk in entity_ids.chunks(CHUNK_SIZE) {
-        let placeholders = (0..chunk.len())
-            .map(|_| "?")
-            .collect::<Vec<_>>()
-            .join(",");
-        let params: Vec<&dyn rusqlite::ToSql> = chunk
-            .iter()
-            .map(|s| s as &dyn rusqlite::ToSql)
-            .collect();
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
 
         let sql = format!(
             "SELECT source_id, target_id FROM edges
