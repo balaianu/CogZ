@@ -23,10 +23,11 @@ pub struct CogzServer {
 impl CogzServer {
     pub fn new(storage: Arc<Storage>, config: Config, cogz_dir: PathBuf) -> Self {
         let models_dir = crate::embed::models_dir();
-        let query_model = Arc::new(OnnxEmbeddingModel::new(
+        let query_model = Arc::new(OnnxEmbeddingModel::with_model_id(
             ModelType::Knowledge,
             &models_dir,
             config.embedding.dimension,
+            &config.embedding.knowledge_model,
         ));
         Self {
             storage,

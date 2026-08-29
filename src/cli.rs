@@ -39,10 +39,11 @@ pub fn embed_synced(storage: &Storage, config: &Config, entity_ids: &[String]) -
     let mut all_embeddings = Vec::new();
 
     if !knowledge_entities.is_empty() {
-        let model = OnnxEmbeddingModel::new(
+        let model = OnnxEmbeddingModel::with_model_id(
             ModelType::Knowledge,
             &models_dir,
             config.embedding.dimension,
+            &config.embedding.knowledge_model,
         );
         if model.model_files_exist() {
             all_embeddings.extend(cogz::files::embed_sync::embed_entities(
@@ -54,8 +55,12 @@ pub fn embed_synced(storage: &Storage, config: &Config, entity_ids: &[String]) -
     }
 
     if !code_entities.is_empty() {
-        let model =
-            OnnxEmbeddingModel::new(ModelType::Code, &models_dir, config.embedding.dimension);
+        let model = OnnxEmbeddingModel::with_model_id(
+            ModelType::Code,
+            &models_dir,
+            config.embedding.dimension,
+            &config.embedding.code_model,
+        );
         if model.model_files_exist() {
             all_embeddings.extend(cogz::files::embed_sync::embed_entities(
                 &model,

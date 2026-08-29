@@ -62,10 +62,40 @@ pub struct OnnxEmbeddingModel {
 impl OnnxEmbeddingModel {
     /// Create a new ONNX embedding model. Does not load the model yet —
     /// that happens on first `embed()` call (lazy loading).
+    ///
+    /// Uses the hardcoded model ID for `model_type` to locate the
+    /// model directory under `models_base`.
     pub fn new(model_type: ModelType, models_base: &std::path::Path, dimension: usize) -> Self {
         Self {
             model_type,
             model_dir: model_type.model_dir(models_base),
+            dimension,
+            session: Mutex::new(None),
+            tokenizer: Mutex::new(None),
+            available: Mutex::new(false),
+        }
+    }
+
+    /// Create a new ONNX embedding model with a config-specified model ID.
+    ///
+    /// When `model_id` is non-empty, the model directory is
+    /// `models_base/{model_id}` instead of the hardcoded default.
+    /// This wires `[embedding].code_model` and `[embedding].knowledge_model`
+    /// to actual model selection.
+    pub fn with_model_id(
+        model_type: ModelType,
+        models_base: &std::path::Path,
+        dimension: usize,
+        model_id: &str,
+    ) -> Self {
+        let model_dir = if model_id.is_empty() {
+            model_type.model_dir(models_base)
+        } else {
+            models_base.join(model_id)
+        };
+        Self {
+            model_type,
+            model_dir,
             dimension,
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),

@@ -14,21 +14,27 @@ pub fn model_availability(config: &Config) -> serde_json::Value {
     use crate::embed::{ModelType, OnnxEmbeddingModel};
 
     let models_dir = crate::embed::models_dir();
-    let knowledge = OnnxEmbeddingModel::new(
+    let knowledge = OnnxEmbeddingModel::with_model_id(
         ModelType::Knowledge,
         &models_dir,
         config.embedding.dimension,
+        &config.embedding.knowledge_model,
     );
-    let code = OnnxEmbeddingModel::new(ModelType::Code, &models_dir, config.embedding.dimension);
+    let code = OnnxEmbeddingModel::with_model_id(
+        ModelType::Code,
+        &models_dir,
+        config.embedding.dimension,
+        &config.embedding.code_model,
+    );
 
     json!({
         "embedding_code": {
             "available": code.model_files_exist(),
-            "name": ModelType::Code.model_id(),
+            "name": &config.embedding.code_model,
         },
         "embedding_knowledge": {
             "available": knowledge.model_files_exist(),
-            "name": ModelType::Knowledge.model_id(),
+            "name": &config.embedding.knowledge_model,
         },
         "nli": {
             "available": false,
