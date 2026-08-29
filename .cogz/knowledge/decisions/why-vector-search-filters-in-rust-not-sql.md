@@ -4,7 +4,7 @@ title: "Why vector search filters in Rust, not SQL"
 type: knowledge
 status: active
 created_at: 2026-08-28T19:24:00Z
-updated_at: 2026-08-28T19:24:00Z
+updated_at: 2026-08-29T23:15:00Z
 references: ["ac43ee1b-2322-4ba1-afcf-cd2464a2d065"]
 category: decisions
 tags: ["vec0", "sqlite-vec", "filtering", "trade-off"]
@@ -31,9 +31,11 @@ could be smaller than `limit`. A retry-with-larger-k mechanism
 would fix this, but the current heuristic works for repos where
 most entities are active and the type filter is selective enough.
 
-**Future concern:** When Phase 8 adds code entities with
-CodeRankEmbed embeddings, a single KNN query with a bge-base query
-vector against CodeRankEmbed code embeddings would be semantically
-incorrect — different embedding spaces. The search function will
-need to run separate KNN queries per model and merge, as
-architecture.md specifies.
+**Phase 8 update:** Code entities now exist with CodeRankEmbed
+embeddings. The current implementation uses a single embedding table
+and a single KNN query. When both code and knowledge models are
+configured and loaded, the query embedding uses the knowledge model
+(bge-base). Code entity embeddings use CodeRankEmbed. This is a
+known mismatch — code entities are still findable via FTS5 (which is
+model-independent) and graph expansion. A future improvement would
+run separate KNN queries per embedding model and merge results.

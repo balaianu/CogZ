@@ -4,7 +4,7 @@ title: Files are canonical — DB is disposable and derived
 type: rule
 status: active
 created_at: 2026-08-28T19:34:00Z
-updated_at: 2026-08-28T19:34:00Z
+updated_at: 2026-08-29T23:15:00Z
 references: []
 confidence: 1.0
 validation_count: 2
@@ -30,8 +30,10 @@ from files alone.
 `cogz index` must produce the same DB state. If it doesn't, the
 change broke the invariant.
 
-**What code entities (Phase 8) break:** Code entities have no file
+**What code entities (Phase 8) add:** Code entities have no file
 on disk — they're extracted from source by tree-sitter. They're
 rebuildable from source code, not from `.cogz/` files. The
 principle holds: the source of truth (source files) is canonical,
-the DB is derived.
+the DB is derived. Code entities use deterministic UUID v5 IDs
+(`{file_path}:{entity_type}:{qualified_name}`) so the same source
+produces the same entities across rebuilds.

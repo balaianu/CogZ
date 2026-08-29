@@ -48,8 +48,10 @@ core promises. The compiler won't catch most of them.
 - **`references`, `supporting_ids`, `promoted_from`, `superseded_by`**
   all use UUID strings, not integers. This is what makes files
   self-contained and portable across DB rebuilds.
-- **Code entities** (functions, classes, files, modules) get UUIDs
-  assigned by the indexer on first sync. They have no file on disk.
+- **Code entities** (functions, classes, files, modules) get
+  deterministic UUID v5 values derived from
+  `{file_path}:{entity_type}:{qualified_name}`. They have no file
+  on disk. The same code entity gets the same UUID across rebuilds.
 
 ### Concurrency
 

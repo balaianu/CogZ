@@ -4,7 +4,7 @@ title: Module layering and data ownership boundaries
 type: knowledge
 status: active
 created_at: 2026-08-28T19:20:00Z
-updated_at: 2026-08-28T19:20:00Z
+updated_at: 2026-08-29T23:15:00Z
 references: []
 category: architecture
 tags: ["layering", "architecture", "ownership", "invariants"]
@@ -31,9 +31,19 @@ CogZ has four layers with strict ownership boundaries:
    query embedding and degrades to FTS-only when none is provided.
    Search never loads models — that's the CLI's job.
 
-The CLI boundary (cli.rs, main.rs) is the only place that touches
-all four layers. It owns model loading, query embedding, and
-user-facing output.
+The CLI boundary (cli.rs, commands.rs, main.rs) is the only place
+that touches all four layers. It owns model loading, query embedding,
+and user-facing output. `main.rs` defines clap subcommands; `commands.rs`
+implements the status/index/reindex/reset handlers; `cli.rs` handles
+search, context, MCP, and embedding orchestration.
+
+Phase 8 added a fifth layer:
+
+5. **index/** — owns code entity extraction. Tree-sitter parses Rust
+   and Python source into entities (function, class, file, module)
+   with deterministic UUID v5 IDs. Structural edges (calls, imports,
+   extends) are built from the AST. The index layer reads source
+   files and writes through `storage/`, never directly.
 
 The key invariant: no layer reaches below the one it depends on.
 Search calls storage, not the other way around. Files call storage,

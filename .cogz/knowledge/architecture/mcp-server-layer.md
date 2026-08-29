@@ -6,7 +6,7 @@ title: MCP Server Layer
 category: architecture
 tags: [mcp, architecture, rmcp, async]
 created_at: 2026-08-29T02:30:00Z
-updated_at: 2026-08-29T02:30:00Z
+updated_at: 2026-08-29T23:15:00Z
 ---
 
 # MCP Server Layer
@@ -51,4 +51,7 @@ generates the `call_tool` dispatch. The `vis = "pub"` is required because
 
 - `consolidate` tool (Phase 9) — contradiction detection, promotion, merge
 - `capture_event` tool (Phase 11) — event recording from agents
-- Code entity tools — no code indexing until Phase 8
+- Code entities are indexed by `cogz index` (Phase 8) and searchable
+  via the `search` and `list_entities` tools, but there are no
+  MCP tools for direct code entity manipulation — they're read-only
+  products of the indexer.

@@ -310,13 +310,14 @@ frontmatter, in the database, in MCP tool parameters and returns, and
 in `references` fields. This ensures files are self-contained and
 portable: a `references` list in a frontmatter file points to the same
 entity after a DB rebuild. Code entities (functions, classes, files,
-modules) get UUIDs assigned by the indexer on first sync; they are
+modules) get deterministic UUID v5 values derived from
+`{file_path}:{entity_type}:{qualified_name}`; they are
 stored in the DB only (no file on disk).
 
 ```sql
 -- All entities: observations, rules, knowledge, functions, classes, files, modules
 CREATE TABLE entities (
-    id          TEXT PRIMARY KEY,         -- UUID v4 (from file frontmatter or indexer-generated)
+    id          TEXT PRIMARY KEY,         -- UUID v4 (file-backed) or v5 (code entities)
     type        TEXT NOT NULL,           -- 'observation', 'rule', 'knowledge',
                                          -- 'function', 'class', 'file', 'module'
     title       TEXT,

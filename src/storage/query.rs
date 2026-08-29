@@ -176,13 +176,19 @@ pub fn fts_search(
     status_filter: Option<&str>,
     limit: i64,
 ) -> Result<Vec<Entity>, StorageError> {
+    // Escape FTS5 special characters by wrapping the query in double
+    // quotes for phrase matching. FTS5 treats -, *, :, (, ), etc. as
+    // operators. Without escaping, queries like "tree-sitter" or
+    // "error-handling" fail with SQL errors or produce wrong results.
+    let escaped_query = format!("\"{}\"", query.replace('"', "\"\""));
+
     // Mirrors ENTITY_COLUMNS with `e.` prefix for the JOIN.
     let mut sql = "SELECT e.id, e.type, e.title, e.content, e.properties, e.file_path, e.status, e.content_hash, e.created_at, e.updated_at
          FROM entities_fts fts
          JOIN entities e ON e.rowid = fts.rowid
          WHERE entities_fts MATCH ?1"
         .to_string();
-    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(query.to_string())];
+    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(escaped_query)];
 
     if let Some(et) = type_filter {
         sql.push_str(" AND e.type = ?");
@@ -314,6 +320,26 @@ mod tests {
         let obs = fts_search(&conn, "ranking", Some("observation"), Some("active"), 20).unwrap();
         assert_eq!(obs.len(), 1);
         assert_eq!(obs[0].r#type, "observation");
+    }
+
+    #[test]
+    fn fts_search_with_hyphenated_query() {
+        let conn = setup();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "u1",
+                "knowledge",
+                "tree-sitter parsing",
+                "AST extraction with tree-sitter",
+            ),
+        )
+        .unwrap();
+
+        // Hyphenated query should not crash (FTS5 treats - as NOT)
+        let results = fts_search(&conn, "tree-sitter", None, Some("active"), 20).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "u1");
     }
 
     #[test]
