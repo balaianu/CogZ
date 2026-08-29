@@ -177,36 +177,40 @@ pub fn get_neighbors_batch(
         return Ok((Vec::new(), Vec::new()));
     }
 
-    let placeholders = (0..node_ids.len())
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    let params: Vec<&dyn rusqlite::ToSql> =
-        node_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    // Chunk to respect SQLITE_MAX_VARIABLE_NUMBER (999 default).
+    const CHUNK_SIZE: usize = 999;
 
-    let sql_out =
-        format!("SELECT DISTINCT target_id FROM edges WHERE source_id IN ({placeholders})");
-    let outgoing: Vec<String> = {
-        let mut stmt = conn.prepare(&sql_out)?;
-        let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
-        let mut v = Vec::new();
-        for row in rows {
-            v.push(row?);
-        }
-        v
-    };
+    let mut outgoing = Vec::new();
+    let mut incoming = Vec::new();
 
-    let sql_in =
-        format!("SELECT DISTINCT source_id FROM edges WHERE target_id IN ({placeholders})");
-    let incoming: Vec<String> = {
-        let mut stmt = conn.prepare(&sql_in)?;
-        let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
-        let mut v = Vec::new();
-        for row in rows {
-            v.push(row?);
+    for chunk in node_ids.chunks(CHUNK_SIZE) {
+        let placeholders = (0..chunk.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+
+        let sql_out =
+            format!("SELECT DISTINCT target_id FROM edges WHERE source_id IN ({placeholders})");
+        {
+            let mut stmt = conn.prepare(&sql_out)?;
+            let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
+            for row in rows {
+                outgoing.push(row?);
+            }
         }
-        v
-    };
+
+        let sql_in =
+            format!("SELECT DISTINCT source_id FROM edges WHERE target_id IN ({placeholders})");
+        {
+            let mut stmt = conn.prepare(&sql_in)?;
+            let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
+            for row in rows {
+                incoming.push(row?);
+            }
+        }
+    }
 
     Ok((outgoing, incoming))
 }

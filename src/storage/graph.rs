@@ -52,6 +52,10 @@ pub fn graph_traverse(
 /// Use this instead of `get_neighbors_batch` + `get_edge_type_between`
 /// when you need to know which frontier node each neighbor came from
 /// and what edge type connects them.
+///
+/// Chunks the query to respect SQLite's variable number limit. Each
+/// node_id is bound twice (source + target), so the chunk size is
+/// `MAX_VARS / 2`.
 pub fn get_edges_involving_batch(
     conn: &Connection,
     node_ids: &[String],
@@ -60,40 +64,50 @@ pub fn get_edges_involving_batch(
         return Ok(Vec::new());
     }
 
-    let placeholders = (0..node_ids.len())
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    // Params are bound twice — once for source_id IN (...), once for target_id IN (...)
-    let params: Vec<&dyn rusqlite::ToSql> = node_ids
-        .iter()
-        .chain(node_ids.iter())
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
+    // SQLITE_MAX_VARIABLE_NUMBER is 999 by default, 32766 in modern
+    // SQLite. Use 500 as a safe conservative chunk size (each id is
+    // bound twice → 1000 vars, under the default 999... use 499).
+    const MAX_VARS: usize = 999;
+    const CHUNK_SIZE: usize = MAX_VARS / 2; // 499
 
-    let sql = format!(
-        "SELECT DISTINCT source_id, target_id, edge_type
-         FROM edges
-         WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})"
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params.as_slice(), |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-        ))
-    })?;
     let mut edges = Vec::new();
-    for row in rows {
-        edges.push(row?);
+
+    for chunk in node_ids.chunks(CHUNK_SIZE) {
+        let placeholders = (0..chunk.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        // Params are bound twice — once for source_id IN (...), once for target_id IN (...)
+        let params: Vec<&dyn rusqlite::ToSql> = chunk
+            .iter()
+            .chain(chunk.iter())
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .collect();
+
+        let sql = format!(
+            "SELECT DISTINCT source_id, target_id, edge_type
+             FROM edges
+             WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            edges.push(row?);
+        }
     }
+
     Ok(edges)
 }
 
 /// Batched references lookup — get `references` edges for a set of
 /// entities in a single query. Returns a map of entity_id → list of
-/// referenced entity IDs.
+/// referenced entity IDs. Chunks to respect SQLite variable limits.
 pub fn get_references_batch(
     conn: &Connection,
     entity_ids: &[String],
@@ -102,33 +116,38 @@ pub fn get_references_batch(
         return Ok(HashMap::new());
     }
 
-    let placeholders = (0..entity_ids.len())
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(",");
-    let params: Vec<&dyn rusqlite::ToSql> = entity_ids
-        .iter()
-        .map(|s| s as &dyn rusqlite::ToSql)
-        .collect();
-
-    let sql = format!(
-        "SELECT source_id, target_id FROM edges
-         WHERE edge_type = 'references' AND source_id IN ({placeholders})"
-    );
+    const MAX_VARS: usize = 999;
+    const CHUNK_SIZE: usize = MAX_VARS; // each id bound once
 
     let mut map: HashMap<String, Vec<String>> = HashMap::new();
     for id in entity_ids {
         map.insert(id.clone(), Vec::new());
     }
 
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params.as_slice(), |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
-    for row in rows {
-        let (source, target) = row?;
-        if let Some(refs) = map.get_mut(&source) {
-            refs.push(target);
+    for chunk in entity_ids.chunks(CHUNK_SIZE) {
+        let placeholders = (0..chunk.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let params: Vec<&dyn rusqlite::ToSql> = chunk
+            .iter()
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .collect();
+
+        let sql = format!(
+            "SELECT source_id, target_id FROM edges
+             WHERE edge_type = 'references' AND source_id IN ({placeholders})"
+        );
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (source, target) = row?;
+            if let Some(refs) = map.get_mut(&source) {
+                refs.push(target);
+            }
         }
     }
 

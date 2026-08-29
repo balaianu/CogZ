@@ -22,14 +22,16 @@ pub struct ExpansionResult {
     pub seed_id: String,
 }
 
-/// Expand from seed entities via BFS, recording paths.
+/// Expand from seed entities via fused multi-seed BFS, recording paths.
 ///
-/// Follows both outgoing and incoming edges. Each seed gets its own
-/// BFS — entities discovered from different seeds get separate results
-/// with their respective paths. Entities already in `exclude_ids` are
-/// not returned (prevents duplicating direct search matches).
+/// All seeds are placed in the initial frontier and expanded together.
+/// This means one `get_edges_involving_batch` query per hop instead of
+/// one per hop per seed. Each discovered entity records which seed it
+/// was reached from and the path from that seed.
 ///
-/// Only entities matching `status_filter` are included in results.
+/// Follows both outgoing and incoming edges. Entities already in
+/// `exclude_ids` are not returned (prevents duplicating direct search
+/// matches). Only entities matching `status_filter` are included.
 pub fn expand_with_paths(
     conn: &Connection,
     seed_ids: &[String],
@@ -41,55 +43,37 @@ pub fn expand_with_paths(
         return Ok(Vec::new());
     }
 
-    let mut results = Vec::new();
-
+    // Global visited set across all seeds — an entity discovered from
+    // one seed is not rediscovered from another.
+    let mut visited: HashSet<String> = HashSet::new();
     for seed_id in seed_ids {
-        let expansions = bfs_from_seed(conn, seed_id, max_hops, exclude_ids, status_filter)?;
-        results.extend(expansions);
+        visited.insert(seed_id.clone());
     }
 
-    Ok(results)
-}
+    // Map entity_id → (path from seed, seed_id)
+    let mut paths: HashMap<String, (Vec<String>, String)> = HashMap::new();
+    for seed_id in seed_ids {
+        paths.insert(seed_id.clone(), (vec![seed_id.clone()], seed_id.clone()));
+    }
 
-/// BFS from a single seed, recording the path to each discovered entity.
-///
-/// Uses `get_edges_involving_batch` to fetch all edges touching the
-/// frontier in a single query, then determines parent-child
-/// relationships in Rust. Status filtering is batched per hop — one
-/// query for all newly discovered neighbors, not one per neighbor.
-fn bfs_from_seed(
-    conn: &Connection,
-    seed_id: &str,
-    max_hops: usize,
-    exclude_ids: &HashSet<String>,
-    status_filter: Option<&str>,
-) -> Result<Vec<ExpansionResult>, StorageError> {
-    let mut visited: HashSet<String> = HashSet::new();
-    visited.insert(seed_id.to_string());
-
-    // Map entity_id → path from seed
-    let mut paths: HashMap<String, Vec<String>> = HashMap::new();
-    paths.insert(seed_id.to_string(), vec![seed_id.to_string()]);
-
-    let mut frontier = vec![seed_id.to_string()];
+    // Initial frontier: all seeds
+    let mut frontier: Vec<String> = seed_ids.to_vec();
     let mut discovered = Vec::new();
 
     for _ in 0..max_hops {
+        if frontier.is_empty() {
+            break;
+        }
+
         // Single query: all edges where either endpoint is in the frontier
         let edges = get_edges_involving_batch(conn, &frontier)?;
         if edges.is_empty() {
             break;
         }
 
-        // Build neighbor → parent_id map from the edge list.
-        // For each edge (source, target, _type), if one endpoint is in
-        // the frontier and the other isn't visited yet, the frontier
-        // endpoint is the parent.
         let frontier_set: HashSet<&String> = frontier.iter().collect();
         let mut next_neighbors: Vec<String> = Vec::new();
-        // Neighbors that need status checking before being added to
-        // discovered results. (neighbor_id, path, parent already known)
-        let mut candidates: Vec<(String, Vec<String>)> = Vec::new();
+        let mut candidates: Vec<(String, Vec<String>, String)> = Vec::new();
 
         for (source, target, _) in &edges {
             let (parent, neighbor) = if frontier_set.contains(source) {
@@ -101,16 +85,16 @@ fn bfs_from_seed(
             };
 
             if visited.insert(neighbor.clone()) {
-                let parent_path = paths
+                let (parent_path, seed_id) = paths
                     .get(parent)
                     .cloned()
                     .ok_or(StorageError::EntityNotFound(parent.clone()))?;
                 let mut path = parent_path;
                 path.push(neighbor.clone());
-                paths.insert(neighbor.clone(), path.clone());
+                paths.insert(neighbor.clone(), (path.clone(), seed_id.clone()));
 
                 if !exclude_ids.contains(neighbor) {
-                    candidates.push((neighbor.clone(), path));
+                    candidates.push((neighbor.clone(), path, seed_id));
                 }
 
                 next_neighbors.push(neighbor.clone());
@@ -121,25 +105,25 @@ fn bfs_from_seed(
         if !candidates.is_empty() {
             match status_filter {
                 None | Some("all") => {
-                    // No filtering needed — all candidates are included
-                    for (id, path) in candidates {
+                    for (id, path, seed_id) in candidates {
                         discovered.push(ExpansionResult {
                             entity_id: id,
                             graph_path: path,
-                            seed_id: seed_id.to_string(),
+                            seed_id,
                         });
                     }
                 }
                 Some(status) => {
-                    let ids: Vec<String> = candidates.iter().map(|(id, _)| id.clone()).collect();
+                    let ids: Vec<String> =
+                        candidates.iter().map(|(id, _, _)| id.clone()).collect();
                     let matching = batch_check_status(conn, &ids, status)?;
                     let include_set: HashSet<&String> = matching.iter().collect();
-                    for (id, path) in candidates {
+                    for (id, path, seed_id) in candidates {
                         if include_set.contains(&id) {
                             discovered.push(ExpansionResult {
                                 entity_id: id,
                                 graph_path: path,
-                                seed_id: seed_id.to_string(),
+                                seed_id,
                             });
                         }
                     }
@@ -147,9 +131,6 @@ fn bfs_from_seed(
             }
         }
 
-        if next_neighbors.is_empty() {
-            break;
-        }
         frontier = next_neighbors;
     }
 
@@ -157,7 +138,8 @@ fn bfs_from_seed(
 }
 
 /// Batch-check which entity IDs have the given status. Returns the
-/// subset of `ids` whose status matches. Single query instead of N.
+/// subset of `ids` whose status matches. Chunks the query to respect
+/// SQLite's variable number limit (one extra var for status).
 fn batch_check_status(
     conn: &Connection,
     ids: &[String],
@@ -166,17 +148,30 @@ fn batch_check_status(
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-    let mut params: Vec<&dyn rusqlite::ToSql> =
-        ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-    params.push(&status);
-    let sql = format!("SELECT id FROM entities WHERE id IN ({placeholders}) AND status = ?");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
+
+    // SQLITE_MAX_VARIABLE_NUMBER is 999 by default. Each id is one var,
+    // plus one for the status parameter → chunk at 998.
+    const MAX_VARS: usize = 999;
+    const CHUNK_SIZE: usize = MAX_VARS - 1; // 998
+
     let mut matching = Vec::new();
-    for row in rows {
-        matching.push(row?);
+
+    for chunk in ids.chunks(CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        params.push(&status);
+        let sql = format!("SELECT id FROM entities WHERE id IN ({placeholders}) AND status = ?");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
+        for row in rows {
+            matching.push(row?);
+        }
     }
+
     Ok(matching)
 }
 

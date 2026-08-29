@@ -162,14 +162,21 @@ pub fn get_entities_batch(conn: &Connection, ids: &[String]) -> Result<Vec<Entit
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
-    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-    let sql = format!("SELECT {ENTITY_COLUMNS} FROM entities WHERE id IN ({placeholders})");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params.as_slice(), row_to_entity)?;
+
+    // Chunk to respect SQLITE_MAX_VARIABLE_NUMBER (999 default).
+    const CHUNK_SIZE: usize = 999;
+
     let mut entities = Vec::new();
-    for row in rows {
-        entities.push(row?);
+    for chunk in ids.chunks(CHUNK_SIZE) {
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let sql = format!("SELECT {ENTITY_COLUMNS} FROM entities WHERE id IN ({placeholders})");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), row_to_entity)?;
+        for row in rows {
+            entities.push(row?);
+        }
     }
     Ok(entities)
 }
