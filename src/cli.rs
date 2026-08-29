@@ -69,8 +69,8 @@ pub fn embed_synced(storage: &Storage, config: &Config, entity_ids: &[String]) -
     if all_embeddings.is_empty() {
         return 0;
     }
-    let conn = storage.conn();
-    cogz::files::embed_sync::store_embeddings(&conn, &all_embeddings)
+    let mut conn = storage.conn();
+    cogz::files::embed_sync::store_embeddings(&mut conn, &all_embeddings)
 }
 
 /// Get the models directory: `~/.local/share/cogz/models/`
@@ -143,7 +143,11 @@ pub fn run_search(
         status,
         limit: limit.unwrap_or(config.search.max_results),
         expand: !no_expand,
-        max_hops: if no_expand { 0 } else { 2 },
+        max_hops: if no_expand {
+            0
+        } else {
+            config.context.task_max_hops
+        },
     };
 
     let results = {

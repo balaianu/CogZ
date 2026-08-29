@@ -87,6 +87,85 @@ pub fn get_entities_by_type(
     )
 }
 
+/// Get rules sorted by confidence (descending) then recency.
+/// Confidence is stored in the JSON `properties` column; rules
+/// without an explicit confidence default to 1.0.
+pub fn get_rules_by_confidence(
+    conn: &Connection,
+    status: Option<&str>,
+    limit: i64,
+) -> Result<Vec<Entity>, StorageError> {
+    let mut sql = format!("SELECT {ENTITY_COLUMNS} FROM entities WHERE type = 'rule'");
+    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(st) = status {
+        sql.push_str(" AND status = ?");
+        param_values.push(Box::new(st.to_string()));
+    }
+
+    sql.push_str(
+        " ORDER BY COALESCE(json_extract(properties, '$.confidence'), 1.0) DESC, updated_at DESC LIMIT ?",
+    );
+    param_values.push(Box::new(limit));
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), row_to_entity)?;
+    let mut entities = Vec::new();
+    for row in rows {
+        entities.push(row?);
+    }
+    Ok(entities)
+}
+
+/// Get knowledge entities with optional category and tags filters
+/// pushed into SQL. Tags uses "any match" semantics — an entity is
+/// included if any of its tags matches any of the provided tags.
+pub fn get_knowledge_filtered(
+    conn: &Connection,
+    status: Option<&str>,
+    category: Option<&str>,
+    tags: Option<&[String]>,
+    limit: i64,
+) -> Result<Vec<Entity>, StorageError> {
+    let mut sql = format!("SELECT {ENTITY_COLUMNS} FROM entities WHERE type = 'knowledge'");
+    let mut param_values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+
+    if let Some(st) = status {
+        sql.push_str(" AND status = ?");
+        param_values.push(Box::new(st.to_string()));
+    }
+    if let Some(cat) = category {
+        sql.push_str(" AND json_extract(properties, '$.category') = ?");
+        param_values.push(Box::new(cat.to_string()));
+    }
+    if let Some(tags) = tags
+        && !tags.is_empty()
+    {
+        let placeholders: String = tags.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM json_each(json_extract(properties, '$.tags')) WHERE value IN ({placeholders}))"
+        ));
+        for t in tags {
+            param_values.push(Box::new(t.clone()));
+        }
+    }
+
+    sql.push_str(" ORDER BY updated_at DESC LIMIT ?");
+    param_values.push(Box::new(limit));
+
+    let params_refs: Vec<&dyn rusqlite::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_refs.as_slice(), row_to_entity)?;
+    let mut entities = Vec::new();
+    for row in rows {
+        entities.push(row?);
+    }
+    Ok(entities)
+}
+
 /// FTS5 search over entity titles and content.
 ///
 /// Returns entities matching the query, filtered by type and status.
@@ -258,5 +337,30 @@ mod tests {
         let counts = entity_counts_by_type(&conn).unwrap();
         let obs = counts.iter().find(|(t, _)| t == "observation").unwrap();
         assert_eq!(obs.1, 2);
+    }
+
+    #[test]
+    fn rules_sorted_by_confidence_then_recency() {
+        let conn = setup();
+
+        // Low confidence rule (0.3)
+        let mut r1 = Entity::new("r1", "rule", "Low confidence", "c");
+        r1.properties = serde_json::json!({"confidence": 0.3});
+        insert_entity(&conn, &r1).unwrap();
+
+        // High confidence rule (0.9)
+        let mut r2 = Entity::new("r2", "rule", "High confidence", "c");
+        r2.properties = serde_json::json!({"confidence": 0.9});
+        insert_entity(&conn, &r2).unwrap();
+
+        // No confidence property — defaults to 1.0
+        let r3 = Entity::new("r3", "rule", "Default confidence", "c");
+        insert_entity(&conn, &r3).unwrap();
+
+        let rules = get_rules_by_confidence(&conn, Some("active"), 20).unwrap();
+        // r3 (1.0) > r2 (0.9) > r1 (0.3)
+        assert_eq!(rules[0].id, "r3");
+        assert_eq!(rules[1].id, "r2");
+        assert_eq!(rules[2].id, "r1");
     }
 }

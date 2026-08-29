@@ -10,14 +10,15 @@ use crate::context::{AssembleParams, ContextMode, assemble_context};
 use crate::files::frontmatter::FmValue;
 use crate::files::{EntityFile, FileEntityType};
 use crate::mcp::helpers::{
-    auto_title, context_response, create_entity_file, embed_query_for_search, mcp_internal_error,
-    mcp_invalid_parameter, query_response, search_response, tool_success, update_knowledge_file,
-    write_and_sync,
+    DEFAULT_QUERY_STATUS, auto_title, build_status_response, create_entity_file,
+    embed_query_for_search, mcp_internal_error, mcp_invalid_parameter, query_by_type_with_refs,
+    update_knowledge_file, write_and_sync,
 };
 use crate::mcp::params::*;
+use crate::mcp::responses::{context_response, query_response, search_response, tool_success};
 use crate::mcp::server::CogzServer;
 use crate::search::{SearchParams, search as search_entities};
-use crate::storage::{crud, events, query};
+use crate::storage::query;
 
 #[tool_router(vis = "pub")]
 impl CogzServer {
@@ -33,18 +34,17 @@ impl CogzServer {
         let storage = self.storage.clone();
         let config = self.config.clone();
         let cogz_dir = self.cogz_dir.clone();
+        let query_model = self.query_model.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let mut entity = EntityFile::new(&title, FileEntityType::Observation, &params.content);
             if let Some(refs) = params.references.as_deref() {
                 entity.references = refs.to_vec();
             }
-            if let Some(src) = params.source.as_deref() {
-                entity
-                    .frontmatter
-                    .insert("source", FmValue::String(src.to_string()));
-            }
-            create_entity_file(&storage, &config, &cogz_dir, &entity)
+            let source = params.source.unwrap_or_else(|| "agent".to_string());
+            entity.frontmatter.insert("source", FmValue::String(source));
+            entity.frontmatter.insert("confidence", FmValue::Float(0.5));
+            create_entity_file(&storage, &config, &cogz_dir, &entity, Some(&query_model))
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
@@ -64,18 +64,18 @@ impl CogzServer {
         let storage = self.storage.clone();
         let config = self.config.clone();
         let cogz_dir = self.cogz_dir.clone();
+        let query_model = self.query_model.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let mut entity = EntityFile::new(&title, FileEntityType::Rule, &params.content);
             if let Some(refs) = params.references.as_deref() {
                 entity.references = refs.to_vec();
             }
-            if let Some(conf) = params.confidence {
-                entity
-                    .frontmatter
-                    .insert("confidence", FmValue::Float(conf));
-            }
-            create_entity_file(&storage, &config, &cogz_dir, &entity)
+            let confidence = params.confidence.unwrap_or(1.0);
+            entity
+                .frontmatter
+                .insert("confidence", FmValue::Float(confidence));
+            create_entity_file(&storage, &config, &cogz_dir, &entity, Some(&query_model))
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
@@ -94,6 +94,7 @@ impl CogzServer {
         let storage = self.storage.clone();
         let config = self.config.clone();
         let cogz_dir = self.cogz_dir.clone();
+        let query_model = self.query_model.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let mut entity =
@@ -109,7 +110,14 @@ impl CogzServer {
             if let Some(refs) = &params.references {
                 entity.references = refs.clone();
             }
-            write_and_sync(&storage, &config, &cogz_dir, &entity, "knowledge")
+            write_and_sync(
+                &storage,
+                &config,
+                &cogz_dir,
+                &entity,
+                "knowledge",
+                Some(&query_model),
+            )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
@@ -127,9 +135,10 @@ impl CogzServer {
     ) -> Result<CallToolResult, McpError> {
         let storage = self.storage.clone();
         let cogz_dir = self.cogz_dir.clone();
+        let query_model = self.query_model.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            update_knowledge_file(&storage, &cogz_dir, &params)
+            update_knowledge_file(&storage, &cogz_dir, &params, Some(&query_model))
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
@@ -146,22 +155,25 @@ impl CogzServer {
         Parameters(params): Parameters<QueryObservationsParams>,
     ) -> Result<CallToolResult, McpError> {
         let storage = self.storage.clone();
-        let entities = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let conn = storage.conn();
-            query::get_entities_by_type(
+            query_by_type_with_refs(
                 &conn,
                 "observation",
                 params.status.as_deref(),
                 params.limit.unwrap_or(20),
+                params.references.as_deref(),
             )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
         .map_err(|e| mcp_internal_error("query", &e.to_string()))?;
 
+        let (entities, refs_map) = result;
         Ok(tool_success(json!(query_response(
             entities,
-            "observations"
+            "observations",
+            &refs_map
         ))))
     }
 
@@ -174,20 +186,24 @@ impl CogzServer {
         Parameters(params): Parameters<QueryRulesParams>,
     ) -> Result<CallToolResult, McpError> {
         let storage = self.storage.clone();
-        let entities = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let conn = storage.conn();
-            query::get_entities_by_type(
+            query_by_type_with_refs(
                 &conn,
                 "rule",
                 params.status.as_deref(),
                 params.limit.unwrap_or(20),
+                params.references.as_deref(),
             )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
         .map_err(|e| mcp_internal_error("query", &e.to_string()))?;
 
-        Ok(tool_success(json!(query_response(entities, "rules"))))
+        let (entities, refs_map) = result;
+        Ok(tool_success(json!(query_response(
+            entities, "rules", &refs_map
+        ))))
     }
 
     #[tool(
@@ -199,39 +215,35 @@ impl CogzServer {
         Parameters(params): Parameters<QueryKnowledgeParams>,
     ) -> Result<CallToolResult, McpError> {
         let storage = self.storage.clone();
-        let entities = tokio::task::spawn_blocking(move || {
+        let result = tokio::task::spawn_blocking(move || {
             let conn = storage.conn();
-            let mut entities = query::get_entities_by_type(
+            let status_filter = match params.status.as_deref() {
+                None => Some(DEFAULT_QUERY_STATUS),
+                Some("all") => None,
+                Some(s) => Some(s),
+            };
+            let entities = query::get_knowledge_filtered(
                 &conn,
-                "knowledge",
-                params.status.as_deref(),
+                status_filter,
+                params.category.as_deref(),
+                params.tags.as_deref(),
                 params.limit.unwrap_or(20),
             )?;
-            if let Some(category) = &params.category {
-                entities.retain(|e| {
-                    e.properties
-                        .get("category")
-                        .and_then(|v| v.as_str())
-                        .map(|c| c == category)
-                        .unwrap_or(false)
-                });
-            }
-            if let Some(tags) = &params.tags {
-                entities.retain(|e| {
-                    if let Some(entity_tags) = e.properties.get("tags").and_then(|v| v.as_array()) {
-                        tags.iter().any(|t| entity_tags.iter().any(|et| et == t))
-                    } else {
-                        false
-                    }
-                });
-            }
-            Ok::<_, crate::storage::StorageError>(entities)
+
+            let ids: Vec<String> = entities.iter().map(|e| e.id.clone()).collect();
+            let refs_map = crate::storage::graph::get_references_batch(&conn, &ids)?;
+            Ok::<_, crate::storage::StorageError>((entities, refs_map))
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
         .map_err(|e| mcp_internal_error("query", &e.to_string()))?;
 
-        Ok(tool_success(json!(query_response(entities, "knowledge"))))
+        let (entities, refs_map) = result;
+        Ok(tool_success(json!(query_response(
+            entities,
+            "knowledge",
+            &refs_map
+        ))))
     }
 
     #[tool(
@@ -242,12 +254,15 @@ impl CogzServer {
         &self,
         Parameters(params): Parameters<SearchToolParams>,
     ) -> Result<CallToolResult, McpError> {
-        let query_embedding = embed_query_for_search(&self.config, &params.query);
         let storage = self.storage.clone();
         let search_config = self.config.search.clone();
         let default_limit = self.config.search.max_results;
+        let task_max_hops = self.config.context.task_max_hops;
+        let query_model = self.query_model.clone();
 
         let results = tokio::task::spawn_blocking(move || {
+            // Embed the query inside spawn_blocking — ONNX inference is blocking.
+            let query_embedding = embed_query_for_search(&query_model, &params.query);
             let conn = storage.conn();
             let expand = params.expand.unwrap_or(true);
             let search_params = SearchParams {
@@ -255,7 +270,7 @@ impl CogzServer {
                 status: params.status,
                 limit: params.limit.unwrap_or(default_limit),
                 expand,
-                max_hops: if expand { 2 } else { 0 },
+                max_hops: if expand { task_max_hops } else { 0 },
             };
             search_entities(
                 &conn,
@@ -296,15 +311,17 @@ impl CogzServer {
         }
 
         let query_str = params.query.clone();
-        let query_embedding = if let Some(ref q) = params.query {
-            embed_query_for_search(&self.config, q)
-        } else {
-            None
-        };
         let storage = self.storage.clone();
         let config = self.config.clone();
+        let query_model = self.query_model.clone();
 
         let pack = tokio::task::spawn_blocking(move || {
+            // Embed the query inside spawn_blocking — ONNX inference is blocking.
+            let query_embedding = if let Some(ref q) = params.query {
+                embed_query_for_search(&query_model, q)
+            } else {
+                None
+            };
             let conn = storage.conn();
             let assemble_params = AssembleParams {
                 mode,
@@ -328,41 +345,11 @@ impl CogzServer {
     )]
     async fn get_status(&self) -> Result<CallToolResult, McpError> {
         let storage = self.storage.clone();
-        let status = tokio::task::spawn_blocking(move || {
-            let db_path = {
-                let conn = storage.conn();
-                let path: Option<String> = conn
-                    .query_row("PRAGMA database_list", [], |r| r.get::<_, String>(2))
-                    .ok();
-                path
-            };
-            let db_size = match db_path {
-                Some(ref p) if !p.is_empty() => std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
-                _ => 0,
-            };
-
-            let conn = storage.conn();
-            let counts = query::entity_counts_by_type(&conn)?;
-            let total = crud::count_all(&conn)?;
-            let stale = query::count_stale(&conn)?;
-            let edges = crate::storage::edges::count_edges(&conn)?;
-            let events_count = events::count_events(&conn)?;
-            let schema_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-
-            Ok::<_, crate::storage::StorageError>(json!({
-                "version": env!("CARGO_PKG_VERSION"),
-                "schema_version": schema_version,
-                "db_size_bytes": db_size,
-                "entities": counts.into_iter().collect::<std::collections::HashMap<_, _>>(),
-                "total_entities": total,
-                "stale_count": stale,
-                "edges": edges,
-                "events": events_count,
-            }))
-        })
-        .await
-        .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
-        .map_err(|e| mcp_internal_error("status", &e.to_string()))?;
+        let config = self.config.clone();
+        let status = tokio::task::spawn_blocking(move || build_status_response(&storage, &config))
+            .await
+            .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
+            .map_err(|e| mcp_internal_error("status", &e.to_string()))?;
 
         Ok(tool_success(status))
     }
@@ -379,7 +366,12 @@ impl CogzServer {
         let entity_type = params.entity_type.clone();
         let entities = tokio::task::spawn_blocking(move || {
             let conn = storage.conn();
-            query::get_entities_by_type(&conn, &params.entity_type, params.status.as_deref(), 1000)
+            let status_filter = match params.status.as_deref() {
+                None => Some(DEFAULT_QUERY_STATUS),
+                Some("all") => None,
+                Some(s) => Some(s),
+            };
+            query::get_entities_by_type(&conn, &params.entity_type, status_filter, 1000)
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?

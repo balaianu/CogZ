@@ -676,7 +676,7 @@ Get system status — DB stats, model availability, entity counts.
 ```json
 {
   "version": "0.1.0",
-  "schema_version": 1,
+  "schema_version": 2,
   "db_path": ".cogz/cogz.db",
   "db_size_bytes": 1048576,
   "entities": {
@@ -688,8 +688,10 @@ Get system status — DB stats, model availability, entity counts.
     "file": 89,
     "module": 12
   },
+  "total_entities": 456,
   "stale_count": 3,
   "edges": 1245,
+  "events": 789,
   "models": {
     "embedding_code": {"available": true, "name": "nomic-ai/CodeRankEmbed-int8"},
     "embedding_knowledge": {"available": true, "name": "BAAI/bge-base-en-v1.5"},
@@ -782,7 +784,8 @@ observation is recorded and `observation_id` is set. Otherwise
 ### 13. `list_entities`
 
 List all entities of a given type. No filtering, no ranking —
-enumeration.
+enumeration. Results are capped at 1000 entries; for larger sets,
+use `query_*` tools with pagination via `limit`.
 
 ```json
 {

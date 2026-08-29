@@ -6,7 +6,7 @@ use super::StorageError;
 
 /// Current schema version. Increment when migrations are added.
 /// Stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Run all migrations to bring the database up to `SCHEMA_VERSION`.
 ///
@@ -23,8 +23,12 @@ pub fn run_migrations(conn: &Connection) -> Result<(), StorageError> {
         migrate_v1(conn)?;
     }
 
+    if current < 2 {
+        migrate_v2(conn)?;
+    }
+
     // Future migrations:
-    // if current < 2 { migrate_v2(conn)?; }
+    // if current < 3 { migrate_v3(conn)?; }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(())
@@ -142,6 +146,19 @@ fn migrate_v1(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Migration v2: meta table for key-value metadata (last_index, etc.).
+fn migrate_v2(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS meta (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        "#,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,6 +180,7 @@ mod tests {
         assert!(tables.contains(&"entities".to_string()));
         assert!(tables.contains(&"edges".to_string()));
         assert!(tables.contains(&"events".to_string()));
+        assert!(tables.contains(&"meta".to_string()));
         // FTS5 and vec0 tables appear as virtual tables
         assert!(tables.iter().any(|t| t.contains("entities_fts")));
         assert!(tables.iter().any(|t| t.contains("entity_embeddings")));

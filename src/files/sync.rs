@@ -99,20 +99,20 @@ pub fn sync_incremental(storage: &storage::Storage, cogz_dir: &Path) -> SyncResu
 
 /// Shared sync implementation. When `incremental` is true, files whose
 /// content hash hasn't changed are skipped.
+///
+/// File reads happen without holding the storage mutex; DB operations
+/// acquire it in a second phase. This avoids blocking other callers
+/// during filesystem I/O.
 fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) -> SyncResult {
     let mut result = SyncResult::default();
-    let conn = storage.conn();
 
+    // Phase 1: scan and parse all files (no lock held).
     let disk_files = scan_entity_files(cogz_dir);
-    let mut seen_ids: HashMap<String, PathBuf> = HashMap::new();
-    let mut synced_files: Vec<EntityFile> = Vec::new();
-
+    let mut parsed: Vec<(PathBuf, EntityFile, String, String)> = Vec::new();
     for file_path in &disk_files {
-        match sync_one_file_inner(&conn, file_path, cogz_dir, incremental) {
-            Ok((action, ef)) => {
-                record_action(&mut result, action, &ef.id);
-                seen_ids.insert(ef.id.clone(), file_path.clone());
-                synced_files.push(ef);
+        match read_and_parse(file_path, cogz_dir) {
+            Ok((ef, hash, rel_path)) => {
+                parsed.push((file_path.clone(), ef, hash, rel_path));
             }
             Err(error) => result.errors.push(SyncFailure {
                 file_path: file_path.clone(),
@@ -121,9 +121,34 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
         }
     }
 
-    // Second pass: re-sync reference edges now that all entities exist.
-    // Forward references to not-yet-synced entities are silently skipped
-    // in the first pass; this pass picks them up.
+    // Phase 2: DB operations (lock held).
+    let conn = storage.conn();
+    let mut seen_ids: HashMap<String, PathBuf> = HashMap::new();
+    let mut synced_files: Vec<EntityFile> = Vec::new();
+
+    for (file_path, ef, hash, rel_path) in &parsed {
+        match sync_parsed_file(&conn, ef, hash, rel_path, incremental) {
+            Ok(action) => {
+                let was_skipped = action == SyncAction::Skipped;
+                record_action(&mut result, action, &ef.id);
+                seen_ids.insert(ef.id.clone(), file_path.clone());
+                // Only re-sync references for files that changed.
+                // Skipped files haven't changed, so their references
+                // are already correct.
+                if !was_skipped {
+                    synced_files.push(ef.clone());
+                }
+            }
+            Err(error) => result.errors.push(SyncFailure {
+                file_path: file_path.clone(),
+                error,
+            }),
+        }
+    }
+
+    // Second pass: sync reference edges now that all entities exist.
+    // This handles forward references — edges to entities that were
+    // synced later in the same pass. Done once for all changed files.
     for ef in &synced_files {
         if let Err(e) = super::refs::sync_references(&conn, ef) {
             result.errors.push(SyncFailure {
@@ -134,6 +159,12 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
     }
 
     mark_deleted_as_stale(&conn, &seen_ids, cogz_dir, &mut result);
+
+    // Record last index timestamp in meta table.
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = storage::set_meta(&conn, "last_index", &now) {
+        tracing::warn!("failed to record last_index: {}", e);
+    }
 
     result
 }
@@ -161,14 +192,12 @@ fn record_action(result: &mut SyncResult, action: SyncAction, entity_id: &str) {
     }
 }
 
-/// Sync a single file to the DB. Returns the action taken and the
-/// parsed entity file (to avoid callers re-reading the file).
-fn sync_one_file_inner(
-    conn: &rusqlite::Connection,
+/// Read a file from disk, parse it, and compute its content hash.
+/// No DB lock required — pure filesystem I/O.
+fn read_and_parse(
     file_path: &Path,
     cogz_dir: &Path,
-    incremental: bool,
-) -> Result<(SyncAction, EntityFile), SyncError> {
+) -> Result<(EntityFile, String, String), SyncError> {
     let raw_content = std::fs::read_to_string(file_path)?;
     let entity_file = EntityFile::from_content(&raw_content)?;
     let hash = content_hash(&raw_content);
@@ -177,31 +206,38 @@ fn sync_one_file_inner(
         .unwrap_or(file_path)
         .to_string_lossy()
         .to_string();
+    Ok((entity_file, hash, relative_path))
+}
 
-    let action = match storage::crud::get_entity(conn, &entity_file.id) {
+/// Sync a parsed entity file to the DB. Requires the storage lock.
+fn sync_parsed_file(
+    conn: &rusqlite::Connection,
+    entity_file: &EntityFile,
+    hash: &str,
+    relative_path: &str,
+    incremental: bool,
+) -> Result<SyncAction, SyncError> {
+    match storage::crud::get_entity(conn, &entity_file.id) {
         Ok(existing) => {
-            if incremental && existing.content_hash.as_deref() == Some(&hash) {
-                return Ok((SyncAction::Skipped, entity_file));
+            if incremental && existing.content_hash.as_deref() == Some(hash) {
+                return Ok(SyncAction::Skipped);
             }
             let content_changed = existing.content != entity_file.body;
-            let entity = build_entity(&entity_file, &hash, &relative_path);
-            update_entity_preserving_status(conn, &existing, &entity, &entity_file)?;
+            let entity = build_entity(entity_file, hash, relative_path);
+            update_entity_preserving_status(conn, &existing, &entity)?;
             if content_changed {
-                super::events::record_edit_event(conn, &entity_file, &existing.content);
+                super::events::record_edit_event(conn, entity_file, &existing.content);
             }
-            SyncAction::Updated
+            Ok(SyncAction::Updated)
         }
         Err(storage::StorageError::EntityNotFound(_)) => {
-            let entity = build_entity(&entity_file, &hash, &relative_path);
+            let entity = build_entity(entity_file, hash, relative_path);
             storage::crud::insert_entity(conn, &entity)?;
-            super::refs::sync_references(conn, &entity_file)?;
-            super::events::record_create_event(conn, &entity_file);
-            SyncAction::Created
+            super::events::record_create_event(conn, entity_file);
+            Ok(SyncAction::Created)
         }
-        Err(e) => return Err(SyncError::Storage(e)),
-    };
-
-    Ok((action, entity_file))
+        Err(e) => Err(SyncError::Storage(e)),
+    }
 }
 
 /// Update an entity, preserving the DB status if the file's status
@@ -211,7 +247,6 @@ fn update_entity_preserving_status(
     conn: &rusqlite::Connection,
     existing: &Entity,
     new_entity: &Entity,
-    entity_file: &EntityFile,
 ) -> Result<(), SyncError> {
     if existing.status != new_entity.status
         && storage::status::transition_status(&existing.status, &new_entity.status).is_err()
@@ -223,7 +258,6 @@ fn update_entity_preserving_status(
     } else {
         storage::crud::update_entity(conn, new_entity)?;
     }
-    super::refs::sync_references(conn, entity_file)?;
     Ok(())
 }
 

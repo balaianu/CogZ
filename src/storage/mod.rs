@@ -78,8 +78,10 @@ impl Storage {
         let conn = if path == Path::new(":memory:") {
             Connection::open_in_memory()?
         } else {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).ok();
+            if let Some(parent) = path.parent()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                tracing::warn!("failed to create DB directory {}: {}", parent.display(), e);
             }
             Connection::open(path)?
         };
@@ -102,9 +104,11 @@ impl Storage {
     }
 
     /// Access the underlying connection. For internal use within
-    /// storage module functions.
+    /// storage module functions. Recovers from a poisoned mutex
+    /// rather than panicking — a panic in one task should not kill
+    /// the entire server.
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().expect("storage mutex poisoned")
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Database file size in bytes (0 for in-memory).
@@ -123,6 +127,23 @@ impl Storage {
             _ => 0,
         }
     }
+}
+
+/// Set a metadata key-value pair in the `meta` table.
+pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<(), StorageError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+        rusqlite::params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Get a metadata value by key. Returns None if the key doesn't exist.
+pub fn get_meta(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| {
+        r.get::<_, String>(0)
+    })
+    .ok()
 }
 
 #[cfg(test)]

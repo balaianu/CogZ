@@ -592,6 +592,12 @@ distinguishes which model produced the embedding. Search runs both
 code and knowledge queries separately and merges, preventing knowledge
 entries from drowning out code results.
 
+> **Phase 7 note:** Model selection is hardcoded via `ModelType` in
+> `src/embed/onnx.rs`. The `code_model` and `knowledge_model` config
+> fields are metadata for status display only — they are not yet wired
+> to model loading. Configurable model selection arrives with Phase 8
+> (multi-model embedding for code indexing).
+
 ---
 
 ## Context Assembly
@@ -894,8 +900,8 @@ name = "cogz"                    # autodetected on init, saved, versioned
 db_path = ".cogz/cogz.db"        # per-repo database
 
 [embedding]
-code_model = "nomic-ai/CodeRankEmbed-int8"
-knowledge_model = "BAAI/bge-base-en-v1.5"
+code_model = "nomic-ai/CodeRankEmbed-int8"   # metadata only in Phase 7 — model selection is fixed
+knowledge_model = "BAAI/bge-base-en-v1.5"    # metadata only in Phase 7 — model selection is fixed
 dimension = 768
 
 [search]

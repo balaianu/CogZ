@@ -117,7 +117,13 @@ pub fn count_events(conn: &Connection) -> Result<i64, StorageError> {
 
 fn row_to_event(row: &rusqlite::Row<'_>) -> Result<DomainEvent, rusqlite::Error> {
     let payload_str: String = row.get(3)?;
-    let payload = serde_json::from_str(&payload_str).unwrap_or(serde_json::json!({}));
+    let payload = serde_json::from_str(&payload_str).unwrap_or_else(|e| {
+        tracing::warn!(
+            "malformed event payload, falling back to empty object: {}",
+            e
+        );
+        serde_json::json!({})
+    });
     Ok(DomainEvent {
         id: row.get(0)?,
         event_type: row.get(1)?,

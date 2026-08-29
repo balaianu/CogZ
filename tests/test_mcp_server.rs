@@ -40,7 +40,7 @@ async fn spawn_server(
     server: CogzServer,
 ) -> rmcp::service::RunningService<rmcp::RoleClient, DummyClient> {
     let (server_transport, client_transport) = tokio::io::duplex(4096);
-    let server_handle = tokio::spawn(async move {
+    let _server_handle = tokio::spawn(async move {
         match server.serve(server_transport).await {
             Ok(service) => {
                 let _ = service.waiting().await;
@@ -614,4 +614,422 @@ async fn db_rebuildable_from_files_after_mcp_writes() {
     let conn = new_storage.conn();
     let count = cogz::storage::crud::count_all(&conn).unwrap();
     assert_eq!(count, 3, "all entities rebuilt from files");
+}
+
+// ── query status defaults ─────────────────────────────────────────
+
+#[tokio::test]
+async fn query_observations_defaults_to_active_status() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    // Create an observation
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("record_observation").with_arguments(
+                call_tool_args(json!({
+                    "content": "Active observation content",
+                    "title": "Active obs",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // Query with no status filter — should default to active and return it
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_observations")
+                .with_arguments(call_tool_args(json!({})).unwrap()),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    assert_eq!(value["count"], 1, "active observation returned by default");
+
+    // Query with status="all" — should also return it
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_observations")
+                .with_arguments(call_tool_args(json!({"status": "all"})).unwrap()),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    assert_eq!(
+        value["count"], 1,
+        "status=all returns all observations including active"
+    );
+}
+
+// ── query response includes references ────────────────────────────
+
+#[tokio::test]
+async fn query_response_includes_references_field() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    // Create a knowledge entry first to get a reference target
+    let kn_result = client
+        .call_tool(
+            CallToolRequestParams::new("create_knowledge").with_arguments(
+                call_tool_args(json!({
+                    "title": "Architecture knowledge",
+                    "content": "The system uses SQLite",
+                    "category": "architecture",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let kn_value = parse_result(kn_result);
+    let kn_id = kn_value["id"].as_str().unwrap();
+
+    // Create an observation that references the knowledge
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("record_observation").with_arguments(
+                call_tool_args(json!({
+                    "content": "Confirmed the architecture",
+                    "title": "Architecture confirmed",
+                    "references": [kn_id],
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // Query observations — should include references field
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_observations")
+                .with_arguments(call_tool_args(json!({})).unwrap()),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    let obs = &value["observations"][0];
+    assert!(
+        obs["references"].is_array(),
+        "references field is present and is an array"
+    );
+    let refs = obs["references"].as_array().unwrap();
+    assert_eq!(refs.len(), 1, "one reference");
+    assert_eq!(refs[0], kn_id, "reference matches the knowledge ID");
+}
+
+// ── query with references filter returns correct count ────────────
+
+#[tokio::test]
+async fn query_observations_with_references_filter() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    // Create a knowledge entry as the reference target
+    let kn_result = client
+        .call_tool(
+            CallToolRequestParams::new("create_knowledge").with_arguments(
+                call_tool_args(json!({
+                    "title": "Reference target",
+                    "content": "Target knowledge",
+                    "category": "test",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let kn_id = parse_result(kn_result)["id"].as_str().unwrap().to_string();
+
+    // Create 3 observations: 2 referencing the knowledge, 1 not
+    for i in 0..3 {
+        let refs = if i < 2 { json!([kn_id]) } else { json!([]) };
+        let _ = client
+            .call_tool(
+                CallToolRequestParams::new("record_observation").with_arguments(
+                    call_tool_args(json!({
+                        "content": format!("Observation {i}"),
+                        "title": format!("Obs {i}"),
+                        "references": refs,
+                    }))
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+    }
+
+    // Query with references filter — should return 2, not be limited
+    // by post-fetch filtering
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_observations").with_arguments(
+                call_tool_args(json!({
+                    "references": kn_id,
+                    "limit": 20,
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    assert_eq!(
+        value["count"], 2,
+        "references filter returns exactly the 2 matching observations"
+    );
+}
+
+// ── query knowledge response includes category and tags ───────────
+
+#[tokio::test]
+async fn query_knowledge_response_includes_category_and_tags() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("create_knowledge").with_arguments(
+                call_tool_args(json!({
+                    "title": "Tagged knowledge",
+                    "content": "Important info",
+                    "category": "testing",
+                    "tags": ["rust", "sqlite"],
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_knowledge")
+                .with_arguments(call_tool_args(json!({})).unwrap()),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    let kn = &value["knowledge"][0];
+    assert_eq!(kn["category"], "testing", "category field present");
+    assert!(kn["tags"].is_array(), "tags field present and is an array");
+    let tags = kn["tags"].as_array().unwrap();
+    assert!(tags.len() == 2, "two tags present");
+}
+
+// ── get_status includes models and db_path ────────────────────────
+
+#[tokio::test]
+async fn get_status_includes_models_and_db_path() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(CallToolRequestParams::new("get_status"))
+        .await
+        .unwrap();
+    let value = parse_result(result);
+
+    assert!(
+        value["models"].is_object(),
+        "models field is present and is an object"
+    );
+    assert!(
+        value["models"]["embedding_knowledge"]["available"].is_boolean(),
+        "embedding_knowledge.available is a boolean"
+    );
+    assert!(
+        value["models"]["embedding_knowledge"]["name"].is_string(),
+        "embedding_knowledge.name is a string"
+    );
+    assert!(
+        value["models"]["embedding_code"]["available"].is_boolean(),
+        "embedding_code.available is a boolean"
+    );
+    assert!(
+        value["models"]["nli"]["available"].is_boolean(),
+        "nli.available is a boolean"
+    );
+    assert!(
+        value["db_path"].is_string(),
+        "db_path field is present and is a string"
+    );
+}
+
+// ── record_observation defaults source to "agent" ─────────────────
+
+#[tokio::test]
+async fn record_observation_defaults_source_to_agent() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("record_observation").with_arguments(
+                call_tool_args(json!({
+                    "content": "Observation without explicit source",
+                    "title": "No source obs",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let _ = parse_result(result);
+
+    // Query it back and verify source defaults to "agent"
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_observations")
+                .with_arguments(call_tool_args(json!({})).unwrap()),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    let obs = &value["observations"][0];
+    assert_eq!(
+        obs["source"], "agent",
+        "source defaults to 'agent' when not provided"
+    );
+}
+
+// ── record_observation defaults confidence to 0.5 ────────────────
+
+#[tokio::test]
+async fn record_observation_defaults_confidence_to_half() {
+    let (server, dir) = setup();
+    let client = spawn_server(server).await;
+
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("record_observation").with_arguments(
+                call_tool_args(json!({
+                    "content": "Observation without explicit confidence",
+                    "title": "Default confidence obs",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // Verify the file on disk has confidence: 0.5
+    let obs_dir = dir.path().join(".cogz").join("observations");
+    let mut found = false;
+    for entry in walkdir::WalkDir::new(&obs_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if entry.file_type().is_file() && entry.path().extension().is_some_and(|ext| ext == "md") {
+            let content = std::fs::read_to_string(entry.path()).unwrap();
+            assert!(
+                content.contains("confidence: 0.5"),
+                "observation file should have confidence: 0.5, got:\n{content}"
+            );
+            found = true;
+        }
+    }
+    assert!(found, "expected at least one observation .md file");
+}
+
+// ── create_rule defaults confidence to 1.0 ────────────────────────
+
+#[tokio::test]
+async fn create_rule_defaults_confidence_to_1() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("create_rule").with_arguments(
+                call_tool_args(json!({
+                    "content": "Rule without explicit confidence",
+                    "title": "Default confidence rule",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // Query it back and verify confidence defaults to 1.0
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("query_rules")
+                .with_arguments(call_tool_args(json!({})).unwrap()),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    let rule = &value["rules"][0];
+    assert_eq!(
+        rule["confidence"].as_f64(),
+        Some(1.0),
+        "confidence defaults to 1.0 when not provided"
+    );
+}
+
+// ── update_knowledge with category change moves the file ──────────
+
+#[tokio::test]
+async fn update_knowledge_category_change_moves_file() {
+    let (server, dir) = setup();
+    let client = spawn_server(server).await;
+
+    // Create knowledge in category "original"
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("create_knowledge").with_arguments(
+                call_tool_args(json!({
+                    "title": "Movable knowledge",
+                    "content": "Will be recategorized",
+                    "category": "original",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+    let value = parse_result(result);
+    let id = value["id"].as_str().unwrap();
+
+    // Verify file is in the original category dir
+    let cogz_dir = dir.path().join(".cogz");
+    let original_dir = cogz_dir.join("knowledge").join("original");
+    assert_eq!(
+        std::fs::read_dir(&original_dir).unwrap().count(),
+        1,
+        "file exists in original category"
+    );
+
+    // Update with a new category
+    let _ = client
+        .call_tool(
+            CallToolRequestParams::new("update_knowledge").with_arguments(
+                call_tool_args(json!({
+                    "id": id,
+                    "content": "Updated content",
+                    "category": "recategorized",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    // Old file should be gone, new file should exist in new category
+    assert_eq!(
+        std::fs::read_dir(&original_dir).unwrap().count(),
+        0,
+        "old file removed from original category"
+    );
+    let new_dir = cogz_dir.join("knowledge").join("recategorized");
+    assert_eq!(
+        std::fs::read_dir(&new_dir).unwrap().count(),
+        1,
+        "file exists in new category"
+    );
 }

@@ -19,7 +19,15 @@ pub fn record_create_event(conn: &Connection, entity_file: &EntityFile) {
         FileEntityType::Knowledge => EventType::KnowledgeCreated,
     };
     let payload = serde_json::json!({"title": entity_file.title});
-    let _ = crate::storage::events::record_event(conn, event_type, Some(&entity_file.id), &payload);
+    if let Err(e) =
+        crate::storage::events::record_event(conn, event_type, Some(&entity_file.id), &payload)
+    {
+        tracing::warn!(
+            "failed to record create event for {}: {}",
+            entity_file.id,
+            e
+        );
+    }
 }
 
 /// Record a domain event for entity content edit.
@@ -30,5 +38,9 @@ pub fn record_edit_event(conn: &Connection, entity_file: &EntityFile, old_conten
         FileEntityType::Knowledge => EventType::KnowledgeUpdated,
     };
     let payload = serde_json::json!({"old_content": old_content});
-    let _ = crate::storage::events::record_event(conn, event_type, Some(&entity_file.id), &payload);
+    if let Err(e) =
+        crate::storage::events::record_event(conn, event_type, Some(&entity_file.id), &payload)
+    {
+        tracing::warn!("failed to record edit event for {}: {}", entity_file.id, e);
+    }
 }

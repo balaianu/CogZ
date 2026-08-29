@@ -6,21 +6,33 @@ use std::sync::Arc;
 use rmcp::{ServerHandler, ServiceExt, model::*, tool_handler, transport::stdio};
 
 use crate::config::Config;
+use crate::embed::{ModelType, OnnxEmbeddingModel};
 use crate::storage::Storage;
 
 /// The MCP server. Holds shared state accessible to all tool handlers.
+/// The `query_model` is a persistent ONNX model used for query embedding
+/// — it loads lazily on first use and is reused across calls to avoid
+/// reloading the model from disk on every search.
 pub struct CogzServer {
     pub storage: Arc<Storage>,
     pub config: Config,
     pub cogz_dir: PathBuf,
+    pub query_model: Arc<OnnxEmbeddingModel>,
 }
 
 impl CogzServer {
     pub fn new(storage: Arc<Storage>, config: Config, cogz_dir: PathBuf) -> Self {
+        let models_dir = crate::embed::models_dir();
+        let query_model = Arc::new(OnnxEmbeddingModel::new(
+            ModelType::Knowledge,
+            &models_dir,
+            config.embedding.dimension,
+        ));
         Self {
             storage,
             config,
             cogz_dir,
+            query_model,
         }
     }
 }

@@ -5,9 +5,12 @@
 //! `tokio::task::spawn_blocking` to avoid blocking the tokio runtime.
 
 pub mod dedup;
+pub mod errors;
 pub mod helpers;
 pub mod params;
+pub mod responses;
 pub mod server;
+pub mod status;
 pub mod tools;
 
 pub use server::CogzServer;

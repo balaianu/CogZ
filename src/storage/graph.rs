@@ -1,6 +1,6 @@
 //! Graph traversal — multi-hop edge following and batched edge lookup.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
@@ -89,6 +89,50 @@ pub fn get_edges_involving_batch(
         edges.push(row?);
     }
     Ok(edges)
+}
+
+/// Batched references lookup — get `references` edges for a set of
+/// entities in a single query. Returns a map of entity_id → list of
+/// referenced entity IDs.
+pub fn get_references_batch(
+    conn: &Connection,
+    entity_ids: &[String],
+) -> Result<HashMap<String, Vec<String>>, StorageError> {
+    if entity_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = (0..entity_ids.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let params: Vec<&dyn rusqlite::ToSql> = entity_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+
+    let sql = format!(
+        "SELECT source_id, target_id FROM edges
+         WHERE edge_type = 'references' AND source_id IN ({placeholders})"
+    );
+
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for id in entity_ids {
+        map.insert(id.clone(), Vec::new());
+    }
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params.as_slice(), |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (source, target) = row?;
+        if let Some(refs) = map.get_mut(&source) {
+            refs.push(target);
+        }
+    }
+
+    Ok(map)
 }
 
 #[cfg(test)]
@@ -190,5 +234,35 @@ mod tests {
         let conn = setup();
         let edges = get_edges_involving_batch(&conn, &[]).unwrap();
         assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn references_batch_returns_references_map() {
+        let conn = setup();
+        for id in &["u1", "u2", "u3", "u4"] {
+            insert_entity(&conn, &Entity::new(id, "observation", id, "c")).unwrap();
+        }
+        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
+        insert_edge(&conn, &edge("u1", "u3", "references")).unwrap();
+        insert_edge(&conn, &edge("u2", "u4", "references")).unwrap();
+        insert_edge(&conn, &edge("u3", "u4", "calls")).unwrap();
+
+        assert!(get_references_batch(&conn, &[]).unwrap().is_empty());
+
+        let map = get_references_batch(
+            &conn,
+            &["u1".to_string(), "u2".to_string(), "u3".to_string()],
+        )
+        .unwrap();
+
+        let u1_refs = map.get("u1").unwrap();
+        assert_eq!(u1_refs.len(), 2);
+        assert!(u1_refs.contains(&"u2".to_string()));
+        assert!(u1_refs.contains(&"u3".to_string()));
+
+        assert_eq!(map.get("u2").unwrap().len(), 1);
+        assert!(map.get("u2").unwrap().contains(&"u4".to_string()));
+
+        assert_eq!(map.get("u3").unwrap().len(), 0);
     }
 }

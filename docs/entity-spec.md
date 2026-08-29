@@ -715,3 +715,31 @@ If validation fails:
 - `cogz doctor` reports the invalid file
 
 This prevents malformed files from corrupting the DB or graph.
+
+---
+
+## Future: Provenance for Agent-Written Knowledge
+
+The `source` field currently exists only on observations. Knowledge
+and rules have no provenance field — every entry is implicitly trusted
+equally.
+
+This is fine while a human reviews every write. It stops being fine
+when agents write knowledge that other agents consume without a human
+in between. The roadmap has two such transitions:
+
+- **Phase 9 (consolidation):** auto-promotion turns agent observations
+  into rules/knowledge. The promoted entity has no human review.
+- **Phase 11 (events/hooks):** long-running autonomous sessions write
+  knowledge without per-write human review.
+
+At that point, extend `source` to knowledge and rules with the same
+values: `agent`, `human`, `hook`. Surface it in context packs and
+search results as visible metadata — no gating, no blocking. The
+consuming agent or human weights it themselves.
+
+This is provenance transparency, not a review queue. A heavier
+mechanism (a `reviewed` boolean, a `needs_review` status, a
+`cogz doctor --review` workflow) only makes sense if agents are
+empirically writing wrong knowledge that other agents act on blindly.
+Wait for evidence before building the machinery.

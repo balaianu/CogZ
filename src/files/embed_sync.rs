@@ -47,16 +47,31 @@ pub fn embed_entities(
 
 /// Store embeddings in the vec0 table. Replaces any existing
 /// embedding for each entity. Requires a DB connection — caller
-/// is responsible for lock acquisition.
-pub fn store_embeddings(conn: &Connection, embeddings: &[(String, Vec<f32>)]) -> usize {
+/// is responsible for lock acquisition. All writes are wrapped
+/// in a single transaction for atomicity and performance.
+pub fn store_embeddings(conn: &mut Connection, embeddings: &[(String, Vec<f32>)]) -> usize {
+    if embeddings.is_empty() {
+        return 0;
+    }
     let mut stored = 0;
+    let tx = match conn.transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!("failed to begin embedding transaction: {}", e);
+            return 0;
+        }
+    };
     for (entity_id, embedding) in embeddings {
-        let _ = storage::embeddings::delete_embedding(conn, entity_id);
-        if let Err(e) = storage::embeddings::insert_embedding(conn, entity_id, embedding) {
+        let _ = storage::embeddings::delete_embedding(&tx, entity_id);
+        if let Err(e) = storage::embeddings::insert_embedding(&tx, entity_id, embedding) {
             tracing::warn!("failed to store embedding for {}: {}", entity_id, e);
         } else {
             stored += 1;
         }
+    }
+    if let Err(e) = tx.commit() {
+        tracing::warn!("failed to commit embedding transaction: {}", e);
+        return 0;
     }
     stored
 }

@@ -360,14 +360,14 @@ fn search_with_mock_embedding_end_to_end() {
     let model = MockEmbeddingModel::new();
     let cache = EmbeddingCache::new();
     {
-        let conn = storage.conn();
+        let mut conn = storage.conn();
         let entities: Vec<_> = sync_result
             .synced_entity_ids
             .iter()
             .filter_map(|id| storage::crud::get_entity(&conn, id).ok())
             .collect();
         let embeddings = cogz::files::embed_sync::embed_entities(&model, &cache, &entities);
-        cogz::files::embed_sync::store_embeddings(&conn, &embeddings);
+        cogz::files::embed_sync::store_embeddings(&mut conn, &embeddings);
     }
 
     // Search
@@ -486,4 +486,82 @@ fn search_limit_truncates_results() {
     let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
 
     assert_eq!(results.results.len(), 3);
+}
+
+#[test]
+fn search_expansion_deduplicates_across_seeds() {
+    let storage = setup_storage();
+    let conn = storage.conn();
+
+    // Two seeds that both reference the same target.
+    // Without dedup, the target appears twice (once per seed).
+    insert_with_embedding(
+        &conn,
+        &MockEmbeddingModel::new(),
+        "seed1",
+        "observation",
+        "ranking bug one",
+        "ranking content one",
+    );
+    insert_with_embedding(
+        &conn,
+        &MockEmbeddingModel::new(),
+        "seed2",
+        "observation",
+        "ranking bug two",
+        "ranking content two",
+    );
+    insert_with_embedding(
+        &conn,
+        &MockEmbeddingModel::new(),
+        "shared_target",
+        "knowledge",
+        "Shared knowledge",
+        "shared content",
+    );
+
+    // Both seeds reference the same target
+    use cogz::storage::edges::{Edge, insert_edge};
+    let now = chrono::Utc::now().to_rfc3339();
+    insert_edge(
+        &conn,
+        &Edge {
+            source_id: "seed1".to_string(),
+            target_id: "shared_target".to_string(),
+            edge_type: "references".to_string(),
+            weight: 1.0,
+            created_at: now.clone(),
+        },
+    )
+    .unwrap();
+    insert_edge(
+        &conn,
+        &Edge {
+            source_id: "seed2".to_string(),
+            target_id: "shared_target".to_string(),
+            edge_type: "references".to_string(),
+            weight: 1.0,
+            created_at: now,
+        },
+    )
+    .unwrap();
+
+    let params = SearchParams {
+        limit: 20,
+        expand: true,
+        max_hops: 2,
+        ..Default::default()
+    };
+    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+
+    // shared_target should appear exactly once, not twice
+    let shared_count = results
+        .results
+        .iter()
+        .filter(|r| r.entity.id == "shared_target")
+        .count();
+    assert_eq!(
+        shared_count, 1,
+        "expanded entity reachable from multiple seeds appears only once"
+    );
 }

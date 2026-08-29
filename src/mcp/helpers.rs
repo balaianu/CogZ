@@ -5,37 +5,124 @@
 
 use std::sync::Arc;
 
-use rmcp::{
-    ErrorData as McpError,
-    model::{CallToolResult, ContentBlock, ErrorCode},
-};
+use rmcp::ErrorData as McpError;
 use serde_json::json;
 
 use crate::config::Config;
+use crate::embed::{EmbeddingModel, OnnxEmbeddingModel};
+use crate::files::embed_sync::store_embeddings;
 use crate::files::frontmatter::FmValue;
 use crate::files::{EntityFile, read_entity_file, sync_incremental, write_entity_file};
 use crate::mcp::dedup::check_duplicate;
 use crate::mcp::params::UpdateKnowledgeParams;
-use crate::search::SearchResults;
 use crate::storage::{Storage, crud, events};
+
+// Re-export error helpers and response builders for backward-compatible imports.
+pub use crate::mcp::errors::{mcp_error, mcp_internal_error, mcp_invalid_parameter};
+pub use crate::mcp::responses::{context_response, query_response, search_response, tool_success};
+// Re-export status builder so tools.rs imports unchanged.
+pub use crate::mcp::status::build_status_response;
+
+/// Default status filter for query tools: "active" when no status is
+/// provided, matching the MCP contract.
+pub const DEFAULT_QUERY_STATUS: &str = "active";
+
+/// Type alias for the query result: entities with their references map.
+pub type QueryWithRefs = (
+    Vec<crud::Entity>,
+    std::collections::HashMap<String, Vec<String>>,
+);
+
+/// Query entities by type with status defaulting to "active", optional
+/// reference filtering, and batch-fetched references for the response.
+/// Returns `(entities, references_map)`.
+///
+/// Status resolution: `None` → `"active"`, `"all"` → no filter, anything
+/// else → literal status match. This mirrors `search::resolve_status_filter`.
+pub fn query_by_type_with_refs(
+    conn: &rusqlite::Connection,
+    entity_type: &str,
+    status: Option<&str>,
+    limit: i64,
+    references_filter: Option<&str>,
+) -> Result<QueryWithRefs, crate::storage::StorageError> {
+    let status_filter = match status {
+        None => Some(DEFAULT_QUERY_STATUS),
+        Some("all") => None,
+        Some(s) => Some(s),
+    };
+
+    // When a references filter is provided, push it into SQL via
+    // query_entities so the LIMIT applies after filtering. Without
+    // this, we'd fetch `limit` entities and then discard most of
+    // them, returning fewer than expected.
+    //
+    // For rules without a references filter, use the confidence-ordered
+    // path. For rules WITH a references filter, confidence ordering is
+    // sacrificed — references-filtered rule queries are a narrow case
+    // and recency ordering (from query_entities) is acceptable.
+    let entities = if references_filter.is_some() {
+        crate::storage::query::query_entities(
+            conn,
+            &crate::storage::query::EntityFilter {
+                entity_type: Some(entity_type),
+                status: status_filter,
+                file_path: None,
+                references: references_filter,
+                limit,
+            },
+        )?
+    } else if entity_type == "rule" {
+        crate::storage::query::get_rules_by_confidence(conn, status_filter, limit)?
+    } else {
+        crate::storage::query::get_entities_by_type(conn, entity_type, status_filter, limit)?
+    };
+
+    let ids: Vec<String> = entities.iter().map(|e| e.id.clone()).collect();
+    let refs_map = crate::storage::graph::get_references_batch(conn, &ids)?;
+    Ok((entities, refs_map))
+}
 
 /// Generate a title from content (first line, truncated).
 pub fn auto_title(content: &str) -> String {
+    const MAX_TITLE_CHARS: usize = 80;
     let first_line = content.lines().next().unwrap_or(content);
-    if first_line.len() > 80 {
-        format!("{}...", &first_line[..77])
+    if first_line.chars().count() <= MAX_TITLE_CHARS {
+        return first_line.to_string();
+    }
+    let truncated: String = first_line.chars().take(MAX_TITLE_CHARS - 3).collect();
+    format!("{truncated}...")
+}
+
+/// Embed entity text for vector storage. Returns None if the model
+/// is unavailable (graceful degradation). The text is built from
+/// title + content, matching the sync pipeline's `embed_entities`.
+fn embed_entity_text(model: &OnnxEmbeddingModel, title: &str, content: &str) -> Option<Vec<f32>> {
+    if !model.model_files_exist() {
+        return None;
+    }
+    let text = if title.is_empty() {
+        content.to_string()
     } else {
-        first_line.to_string()
+        format!("{}\n\n{}", title, content)
+    };
+    match model.embed(&[&text]) {
+        Ok(embeddings) => embeddings.into_iter().next(),
+        Err(e) => {
+            tracing::warn!("entity embedding failed: {}", e);
+            None
+        }
     }
 }
 
-/// Create an entity file, write it, sync to DB, and run dedup checks.
+/// Create an entity file, write it, sync to DB, embed, and run dedup.
 /// The `EntityFile` is built by the caller with all frontmatter set.
 pub fn create_entity_file(
     storage: &Arc<Storage>,
     config: &Config,
     cogz_dir: &std::path::Path,
     entity: &EntityFile,
+    embed_model: Option<&OnnxEmbeddingModel>,
 ) -> Result<serde_json::Value, McpError> {
     write_and_sync(
         storage,
@@ -43,6 +130,7 @@ pub fn create_entity_file(
         cogz_dir,
         entity,
         entity.entity_type.as_str(),
+        embed_model,
     )
 }
 
@@ -54,6 +142,7 @@ pub fn write_and_sync(
     cogz_dir: &std::path::Path,
     entity: &EntityFile,
     entity_type: &str,
+    embed_model: Option<&OnnxEmbeddingModel>,
 ) -> Result<serde_json::Value, McpError> {
     // 1. Write file first (file-first invariant)
     let path = entity.file_path(cogz_dir);
@@ -74,15 +163,21 @@ pub fn write_and_sync(
         ));
     }
 
-    // 3. Run dedup checks
+    // 3. Embed (no DB lock held during ONNX inference)
+    let embedding = embed_model.and_then(|m| embed_entity_text(m, &entity.title, &entity.body));
+
+    // 4. Store embedding + run dedup (under lock, no I/O)
     let dedup = {
-        let conn = storage.conn();
+        let mut conn = storage.conn();
+        if let Some(ref emb) = embedding {
+            store_embeddings(&mut conn, &[(entity.id.clone(), emb.clone())]);
+        }
         check_duplicate(
             &conn,
             &entity.id,
             &entity.title,
             entity_type,
-            None,
+            embedding.as_deref(),
             &config.consolidation,
         )
     };
@@ -91,13 +186,13 @@ pub fn write_and_sync(
     // We only need to record an additional event if dedup flagged something.
     if dedup.dedup_flagged {
         let conn = storage.conn();
+        let event_type = match entity.entity_type {
+            crate::files::FileEntityType::Observation => events::EventType::ObservationCreated,
+            crate::files::FileEntityType::Rule => events::EventType::RuleCreated,
+            crate::files::FileEntityType::Knowledge => events::EventType::KnowledgeCreated,
+        };
         let payload = json!({"dedup_flagged": true});
-        let _ = events::record_event(
-            &conn,
-            events::EventType::KnowledgeCreated,
-            Some(&entity.id),
-            &payload,
-        );
+        let _ = events::record_event(&conn, event_type, Some(&entity.id), &payload);
     }
 
     let relative_path = path
@@ -119,6 +214,7 @@ pub fn update_knowledge_file(
     storage: &Arc<Storage>,
     cogz_dir: &std::path::Path,
     params: &UpdateKnowledgeParams,
+    embed_model: Option<&OnnxEmbeddingModel>,
 ) -> Result<serde_json::Value, McpError> {
     // 1. Get the existing entity from DB to find its file path
     let entity = {
@@ -181,8 +277,14 @@ pub fn update_knowledge_file(
 
     // 4. Write the file (may move to new path if category changed)
     let new_path = entity_file.file_path(cogz_dir);
-    if new_path != abs_path {
-        let _ = std::fs::remove_file(&abs_path);
+    if new_path != abs_path
+        && let Err(e) = std::fs::remove_file(&abs_path)
+    {
+        tracing::warn!(
+            "failed to remove old entity file {}: {}",
+            abs_path.display(),
+            e
+        );
     }
     write_entity_file(&new_path, &entity_file)
         .map_err(|e| mcp_error("file_write_failed", &format!("Failed to write file: {}", e)))?;
@@ -197,9 +299,16 @@ pub fn update_knowledge_file(
         ));
     }
 
-    // 6. Record update event
+    // 6. Re-embed (no DB lock during ONNX inference)
+    let embedding =
+        embed_model.and_then(|m| embed_entity_text(m, &entity_file.title, &entity_file.body));
+
+    // 7. Store embedding + record update event (under lock)
     {
-        let conn = storage.conn();
+        let mut conn = storage.conn();
+        if let Some(ref emb) = embedding {
+            store_embeddings(&mut conn, &[(entity_file.id.clone(), emb.clone())]);
+        }
         let payload = json!({"updated_fields": updated_fields});
         let _ = events::record_event(
             &conn,
@@ -221,115 +330,17 @@ pub fn update_knowledge_file(
     }))
 }
 
-/// Build a query response JSON from a list of entities.
-pub fn query_response(entities: Vec<crud::Entity>, key: &str) -> serde_json::Value {
-    let items: Vec<_> = entities
-        .iter()
-        .map(|e| {
-            json!({
-                "id": e.id,
-                "title": e.title,
-                "content": e.content,
-                "status": e.status,
-                "source": e.properties.get("source")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("agent"),
-                "created_at": e.created_at,
-                "updated_at": e.updated_at,
-                "file_path": e.file_path,
-            })
-        })
-        .collect();
-    json!({ key: items, "count": items.len() })
-}
-
-/// Build a search response from SearchResults.
-pub fn search_response(results: SearchResults) -> serde_json::Value {
-    let items: Vec<_> = results
-        .results
-        .iter()
-        .map(|r| {
-            json!({
-                "id": r.entity.id,
-                "type": r.entity.r#type,
-                "title": r.entity.title,
-                "content": r.entity.content,
-                "relevance": r.relevance,
-                "graph_path": r.graph_path,
-                "graph_path_description": r.graph_path_description,
-            })
-        })
-        .collect();
-    json!({
-        "results": items,
-        "count": items.len(),
-        "search_mode": results.search_mode.as_str(),
-    })
-}
-
-/// Build a context pack response.
-pub fn context_response(pack: crate::context::ContextPack) -> serde_json::Value {
-    let sections: Vec<_> = pack
-        .sections
-        .iter()
-        .map(|s| {
-            json!({
-                "source": s.source,
-                "entity_id": s.entity_id,
-                "title": s.title,
-                "content": s.content,
-                "relevance": s.relevance,
-                "graph_path": s.graph_path,
-            })
-        })
-        .collect();
-    json!({
-        "query": pack.query,
-        "mode": pack.mode.as_str(),
-        "sections": sections,
-        "metadata": {
-            "size_tokens": pack.metadata.size_tokens,
-            "selected_sources": pack.metadata.selected_sources,
-            "dropped_sources": pack.metadata.dropped_sources,
-            "search_mode": pack.metadata.search_mode,
-        },
-    })
-}
-
-// ─── MCP Error Helpers ────────────────────────────────────────────
-
-pub fn mcp_error(code: &str, message: &str) -> McpError {
-    McpError::new(
-        ErrorCode::INVALID_PARAMS,
-        message.to_string(),
-        Some(json!({ "code": code })),
-    )
-}
-
-pub fn mcp_internal_error(context: &str, message: &str) -> McpError {
-    McpError::new(
-        ErrorCode::INTERNAL_ERROR,
-        format!("{}: {}", context, message),
-        None,
-    )
-}
-
-pub fn mcp_invalid_parameter(message: &str) -> McpError {
-    McpError::new(ErrorCode::INVALID_PARAMS, message.to_string(), None)
-}
+// ─── Response builders ─────────────────────────────────────────────
+// Response builder functions live in `responses.rs` and are re-exported above.
 
 /// Embed a query string for hybrid search. Returns None if the
 /// embedding model is unavailable (graceful degradation to FTS-only).
-#[allow(dead_code)]
-pub fn embed_query_for_search(config: &Config, query: &str) -> Option<Vec<f32>> {
-    use crate::embed::{EmbeddingModel, ModelType, OnnxEmbeddingModel};
-
-    let models_dir = crate::embed::models_dir();
-    let model = OnnxEmbeddingModel::new(
-        ModelType::Knowledge,
-        &models_dir,
-        config.embedding.dimension,
-    );
+/// Uses the provided persistent model to avoid reloading from disk
+/// on every call.
+pub fn embed_query_for_search(
+    model: &crate::embed::OnnxEmbeddingModel,
+    query: &str,
+) -> Option<Vec<f32>> {
     if !model.model_files_exist() {
         return None;
     }
@@ -340,10 +351,4 @@ pub fn embed_query_for_search(config: &Config, query: &str) -> Option<Vec<f32>> 
             None
         }
     }
-}
-
-/// Build a successful tool result from a JSON value.
-#[allow(dead_code)]
-pub fn tool_success(value: serde_json::Value) -> CallToolResult {
-    CallToolResult::success(vec![ContentBlock::text(value.to_string())])
 }

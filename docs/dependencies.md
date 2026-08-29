@@ -63,20 +63,22 @@ toml = "0.8"
 **serde_json 1** — JSON for entity properties and event payloads.
 **toml 0.8** — TOML parsing for config files.
 
-### Code Parsing
+### Code Parsing (Phase 8 — not yet in Cargo.toml)
 
 ```toml
-tree-sitter = "0.25"
-tree-sitter-rust = "0.23"
-tree-sitter-python = "0.23"
-tree-sitter-javascript = "0.23"
-tree-sitter-typescript = "0.23"
-tree-sitter-go = "0.23"
-tree-sitter-c = "0.23"
-tree-sitter-cpp = "0.23"
-tree-sitter-java = "0.23"
-tree-sitter-php = "0.23"
-tree-sitter-c-sharp = "0.23"
+# These will be added in Phase 8 (code indexing):
+# tree-sitter = "0.25"
+# tree-sitter-rust = "0.23"
+# tree-sitter-python = "0.23"
+# tree-sitter-javascript = "0.23"
+# tree-sitter-typescript = "0.23"
+# tree-sitter-go = "0.23"
+# tree-sitter-c = "0.23"
+# tree-sitter-cpp = "0.23"
+# tree-sitter-java = "0.23"
+# tree-sitter-php = "0.23"
+# tree-sitter-c-sharp = "0.23"
+# ignore = "0.4"
 ```
 
 **tree-sitter 0.25** (latest: 0.26.13, published 2026-08-23)
@@ -96,6 +98,11 @@ similar. We verify compatibility at build time.
 Note: tree-sitter-python 0.25.0 requires tree-sitter ^0.25.8, which
 is compatible with our 0.25.x pin. If any language crate requires
 0.26.x, we'll upgrade the whole stack together.
+
+**ignore 0.4** — `.gitignore` parsing and matching. Uses the same
+crate as ripgrep. Handles gitignore syntax correctly including
+negation, nested gitignores, and global gitignore. Will be added in
+Phase 8 alongside tree-sitter.
 
 ### Embedding / ML
 
@@ -173,19 +180,17 @@ the `client` feature enabled, for integration tests that use
 
 ```toml
 walkdir = "2"
-git2 = "0.19"
-ignore = "0.4"
+git2 = { version = "0.19", default-features = false }
 ```
 
 **walkdir 2** — recursive directory traversal for scanning `.cogz/`
 and source files.
 
 **git2 0.19** — libgit2 bindings for git diff and remote URL
-detection (project name autodetection on `cogz init`).
-
-**ignore 0.4** — `.gitignore` parsing and matching. Uses the same
-crate as ripgrep. Handles gitignore syntax correctly including
-negation, nested gitignores, and global gitignore.
+detection (project name autodetection on `cogz init`). We disable
+default features to avoid pulling in OpenSSL (we use `rustls-tls`
+via reqwest instead). libgit2 is bundled via the `bundled` feature
+which is enabled by default in recent versions.
 
 ### Utilities
 
@@ -196,7 +201,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 slug = "0.1"
 zerocopy = "0.8"
 ```
@@ -209,21 +214,25 @@ zerocopy = "0.8"
 | `anyhow` | Application-level error handling (CLI, MCP handlers) |
 | `thiserror` | Library-level error types (storage, embed, search) |
 | `tracing` | Structured logging |
-| `tracing-subscriber` | Log output configuration |
+| `tracing-subscriber` | Log output configuration with env-filter |
 | `slug` | Slug generation for file naming (knowledge, rules) |
 | `zerocopy` | Zero-copy byte conversion for sqlite-vec vector I/O |
+| `ndarray` | Tensor operations for ONNX embedding (pinned to match ort) |
 
-### HTTP (for model download)
+### HTTP (for model download — deferred to Phase 12)
 
 ```toml
-reqwest = { version = "0.12", features = ["blocking"], default-features = false }
+# reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 ```
 
 **reqwest 0.12** — HTTP client for downloading ONNX models from
-HuggingFace. `blocking` feature because model download happens in a
-synchronous context (first `cogz index`). `default-features = false`
-to avoid pulling in unnecessary dependencies; we add only what's
-needed.
+HuggingFace. Not yet added to Cargo.toml — will be included when
+model download is implemented in Phase 12. `blocking` feature
+because model download happens in a synchronous context (first
+`cogz index`). `default-features = false` to avoid pulling in
+unnecessary dependencies. We use `rustls-tls` instead of the
+default `native-tls` to avoid an OpenSSL build-time dependency —
+rustls is pure Rust and links cleanly.
 
 ---
 
@@ -314,10 +323,6 @@ description = "Local-first, code-aware engineering cognition runtime"
 license = "MIT"
 
 [dependencies]
-# Database
-rusqlite = { version = "0.40", features = ["bundled"] }
-sqlite-vec = "0.1"
-
 # CLI
 clap = { version = "4", features = ["derive"] }
 
@@ -326,23 +331,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 
-# Code parsing
-tree-sitter = "0.25"
-tree-sitter-rust = "0.23"
-tree-sitter-python = "0.23"
-tree-sitter-javascript = "0.23"
-tree-sitter-typescript = "0.23"
-tree-sitter-go = "0.23"
-tree-sitter-c = "0.23"
-tree-sitter-cpp = "0.23"
-tree-sitter-java = "0.23"
-tree-sitter-php = "0.23"
-tree-sitter-c-sharp = "0.23"
-
 # Embedding / ML
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = "0.21"
-ndarray = "0.16"
 
 # MCP server
 rmcp = { version = "3.1.2", features = ["transport-io"] }
@@ -350,9 +341,16 @@ tokio = { version = "1", features = ["full"] }
 schemars = "1"
 
 # File system / Git
+git2 = { version = "0.19", default-features = false }
 walkdir = "2"
-git2 = "0.19"
-ignore = "0.4"
+slug = "0.1"
+
+# Database
+rusqlite = { version = "0.40", features = ["bundled"] }
+sqlite-vec = "0.1"
+
+# HTTP (model download — deferred to Phase 12)
+# reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }
@@ -361,16 +359,14 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
-tracing-subscriber = "0.3"
-slug = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zerocopy = "0.8"
-
-# HTTP (model download)
-reqwest = { version = "0.12", features = ["blocking"], default-features = false }
+ndarray = "0.16"
 
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
+rmcp = { version = "3.1.2", features = ["transport-io", "client"] }
 
 [profile.release]
 opt-level = 3
@@ -405,14 +401,15 @@ debug = true
 | Database | rusqlite, sqlite-vec | 2 |
 | CLI | clap | 1 |
 | Config/Serialization | serde, serde_json, toml | 3 |
-| Code parsing | tree-sitter + 10 language crates | 11 |
-| Embedding/ML | ort, tokenizers | 2 |
+| Embedding/ML | ort, tokenizers, ndarray | 3 |
 | MCP server | rmcp, tokio, schemars | 3 |
-| File system/Git | walkdir, git2, ignore | 3 |
-| Utilities | uuid, sha2, chrono, anyhow, thiserror, tracing, tracing-subscriber, slug, zerocopy | 9 |
-| HTTP | reqwest | 1 |
-| Dev | tempfile, pretty_assertions | 2 |
-| **Total** | | **37** |
+| File system/Git | git2, walkdir, slug | 3 |
+| Utilities | uuid, sha2, chrono, anyhow, thiserror, tracing, tracing-subscriber, zerocopy | 8 |
+| HTTP | _(deferred to Phase 12)_ | 0 |
+| Dev | tempfile, pretty_assertions, rmcp (client feature) | 3 |
+| **Total** | | **26** |
 
-37 direct dependencies. Transitive count will be higher but
-manageable. The binary will be ~15-25 MB with static linking.
+26 direct dependencies (Phase 7 scope). Tree-sitter and `ignore`
+crates will be added in Phase 8 (code indexing). `reqwest` will be
+added in Phase 12 (model download). Transitive count will be higher
+but manageable. The binary will be ~15-25 MB with static linking.

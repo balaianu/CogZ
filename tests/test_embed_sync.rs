@@ -22,7 +22,7 @@ fn make_entity(id: &str, etype: &str, title: &str, content: &str) -> Entity {
 /// Embed entities and store their vectors in one step. Convenience
 /// for tests that don't need to test the split-phase flow.
 fn embed_and_store(
-    conn: &rusqlite::Connection,
+    conn: &mut rusqlite::Connection,
     model: &dyn EmbeddingModel,
     cache: &EmbeddingCache,
     entities: &[Entity],
@@ -35,7 +35,7 @@ fn embed_and_store(
 fn embed_entities_stores_vectors() {
     let dir = tempfile::tempdir().unwrap();
     let storage = setup_storage(dir.path());
-    let conn = storage.conn();
+    let mut conn = storage.conn();
 
     let e1 = make_entity("entity-1", "observation", "Test A", "content A");
     let e2 = make_entity("entity-2", "knowledge", "Test B", "content B");
@@ -45,7 +45,7 @@ fn embed_entities_stores_vectors() {
     let model = MockEmbeddingModel::new();
     let cache = EmbeddingCache::new();
 
-    let embedded = embed_and_store(&conn, &model, &cache, &[e1, e2]);
+    let embedded = embed_and_store(&mut conn, &model, &cache, &[e1, e2]);
 
     assert_eq!(embedded, 2);
     assert_eq!(storage::embeddings::count_embeddings(&conn).unwrap(), 2);
@@ -75,7 +75,7 @@ fn embed_entities_skips_when_model_unavailable() {
 fn embed_entities_uses_cache_on_second_call() {
     let dir = tempfile::tempdir().unwrap();
     let storage = setup_storage(dir.path());
-    let conn = storage.conn();
+    let mut conn = storage.conn();
 
     let entity = make_entity("entity-1", "observation", "Test", "content");
     storage::crud::insert_entity(&conn, &entity).unwrap();
@@ -84,7 +84,7 @@ fn embed_entities_uses_cache_on_second_call() {
     let cache = EmbeddingCache::new();
 
     let embeddings1 = embed_entities(&model, &cache, std::slice::from_ref(&entity));
-    store_embeddings(&conn, &embeddings1);
+    store_embeddings(&mut conn, &embeddings1);
     assert_eq!(cache.misses(), 1);
     assert_eq!(cache.hits(), 0);
 
@@ -92,7 +92,7 @@ fn embed_entities_uses_cache_on_second_call() {
     assert_eq!(storage::embeddings::count_embeddings(&conn).unwrap(), 0);
 
     let embeddings2 = embed_entities(&model, &cache, std::slice::from_ref(&entity));
-    store_embeddings(&conn, &embeddings2);
+    store_embeddings(&mut conn, &embeddings2);
     assert_eq!(cache.hits(), 1);
     assert_eq!(cache.misses(), 1);
     assert_eq!(storage::embeddings::count_embeddings(&conn).unwrap(), 1);
@@ -111,7 +111,7 @@ fn embed_entities_handles_empty_list() {
 fn store_embeddings_replaces_existing() {
     let dir = tempfile::tempdir().unwrap();
     let storage = setup_storage(dir.path());
-    let conn = storage.conn();
+    let mut conn = storage.conn();
 
     let entity = make_entity("entity-1", "knowledge", "Test", "content");
     storage::crud::insert_entity(&conn, &entity).unwrap();
@@ -123,7 +123,7 @@ fn store_embeddings_replaces_existing() {
     let model = MockEmbeddingModel::new();
     let cache = EmbeddingCache::new();
     let embeddings = embed_entities(&model, &cache, &[entity]);
-    let stored = store_embeddings(&conn, &embeddings);
+    let stored = store_embeddings(&mut conn, &embeddings);
 
     assert_eq!(stored, 1);
     assert_eq!(storage::embeddings::count_embeddings(&conn).unwrap(), 1);
@@ -154,13 +154,13 @@ fn full_sync_with_mock_embedding() {
     assert_eq!(result.created, 1);
     assert_eq!(result.synced_entity_ids.len(), 1);
 
-    let conn = storage.conn();
+    let mut conn = storage.conn();
     let entity_id = &result.synced_entity_ids[0];
     let entity = storage::crud::get_entity(&conn, entity_id).unwrap();
 
     let model = MockEmbeddingModel::new();
     let cache = EmbeddingCache::new();
-    let embedded = embed_and_store(&conn, &model, &cache, &[entity]);
+    let embedded = embed_and_store(&mut conn, &model, &cache, &[entity]);
 
     assert_eq!(embedded, 1);
     assert_eq!(storage::embeddings::count_embeddings(&conn).unwrap(), 1);

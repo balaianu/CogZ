@@ -258,6 +258,19 @@ structural edges are inserted into the graph.
 - Integration with `cogz index` — index both code and .cogz/ files
 - Multi-model embedding (CodeRankEmbed for code, bge-base for
   knowledge)
+- Wire `code_model`/`knowledge_model` config fields to model selection
+  (Phase 7 left these as metadata-only)
+- True batched ONNX inference — pad/collate input_ids into a single
+  `[batch, max_seq_len]` tensor instead of per-text inference calls
+  (Phase 7's `embed()` loop processes one text at a time)
+- Fused multi-seed BFS for graph expansion — single frontier across
+  all seeds instead of N separate BFS loops (Phase 7's
+  `expand_with_paths` runs one BFS per seed)
+- Chunked `IN (...)` queries for large frontiers — handle
+  `SQLITE_MAX_VARIABLE_NUMBER` limits when code graphs produce large
+  fan-out (Phase 7's `get_edges_involving_batch` binds params 2×,
+  which is fine for entity volumes but may exceed limits for code
+  graphs)
 
 **Verification:**
 - Index a real Rust repo → functions, classes, files appear as entities
