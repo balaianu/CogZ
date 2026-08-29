@@ -7,6 +7,7 @@ pub mod config;
 pub mod context;
 pub mod embed;
 pub mod files;
+pub mod index;
 pub mod init;
 pub mod mcp;
 pub mod search;

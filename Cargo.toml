@@ -28,13 +28,21 @@ schemars = "1"
 git2 = { version = "0.19", default-features = false }
 walkdir = "2"
 slug = "0.1"
+ignore = "0.4"
+
+# Code parsing (Phase 8)
+tree-sitter = "0.25"
+tree-sitter-language = "0.1"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+globset = "0.4"
 
 # Database
 rusqlite = { version = "0.40", features = ["bundled"] }
 sqlite-vec = "0.1"
 
 # Utilities
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
