@@ -151,6 +151,10 @@ impl OnnxEmbeddingModel {
 
 impl EmbeddingModel for OnnxEmbeddingModel {
     fn embed(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
+        if texts.is_empty() {
+            return Ok(Vec::new());
+        }
+
         self.try_load()?;
 
         let mut session_guard = self.session.lock().unwrap();
@@ -158,7 +162,11 @@ impl EmbeddingModel for OnnxEmbeddingModel {
         let session = session_guard.as_mut().unwrap();
         let tokenizer = tokenizer_guard.as_ref().unwrap();
 
-        let mut results = Vec::with_capacity(texts.len());
+        // Phase 1: tokenize all texts and collect encoded results.
+        let mut all_input_ids: Vec<Vec<i64>> = Vec::with_capacity(texts.len());
+        let mut all_attention_masks: Vec<Vec<i64>> = Vec::with_capacity(texts.len());
+        let mut max_seq_len: usize = 0;
+
         for text in texts {
             let encoded = tokenizer
                 .encode(*text, true)
@@ -170,46 +178,86 @@ impl EmbeddingModel for OnnxEmbeddingModel {
                 .iter()
                 .map(|&v| v as i64)
                 .collect();
-            let seq_len = input_ids.len() as i64;
 
-            let input_ids_tensor = Tensor::from_array((vec![1, seq_len], input_ids))
+            max_seq_len = max_seq_len.max(input_ids.len());
+            all_input_ids.push(input_ids);
+            all_attention_masks.push(attention_mask);
+        }
+
+        // Phase 2: pad all sequences to max_seq_len and build batch tensors.
+        let batch_size = texts.len() as i64;
+        let padded_len = max_seq_len as i64;
+
+        let mut batch_input_ids = Vec::with_capacity(texts.len() * max_seq_len);
+        let mut batch_attention_mask = Vec::with_capacity(texts.len() * max_seq_len);
+
+        for (input_ids, attention_mask) in all_input_ids.iter().zip(all_attention_masks.iter()) {
+            // Pad with zeros (padding token id = 0, attention mask = 0)
+            batch_input_ids.extend_from_slice(input_ids);
+            batch_input_ids.extend(std::iter::repeat_n(0i64, max_seq_len - input_ids.len()));
+            batch_attention_mask.extend_from_slice(attention_mask);
+            batch_attention_mask.extend(std::iter::repeat_n(0i64, max_seq_len - attention_mask.len()));
+        }
+
+        let input_ids_tensor =
+            Tensor::from_array((vec![batch_size, padded_len], batch_input_ids))
                 .map_err(|e| EmbeddingError::InferenceFailed(format!("input tensor: {}", e)))?;
-            let attention_mask_tensor =
-                Tensor::from_array((vec![1, seq_len], attention_mask.clone()))
-                    .map_err(|e| EmbeddingError::InferenceFailed(format!("mask tensor: {}", e)))?;
+        let attention_mask_tensor =
+            Tensor::from_array((vec![batch_size, padded_len], batch_attention_mask.clone()))
+                .map_err(|e| EmbeddingError::InferenceFailed(format!("mask tensor: {}", e)))?;
 
-            let outputs = session
-                .run(ort::inputs![input_ids_tensor, attention_mask_tensor])
-                .map_err(|e| EmbeddingError::InferenceFailed(format!("inference: {}", e)))?;
+        // Phase 3: single batched inference call.
+        let outputs = session
+            .run(ort::inputs![input_ids_tensor, attention_mask_tensor])
+            .map_err(|e| EmbeddingError::InferenceFailed(format!("inference: {}", e)))?;
 
-            // Extract embedding from the first output. Shape is either
-            // [1, seq_len, dim] (mean-pool) or [1, dim] (already pooled).
-            let (shape, data) = outputs[0]
-                .try_extract_tensor::<f32>()
-                .map_err(|e| EmbeddingError::InferenceFailed(format!("extract: {}", e)))?;
+        // Phase 4: extract and pool embeddings from batched output.
+        let (shape, data) = outputs[0]
+            .try_extract_tensor::<f32>()
+            .map_err(|e| EmbeddingError::InferenceFailed(format!("extract: {}", e)))?;
 
-            let embedding = if shape.len() == 3 {
-                let dim = shape[2] as usize;
-                let seq = shape[1] as usize;
-                mean_pool_with_mask(data, &attention_mask, seq, dim)
-            } else if shape.len() == 2 {
-                let dim = shape[1] as usize;
-                data[..dim].to_vec()
-            } else {
-                return Err(EmbeddingError::InferenceFailed(format!(
-                    "unexpected output rank: {}",
-                    shape.len()
-                )));
-            };
+        let mut results = Vec::with_capacity(texts.len());
 
-            if embedding.len() != self.dimension {
-                return Err(EmbeddingError::DimensionMismatch {
-                    expected: self.dimension,
-                    actual: embedding.len(),
-                });
+        if shape.len() == 3 {
+            // Shape: [batch, seq_len, dim]
+            let dim = shape[2] as usize;
+            let seq = shape[1] as usize;
+            let batch = shape[0] as usize;
+            let row_size = seq * dim;
+
+            for i in 0..batch {
+                let row = &data[i * row_size..(i + 1) * row_size];
+                let mask = &all_attention_masks[i];
+                let embedding = mean_pool_with_mask(row, mask, seq, dim);
+
+                if embedding.len() != self.dimension {
+                    return Err(EmbeddingError::DimensionMismatch {
+                        expected: self.dimension,
+                        actual: embedding.len(),
+                    });
+                }
+                results.push(embedding);
             }
+        } else if shape.len() == 2 {
+            // Shape: [batch, dim] — already pooled
+            let dim = shape[1] as usize;
+            let batch = shape[0] as usize;
 
-            results.push(embedding);
+            for i in 0..batch {
+                let embedding = data[i * dim..(i + 1) * dim].to_vec();
+                if embedding.len() != self.dimension {
+                    return Err(EmbeddingError::DimensionMismatch {
+                        expected: self.dimension,
+                        actual: embedding.len(),
+                    });
+                }
+                results.push(embedding);
+            }
+        } else {
+            return Err(EmbeddingError::InferenceFailed(format!(
+                "unexpected output rank: {}",
+                shape.len()
+            )));
         }
 
         Ok(results)
