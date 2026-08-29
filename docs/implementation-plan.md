@@ -258,11 +258,11 @@ structural edges are inserted into the graph.
   Extracts functions, classes (structs/impls/enums/traits for Rust,
   classes for Python), files, and modules with properties
   (line_start, line_end, signature, qualified_name, language).
-- `src/index/sync.rs` — code entity synchronization with
+- `src/index/sync/mod.rs` — code entity synchronization with
   deterministic UUID v5 IDs (`{file_path}:{entity_type}:{qualified_name}`).
   Content hash change detection, insert/update/stale/reactivate,
   preserves `created_at` on updates.
-- `src/index/code_graph.rs` — structural edge extraction (calls,
+- `src/index/code_graph/mod.rs` — structural edge extraction (calls,
   imports, extends) from tree-sitter AST. Name-to-UUID matching
   with both qualified and simple name lookup.
 - `src/index/mod.rs` — orchestration: scan → read → parse → sync

@@ -56,6 +56,8 @@ folder renames — but it is metadata, not a query filter.
 cogz/
   src/
     main.rs              — CLI entry point (clap)
+    commands.rs          — CLI command handlers (status, index, reindex, reset)
+    cli.rs               — CLI helpers (embedding, search, context, MCP)
     lib.rs               — library root, public API
 
     config/
@@ -73,9 +75,14 @@ cogz/
     index/
       mod.rs             — orchestration: scan → parse → sync → edges
       gitignore.rs       — gitignore-aware source file scanner
-      tree_sitter.rs     — AST parsing (Rust + Python), entity extraction
-      sync.rs            — code entity sync (UUID v5, content hash, stale)
-      code_graph.rs      — structural edge extraction (calls, imports, extends)
+      tree_sitter.rs     — shared types, Rust entity extraction
+      tree_sitter/
+        python.rs        — Python entity extraction
+      sync/
+        mod.rs           — code entity sync (UUID v5, content hash, stale)
+      code_graph/
+        mod.rs           — Rust edge extraction + shared utilities
+        python.rs        — Python edge extraction
 
     embed/
       mod.rs             — embedding root

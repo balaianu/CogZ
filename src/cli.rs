@@ -83,17 +83,18 @@ pub fn models_dir() -> std::path::PathBuf {
     cogz::embed::models_dir()
 }
 
-/// Embed a search query using the knowledge model (bge-base).
+/// Embed a search query using the configured knowledge model.
 /// Returns None if the model is unavailable (graceful degradation
 /// to FTS-only search).
 pub fn embed_query(config: &Config, query: &str) -> Option<Vec<f32>> {
     use cogz::embed::{EmbeddingModel, ModelType, OnnxEmbeddingModel};
 
     let models_dir = models_dir();
-    let model = OnnxEmbeddingModel::new(
+    let model = OnnxEmbeddingModel::with_model_id(
         ModelType::Knowledge,
         &models_dir,
         config.embedding.dimension,
+        &config.embedding.knowledge_model,
     );
 
     if !model.model_files_exist() {

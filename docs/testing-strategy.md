@@ -42,8 +42,11 @@ functions and structs in isolation.
 | `files/entities.rs` | Frontmatter parsing, file writing, slug generation, UUID generation |
 | `files/sync.rs` | Change detection (content hash), sync state machine, stale flagging, policy-aware content change handling per entity type |
 | `index/gitignore.rs` | .gitignore parsing, path filtering, allow overrides |
-| `index/tree_sitter.rs` | AST parsing, entity extraction (per language) |
-| `index/code_graph.rs` | Edge construction (calls, imports, extends) |
+| `index/tree_sitter.rs` | AST parsing, entity extraction (Rust) |
+| `index/tree_sitter/python.rs` | AST parsing, entity extraction (Python) |
+| `index/code_graph/mod.rs` | Edge construction — calls, imports, extends (Rust) |
+| `index/code_graph/python.rs` | Edge construction — calls, imports, extends (Python) |
+| `index/sync/mod.rs` | UUID v5 generation, content hash, stale marking, entity sync |
 | `index/git_diff.rs` | Diff parsing, changed file detection |
 | `embed/cache.rs` | Cache hit/miss, content-hash-based lookup |
 | `search/rrf.rs` | RRF fusion correctness, score computation |
@@ -65,7 +68,7 @@ Live in `tests/` directory. Test multiple modules working together.
 | `tests/test_context.rs` | Context assembly: insert entities with references, run each mode, verify pack structure and token budget |
 | `tests/test_consolidation.rs` | Consolidation pipeline: insert duplicates, verify dedup + `duplicate_warning`; insert same-title knowledge, verify title match; insert contradictions, verify flagging; insert supporting observations, verify promotion; verify `superseded_by` and `derived_from` edges |
 | `tests/test_update_policy.rs` | Update policy enforcement: `update_knowledge` edits knowledge in-place; no `update_observation` or `edit_rule` tool exists; status state machine rejects illegal transitions; observation content edit detected by sync, event logged |
-| `tests/test_code_indexing.rs` | Tree-sitter indexing: index a test repo, verify code entities and structural edges |
+| `tests/test_code_index.rs` | Tree-sitter indexing: index a test repo, verify code entities and structural edges |
 | `tests/test_git_diff.rs` | Change detection: index, modify source file, reindex, verify stale flagging on referenced knowledge |
 | `tests/test_mcp_server.rs` | MCP protocol: start server, call each of 13 tools, verify responses; `update_knowledge` edits knowledge; `create_knowledge` returns `duplicate_warning` when title matches |
 
