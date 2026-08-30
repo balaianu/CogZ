@@ -268,6 +268,35 @@ fn sync_forward_reference_edge_created() {
 }
 
 #[test]
+fn sync_supports_edges_from_supporting_ids() {
+    let storage = setup_storage();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Target observation that will be supported.
+    write_file(
+        dir.path(),
+        "observations/2026-01/target.md",
+        "---\nid: target-uuid\ntitle: \"Target Obs\"\ntype: observation\nstatus: active\ncreated_at: 2026-01-01T00:00:00Z\nupdated_at: 2026-01-01T00:00:00Z\nreferences: []\nsource: agent\nconfidence: 0.5\n---\n\nTarget content",
+    );
+    // Supporting observation with supporting_ids pointing to target.
+    write_file(
+        dir.path(),
+        "observations/2026-01/supporter.md",
+        "---\nid: supporter-uuid\ntitle: \"Supporter\"\ntype: observation\nstatus: active\ncreated_at: 2026-01-02T00:00:00Z\nupdated_at: 2026-01-02T00:00:00Z\nreferences: []\nsupporting_ids: [\"target-uuid\"]\nsource: agent\nconfidence: 0.5\n---\n\nSupporting content",
+    );
+
+    let result = sync_all(&storage, dir.path());
+    assert_eq!(result.created, 2);
+    assert_eq!(result.errors.len(), 0);
+
+    let conn = storage.conn();
+    let edges = storage::edges::get_edges_from(&conn, "supporter-uuid").unwrap();
+    let supports_edges: Vec<_> = edges.iter().filter(|e| e.edge_type == "supports").collect();
+    assert_eq!(supports_edges.len(), 1);
+    assert_eq!(supports_edges[0].target_id, "target-uuid");
+}
+
+#[test]
 fn sync_observations_with_properties() {
     let storage = setup_storage();
     let dir = tempfile::tempdir().unwrap();

@@ -6,18 +6,39 @@
 //! to the survivor. Knowledge is flagged, not auto-merged (human-curated).
 //! Rules are surfaced for review, not auto-merged.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
 use crate::config::ConsolidationConfig;
 use crate::files::frontmatter::FmValue;
-use crate::files::{read_entity_file, write_entity_file};
+use crate::files::{FrontmatterError, read_entity_file, write_entity_file};
 use crate::storage::StorageError;
 use crate::storage::edges::{Edge, delete_edge, get_edges_from, get_edges_to, insert_edge};
 use crate::storage::events::{EventType, record_event};
 use crate::storage::query::get_entities_by_type;
 use crate::storage::status::transition_status;
+
+/// Errors from merge operations.
+#[derive(Debug, thiserror::Error)]
+pub enum MergeError {
+    #[error("storage error: {0}")]
+    Storage(#[from] StorageError),
+    #[error("frontmatter error: {0}")]
+    Frontmatter(#[from] FrontmatterError),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+impl From<MergeError> for StorageError {
+    fn from(e: MergeError) -> Self {
+        match e {
+            MergeError::Storage(s) => s,
+            MergeError::Frontmatter(f) => StorageError::EntityNotFound(f.to_string()),
+            MergeError::Io(i) => StorageError::EntityNotFound(i.to_string()),
+        }
+    }
+}
 
 /// Result of a single merge decision.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -31,7 +52,7 @@ pub struct MergeResult {
 /// merged pairs. When `dry_run` is true, no changes are made.
 pub fn run_merge(
     storage: &crate::storage::Storage,
-    _cogz_dir: &Path,
+    cogz_dir: &Path,
     config: &ConsolidationConfig,
     dry_run: bool,
 ) -> Result<Vec<MergeResult>, StorageError> {
@@ -50,7 +71,7 @@ pub fn run_merge(
 
     let mut results = Vec::new();
     for pair in pairs {
-        match merge_one(storage, &pair) {
+        match merge_one(storage, cogz_dir, &pair) {
             Ok(()) => results.push(MergeResult {
                 survivor_id: pair.survivor_id,
                 superseded_id: pair.superseded_id,
@@ -148,10 +169,25 @@ fn find_merge_candidates(
     Ok(candidates)
 }
 
+/// Resolve a DB-stored file path to an absolute path. DB paths are
+/// stored relative to `.cogz` (e.g. `observations/2026-08/uuid.md`).
+/// The repo root is the parent of `cogz_dir`.
+fn resolve_file_path(file_path: &str, cogz_dir: &Path) -> PathBuf {
+    if file_path.starts_with(".cogz") {
+        cogz_dir.parent().unwrap_or(cogz_dir).join(file_path)
+    } else {
+        cogz_dir.join(file_path)
+    }
+}
+
 /// Merge one pair: redirect edges, mark the superseded entity's file
 /// and DB row. File-first: the superseded entity's frontmatter is
 /// updated on disk before the DB.
-fn merge_one(storage: &crate::storage::Storage, pair: &MergeCandidate) -> Result<(), StorageError> {
+fn merge_one(
+    storage: &crate::storage::Storage,
+    cogz_dir: &Path,
+    pair: &MergeCandidate,
+) -> Result<(), MergeError> {
     // 1. Read the superseded entity's file, update frontmatter.
     let superseded_entity = {
         let conn = storage.conn();
@@ -163,9 +199,8 @@ fn merge_one(storage: &crate::storage::Storage, pair: &MergeCandidate) -> Result
         .as_ref()
         .ok_or_else(|| StorageError::EntityNotFound(pair.superseded_id.clone()))?;
 
-    let path = Path::new(file_path);
-    let mut entity_file = read_entity_file(path)
-        .map_err(|e| StorageError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+    let path = resolve_file_path(file_path, cogz_dir);
+    let mut entity_file = read_entity_file(&path)?;
 
     // Set superseded_by in frontmatter.
     entity_file
@@ -175,8 +210,7 @@ fn merge_one(storage: &crate::storage::Storage, pair: &MergeCandidate) -> Result
     entity_file.updated_at = chrono::Utc::now().to_rfc3339();
 
     // Write file first.
-    write_entity_file(path, &entity_file)
-        .map_err(|e| StorageError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+    write_entity_file(&path, &entity_file)?;
 
     // 2. DB: redirect edges, update status.
     let conn = storage.conn();

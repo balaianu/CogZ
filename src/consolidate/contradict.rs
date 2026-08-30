@@ -112,16 +112,41 @@ pub fn classify_candidates(
 }
 
 /// Record `contradicts` edges from the new entity to each
-/// contradicted existing entity, and record a `contradiction_found`
-/// domain event for the new entity.
+/// contradicted existing entity, write them to the entity's file
+/// frontmatter (file-first invariant), and record a
+/// `contradiction_found` domain event.
 pub fn record_contradictions(
     conn: &Connection,
     new_id: &str,
     contradicts_ids: &[String],
+    file_path: &std::path::Path,
 ) -> Result<(), crate::storage::StorageError> {
+    use crate::files::frontmatter::FmValue;
+    use crate::files::{read_entity_file, write_entity_file};
     use crate::storage::edges::{Edge, insert_edge};
     use crate::storage::events::{EventType, record_event};
 
+    // 1. Update the file frontmatter with contradicts field (file-first).
+    let mut entity_file = read_entity_file(file_path).map_err(|e| {
+        crate::storage::StorageError::EntityNotFound(format!(
+            "failed to read entity file {}: {}",
+            file_path.display(),
+            e
+        ))
+    })?;
+    entity_file
+        .frontmatter
+        .insert("contradicts", FmValue::Array(contradicts_ids.to_vec()));
+    entity_file.updated_at = chrono::Utc::now().to_rfc3339();
+    write_entity_file(file_path, &entity_file).map_err(|e| {
+        crate::storage::StorageError::EntityNotFound(format!(
+            "failed to write entity file {}: {}",
+            file_path.display(),
+            e
+        ))
+    })?;
+
+    // 2. Insert contradicts edges in the DB.
     let now = chrono::Utc::now().to_rfc3339();
     for target_id in contradicts_ids {
         insert_edge(
@@ -255,12 +280,39 @@ mod tests {
 
     #[test]
     fn record_contradictions_creates_edges_and_event() {
+        use crate::files::frontmatter::{FmValue, Frontmatter, serialize as serialize_fm};
+
         let conn = setup();
         insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
         insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
         insert_entity(&conn, &Entity::new("u3", "observation", "C", "c")).unwrap();
 
-        record_contradictions(&conn, "u3", &["u1".to_string(), "u2".to_string()]).unwrap();
+        // Write a file for u3 so record_contradictions can update it.
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("u3.md");
+        let mut fm = Frontmatter::new();
+        fm.insert("id", FmValue::String("u3".to_string()));
+        fm.insert("title", FmValue::String("C".to_string()));
+        fm.insert("type", FmValue::String("observation".to_string()));
+        fm.insert("status", FmValue::String("active".to_string()));
+        fm.insert(
+            "created_at",
+            FmValue::String("2026-01-01T00:00:00Z".to_string()),
+        );
+        fm.insert(
+            "updated_at",
+            FmValue::String("2026-01-01T00:00:00Z".to_string()),
+        );
+        fm.insert("references", FmValue::Array(vec![]));
+        std::fs::write(&file_path, format!("---\n{}---\n\nc", serialize_fm(&fm))).unwrap();
+
+        record_contradictions(
+            &conn,
+            "u3",
+            &["u1".to_string(), "u2".to_string()],
+            &file_path,
+        )
+        .unwrap();
 
         let edges = crate::storage::edges::get_edges_from(&conn, "u3").unwrap();
         let contradict_edges: Vec<_> = edges
@@ -271,5 +323,9 @@ mod tests {
 
         let events = crate::storage::events::get_events_for_entity(&conn, "u3").unwrap();
         assert!(events.iter().any(|e| e.event_type == "contradiction_found"));
+
+        // Verify the file was updated with contradicts frontmatter.
+        let content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(content.contains("contradicts"));
     }
 }

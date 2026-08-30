@@ -165,7 +165,26 @@ fn contradiction_records_edges_and_event() {
     insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
     insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
 
-    record_contradictions(&conn, "u2", &["u1".to_string()]).unwrap();
+    // Write a file for u2 so record_contradictions can update it.
+    let dir = tempfile::tempdir().unwrap();
+    let file_path = dir.path().join("u2.md");
+    let mut fm = Frontmatter::new();
+    fm.insert("id", FmValue::String("u2".to_string()));
+    fm.insert("title", FmValue::String("B".to_string()));
+    fm.insert("type", FmValue::String("observation".to_string()));
+    fm.insert("status", FmValue::String("active".to_string()));
+    fm.insert(
+        "created_at",
+        FmValue::String("2026-01-01T00:00:00Z".to_string()),
+    );
+    fm.insert(
+        "updated_at",
+        FmValue::String("2026-01-01T00:00:00Z".to_string()),
+    );
+    fm.insert("references", FmValue::Array(vec![]));
+    std::fs::write(&file_path, format!("---\n{}---\n\nc", serialize_fm(&fm))).unwrap();
+
+    record_contradictions(&conn, "u2", &["u1".to_string()], &file_path).unwrap();
 
     let edges = get_edges_from(&conn, "u2").unwrap();
     assert!(
@@ -173,6 +192,10 @@ fn contradiction_records_edges_and_event() {
             .iter()
             .any(|e| e.edge_type == "contradicts" && e.target_id == "u1")
     );
+
+    // Verify the file was updated with contradicts frontmatter.
+    let content = std::fs::read_to_string(&file_path).unwrap();
+    assert!(content.contains("contradicts"));
 }
 
 // ─── Promotion integration ───────────────────────────────────────
@@ -229,6 +252,19 @@ fn promotion_creates_rule_file_and_derived_from_edge() {
             .iter()
             .any(|e| e.edge_type == "derived_from" && e.target_id == "obs-1")
     );
+
+    // Verify the rule file contains derived_from in frontmatter (file-backed edge).
+    let rule_entity = cogz::storage::crud::get_entity(&conn, &results[0].new_rule_id).unwrap();
+    let file_path = rule_entity.file_path.as_ref().unwrap();
+    // Paths are stored relative to .cogz (e.g. "rules/foo.md").
+    let abs_path = if file_path.starts_with(".cogz") {
+        cogz_dir.parent().unwrap_or(&cogz_dir).join(file_path)
+    } else {
+        cogz_dir.join(file_path)
+    };
+    let file_content = std::fs::read_to_string(&abs_path).unwrap();
+    assert!(file_content.contains("derived_from"));
+    assert!(file_content.contains("obs-1"));
 }
 
 #[test]
@@ -287,13 +323,14 @@ fn merge_supersedes_duplicate_and_redirects_edges() {
         let conn = storage.conn();
         let mut e1 = Entity::new("obs-1", "observation", "A", "content");
         e1.created_at = "2026-01-01T00:00:00Z".to_string();
-        e1.file_path = Some(obs_dir.join("obs-1.md").to_string_lossy().to_string());
+        // Relative path as stored by sync.rs (relative to .cogz).
+        e1.file_path = Some("observations/2026-01/obs-1.md".to_string());
         insert_entity(&conn, &e1).unwrap();
         insert_embedding(&conn, "obs-1", &embedding).unwrap();
 
         let mut e2 = Entity::new("obs-2", "observation", "B", "content");
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
-        e2.file_path = Some(obs_dir.join("obs-2.md").to_string_lossy().to_string());
+        e2.file_path = Some("observations/2026-01/obs-2.md".to_string());
         insert_entity(&conn, &e2).unwrap();
         insert_embedding(&conn, "obs-2", &embedding).unwrap();
 

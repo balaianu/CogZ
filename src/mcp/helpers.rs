@@ -213,7 +213,7 @@ pub fn write_and_sync(
 
         if !contradicts_ids.is_empty() {
             let conn = storage.conn();
-            if let Err(e) = record_contradictions(&conn, &entity.id, &contradicts_ids) {
+            if let Err(e) = record_contradictions(&conn, &entity.id, &contradicts_ids, &path) {
                 tracing::warn!("failed to record contradictions for {}: {}", entity.id, e);
             }
             true

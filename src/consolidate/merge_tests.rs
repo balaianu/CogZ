@@ -95,27 +95,14 @@ fn merge_redirects_edges_and_marks_superseded() {
         let conn = storage.conn();
         let mut e1 = Entity::new("obs-1", "observation", "A", "content");
         e1.created_at = "2026-01-01T00:00:00Z".to_string();
-        e1.file_path = Some(
-            cogz_dir
-                .join("observations")
-                .join("2026-01")
-                .join("obs-1.md")
-                .to_string_lossy()
-                .to_string(),
-        );
+        // Relative path as stored by sync.rs (relative to .cogz).
+        e1.file_path = Some("observations/2026-01/obs-1.md".to_string());
         insert_entity(&conn, &e1).unwrap();
         insert_embedding(&conn, "obs-1", &embedding).unwrap();
 
         let mut e2 = Entity::new("obs-2", "observation", "B", "content");
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
-        e2.file_path = Some(
-            cogz_dir
-                .join("observations")
-                .join("2026-01")
-                .join("obs-2.md")
-                .to_string_lossy()
-                .to_string(),
-        );
+        e2.file_path = Some("observations/2026-01/obs-2.md".to_string());
         insert_entity(&conn, &e2).unwrap();
         insert_embedding(&conn, "obs-2", &embedding).unwrap();
 

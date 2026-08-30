@@ -921,6 +921,7 @@ db_path = ".cogz/cogz.db"        # per-repo database
 [embedding]
 code_model = "nomic-ai/CodeRankEmbed-int8"   # used for code entity embeddings
 knowledge_model = "BAAI/bge-base-en-v1.5"    # used for knowledge entity + query embeddings
+nli_model = "nli-deberta-v3-xsmall"          # NLI model for contradiction detection
 dimension = 768
 
 [search]

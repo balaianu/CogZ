@@ -115,6 +115,8 @@ fn promote_one(
     cogz_dir: &Path,
     candidate: &PromotionCandidate,
 ) -> Result<String, StorageError> {
+    use crate::files::content_hash;
+
     let title = candidate
         .observation
         .title
@@ -133,6 +135,12 @@ fn promote_one(
         "promoted_from",
         FmValue::String(candidate.observation.id.clone()),
     );
+    // derived_from as frontmatter field — syncs to derived_from edge
+    // via refs::sync_references, surviving DB rebuilds.
+    fm.insert(
+        "derived_from",
+        FmValue::String(candidate.observation.id.clone()),
+    );
 
     let mut rule_file =
         EntityFile::new(title, FileEntityType::Rule, &candidate.observation.content);
@@ -145,6 +153,17 @@ fn promote_one(
 
     let rule_id = rule_file.id.clone();
     let now = chrono::Utc::now().to_rfc3339();
+
+    // Compute content hash from the file content (same as sync.rs).
+    let file_content = rule_file.to_file_content();
+    let hash = content_hash(&file_content);
+
+    // Path relative to .cogz, matching sync.rs convention.
+    let relative_path = file_path
+        .strip_prefix(cogz_dir)
+        .unwrap_or(&file_path)
+        .to_string_lossy()
+        .to_string();
 
     // Sync to DB: insert the rule entity.
     let conn = storage.conn();
@@ -159,15 +178,17 @@ fn promote_one(
             "supporting_ids": candidate.supporting_ids,
             "promoted_from": candidate.observation.id,
         }),
-        file_path: Some(file_path.to_string_lossy().to_string()),
+        file_path: Some(relative_path),
         status: "active".to_string(),
-        content_hash: None,
+        content_hash: Some(hash),
         created_at: now.clone(),
         updated_at: now,
     };
     crate::storage::crud::insert_entity(&conn, &entity)?;
 
     // Create derived_from edge: new rule → source observation.
+    // This edge is also file-backed via the derived_from frontmatter
+    // field, so it survives DB rebuilds.
     insert_edge(
         &conn,
         &Edge {

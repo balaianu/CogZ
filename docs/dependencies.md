@@ -149,17 +149,19 @@ before embedding. Used by the ONNX embedding pipeline.
 ### MCP Server
 
 ```toml
-rmcp = { version = "3.1.2", features = ["transport-io"] }
+rmcp = { version = "=3.1.4", features = ["transport-io"] }
 tokio = { version = "1", features = ["full"] }
 schemars = "1"
 ```
 
-**rmcp 3.1.2** (published 2026-08-07, 341K downloads)
+**rmcp 3.1.4** (published 2026-08-20, 341K downloads)
 
 Official Rust MCP SDK. Implements the MCP 2026-07-28 spec. The SDK
 went through 2.x and 3.x major cycles since the initial docs were
-written. We pin to 3.1.2 rather than 3.1.4 (2026-08-20, only 9 days
-old) to stay conservative on the 7-day rule. Features:
+written. We pin to 3.1.4 with an exact pin (`=3.1.4`) because the
+SDK is pre-1.0 and can have breaking changes between minor versions.
+3.1.4 is 11+ days old as of our adoption, satisfying the 7-day rule.
+Features:
 - `server` (default) — server-side implementation, tool handler traits
 - `macros` (default) — `#[tool]` and `#[tool_router]` attribute macros
 - `transport-io` — stdio transport for `cogz mcp-stdio`

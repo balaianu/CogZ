@@ -57,6 +57,7 @@ impl ServerHandler for CogzServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_server_info(Implementation::new("cogz", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "CogZ — local-first engineering cognition runtime. \
                  Tools: record_observation, query_observations, create_rule, \

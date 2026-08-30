@@ -46,7 +46,8 @@ markdown, rendered as-is in search results and context packs.
 |---|---|---|---|
 | `source` | string | No | Who produced this: `agent` (default), `human`, `hook`. |
 | `confidence` | number (0.0-1.0) | No | Confidence score. Default: 0.5 for raw observations. |
-| `supporting_ids` | array of strings (UUIDs) | No | Entity UUIDs of observations that support this one. Used for promotion. |
+| `supporting_ids` | array of strings (UUIDs) | No | Entity UUIDs of observations that support this one. Used for promotion. Syncs to `supports` edges. |
+| `contradicts` | array of strings (UUIDs) | No | Entity UUIDs that this observation contradicts. Syncs to `contradicts` edges. Set by consolidation (NLI) or manually by the agent. |
 
 #### Rule
 
@@ -54,8 +55,9 @@ markdown, rendered as-is in search results and context packs.
 |---|---|---|---|
 | `confidence` | number (0.0-1.0) | No | Confidence score. Default: 1.0 for directly created rules, lower for promoted. |
 | `validation_count` | integer | No | Number of times this rule has been validated. Default: 0. |
-| `supporting_ids` | array of strings (UUIDs) | No | Entity UUIDs of observations that support this rule. |
+| `supporting_ids` | array of strings (UUIDs) | No | Entity UUIDs of observations that support this rule. Syncs to `supports` edges. |
 | `promoted_from` | string (UUID) | No | Observation UUID this rule was promoted from. Only set by consolidation. |
+| `derived_from` | string (UUID) | No | Entity UUID this rule was derived from. Syncs to `derived_from` edge. Set by consolidation (on promotion) or agent (on supersede). |
 | `superseded_by` | string (UUID) | No | Entity UUID of the rule that superseded this one. Set when status transitions to `superseded`. |
 
 #### Knowledge
