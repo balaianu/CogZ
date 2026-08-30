@@ -244,3 +244,62 @@ pub fn run_reset(repo: &Path, purge: bool) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+pub fn run_consolidate(repo: &Path, dry_run: bool) -> anyhow::Result<()> {
+    let (config, db_path) = load_config(repo)?;
+    let cogz_dir = repo.join(".cogz");
+
+    if !db_path.exists() {
+        anyhow::bail!(
+            "Database not found at {}. Run `cogz index` first.",
+            db_path.display()
+        );
+    }
+
+    let storage = cogz::storage::Storage::open(&db_path)?;
+
+    println!(
+        "Consolidating{}...",
+        if dry_run { " (dry run)" } else { "" }
+    );
+
+    let promoted = cogz::consolidate::promote::run_promotion(
+        &storage,
+        &cogz_dir,
+        &config.consolidation,
+        dry_run,
+    )?;
+    println!("\n  Promoted: {}", promoted.len());
+    for p in &promoted {
+        if dry_run {
+            println!(
+                "    [dry-run] observation {} → would create rule ({})",
+                p.observation_id, p.reason
+            );
+        } else {
+            println!(
+                "    observation {} → rule {} ({})",
+                p.observation_id, p.new_rule_id, p.reason
+            );
+        }
+    }
+
+    let merged =
+        cogz::consolidate::merge::run_merge(&storage, &cogz_dir, &config.consolidation, dry_run)?;
+    println!("\n  Merged: {}", merged.len());
+    for m in &merged {
+        println!(
+            "    {} superseded by {} ({}){}",
+            m.superseded_id,
+            m.survivor_id,
+            m.reason,
+            if dry_run { " [dry-run]" } else { "" }
+        );
+    }
+
+    if dry_run {
+        println!("\n  (dry run — no changes made)");
+    }
+
+    Ok(())
+}

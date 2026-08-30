@@ -117,3 +117,10 @@ pub struct ListEntitiesParams {
     #[serde(default)]
     pub status: Option<String>,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ConsolidateParams {
+    /// If true, report what would be consolidated without making changes.
+    #[serde(default)]
+    pub dry_run: bool,
+}

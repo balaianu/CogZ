@@ -4,6 +4,7 @@
 //! The public surface grows phase by phase per the implementation plan.
 
 pub mod config;
+pub mod consolidate;
 pub mod context;
 pub mod embed;
 pub mod files;

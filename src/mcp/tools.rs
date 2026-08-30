@@ -6,19 +6,18 @@ use rmcp::{
 };
 use serde_json::json;
 
-use crate::context::{AssembleParams, ContextMode, assemble_context};
+use crate::context::{AssembleParams, assemble_context};
 use crate::files::frontmatter::FmValue;
 use crate::files::{EntityFile, FileEntityType};
 use crate::mcp::helpers::{
-    DEFAULT_QUERY_STATUS, auto_title, build_status_response, create_entity_file,
-    embed_query_for_search, mcp_internal_error, mcp_invalid_parameter, query_by_type_with_refs,
-    update_knowledge_file, write_and_sync,
+    auto_title, build_status_response, create_entity_file, embed_query_for_search,
+    list_entities_response, mcp_internal_error, parse_context_mode, query_by_type_with_refs,
+    query_knowledge_with_refs, update_knowledge_file, write_and_sync,
 };
 use crate::mcp::params::*;
 use crate::mcp::responses::{context_response, query_response, search_response, tool_success};
 use crate::mcp::server::CogzServer;
 use crate::search::{SearchParams, search as search_entities};
-use crate::storage::query;
 
 #[tool_router(vis = "pub")]
 impl CogzServer {
@@ -35,7 +34,7 @@ impl CogzServer {
         let config = self.config.clone();
         let cogz_dir = self.cogz_dir.clone();
         let query_model = self.query_model.clone();
-
+        let nli_model = self.nli_model.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut entity = EntityFile::new(&title, FileEntityType::Observation, &params.content);
             if let Some(refs) = params.references.as_deref() {
@@ -44,11 +43,17 @@ impl CogzServer {
             let source = params.source.unwrap_or_else(|| "agent".to_string());
             entity.frontmatter.insert("source", FmValue::String(source));
             entity.frontmatter.insert("confidence", FmValue::Float(0.5));
-            create_entity_file(&storage, &config, &cogz_dir, &entity, Some(&query_model))
+            create_entity_file(
+                &storage,
+                &config,
+                &cogz_dir,
+                &entity,
+                Some(&query_model),
+                Some(&*nli_model),
+            )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
-
         Ok(tool_success(json!(result)))
     }
 
@@ -65,7 +70,7 @@ impl CogzServer {
         let config = self.config.clone();
         let cogz_dir = self.cogz_dir.clone();
         let query_model = self.query_model.clone();
-
+        let nli_model = self.nli_model.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut entity = EntityFile::new(&title, FileEntityType::Rule, &params.content);
             if let Some(refs) = params.references.as_deref() {
@@ -75,11 +80,17 @@ impl CogzServer {
             entity
                 .frontmatter
                 .insert("confidence", FmValue::Float(confidence));
-            create_entity_file(&storage, &config, &cogz_dir, &entity, Some(&query_model))
+            create_entity_file(
+                &storage,
+                &config,
+                &cogz_dir,
+                &entity,
+                Some(&query_model),
+                Some(&*nli_model),
+            )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
-
         Ok(tool_success(json!(result)))
     }
 
@@ -117,11 +128,11 @@ impl CogzServer {
                 &entity,
                 "knowledge",
                 Some(&query_model),
+                None,
             )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
-
         Ok(tool_success(json!(result)))
     }
 
@@ -136,13 +147,11 @@ impl CogzServer {
         let storage = self.storage.clone();
         let cogz_dir = self.cogz_dir.clone();
         let query_model = self.query_model.clone();
-
         let result = tokio::task::spawn_blocking(move || {
             update_knowledge_file(&storage, &cogz_dir, &params, Some(&query_model))
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
-
         Ok(tool_success(json!(result)))
     }
 
@@ -217,22 +226,13 @@ impl CogzServer {
         let storage = self.storage.clone();
         let result = tokio::task::spawn_blocking(move || {
             let conn = storage.conn();
-            let status_filter = match params.status.as_deref() {
-                None => Some(DEFAULT_QUERY_STATUS),
-                Some("all") => None,
-                Some(s) => Some(s),
-            };
-            let entities = query::get_knowledge_filtered(
+            query_knowledge_with_refs(
                 &conn,
-                status_filter,
+                params.status.as_deref(),
                 params.category.as_deref(),
                 params.tags.as_deref(),
                 params.limit.unwrap_or(20),
-            )?;
-
-            let ids: Vec<String> = entities.iter().map(|e| e.id.clone()).collect();
-            let refs_map = crate::storage::graph::get_references_batch(&conn, &ids)?;
-            Ok::<_, crate::storage::StorageError>((entities, refs_map))
+            )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
@@ -259,9 +259,7 @@ impl CogzServer {
         let default_limit = self.config.search.max_results;
         let task_max_hops = self.config.context.task_max_hops;
         let query_model = self.query_model.clone();
-
         let results = tokio::task::spawn_blocking(move || {
-            // Embed the query inside spawn_blocking — ONNX inference is blocking.
             let query_embedding = embed_query_for_search(&query_model, &params.query);
             let conn = storage.conn();
             let expand = params.expand.unwrap_or(true);
@@ -283,7 +281,6 @@ impl CogzServer {
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
         .map_err(|e| mcp_internal_error("search", &e.to_string()))?;
-
         Ok(tool_success(json!(search_response(results))))
     }
 
@@ -296,46 +293,32 @@ impl CogzServer {
         Parameters(params): Parameters<GetContextParams>,
     ) -> Result<CallToolResult, McpError> {
         let mode_str = params.mode.as_deref().unwrap_or("task");
-        let mode = ContextMode::parse(mode_str).ok_or_else(|| {
-            mcp_invalid_parameter(&format!(
-                "invalid mode '{}': expected cold_start, task, or escalation",
-                mode_str
-            ))
-        })?;
-
-        if mode.requires_query() && params.query.is_none() {
-            return Err(mcp_invalid_parameter(&format!(
-                "query is required for {} mode",
-                mode
-            )));
-        }
-
+        let mode = parse_context_mode(mode_str, params.query.as_deref())?;
         let query_str = params.query.clone();
         let storage = self.storage.clone();
         let config = self.config.clone();
         let query_model = self.query_model.clone();
-
         let pack = tokio::task::spawn_blocking(move || {
-            // Embed the query inside spawn_blocking — ONNX inference is blocking.
-            let query_embedding = if let Some(ref q) = params.query {
-                embed_query_for_search(&query_model, q)
-            } else {
-                None
-            };
+            let query_embedding = params
+                .query
+                .as_deref()
+                .and_then(|q| embed_query_for_search(&query_model, q));
             let conn = storage.conn();
-            let assemble_params = AssembleParams {
-                mode,
-                query: query_str.as_deref(),
-                query_embedding: query_embedding.as_deref(),
-                max_tokens: params.max_tokens,
-                include_stale: params.include_stale.unwrap_or(false),
-            };
-            assemble_context(&conn, &assemble_params, &config)
+            assemble_context(
+                &conn,
+                &AssembleParams {
+                    mode,
+                    query: query_str.as_deref(),
+                    query_embedding: query_embedding.as_deref(),
+                    max_tokens: params.max_tokens,
+                    include_stale: params.include_stale.unwrap_or(false),
+                },
+                &config,
+            )
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
         .map_err(|e| mcp_internal_error("context", &e.to_string()))?;
-
         Ok(tool_success(json!(context_response(pack))))
     }
 
@@ -350,7 +333,6 @@ impl CogzServer {
             .await
             .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
             .map_err(|e| mcp_internal_error("status", &e.to_string()))?;
-
         Ok(tool_success(status))
     }
 
@@ -364,28 +346,55 @@ impl CogzServer {
     ) -> Result<CallToolResult, McpError> {
         let storage = self.storage.clone();
         let entity_type = params.entity_type.clone();
-        let entities = tokio::task::spawn_blocking(move || {
+        let status = params.status.clone();
+        let result = tokio::task::spawn_blocking(move || {
             let conn = storage.conn();
-            let status_filter = match params.status.as_deref() {
-                None => Some(DEFAULT_QUERY_STATUS),
-                Some("all") => None,
-                Some(s) => Some(s),
-            };
-            query::get_entities_by_type(&conn, &params.entity_type, status_filter, 1000)
+            list_entities_response(&conn, &entity_type, status.as_deref())
         })
         .await
         .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
         .map_err(|e| mcp_internal_error("query", &e.to_string()))?;
+        Ok(tool_success(result))
+    }
 
-        let items: Vec<_> = entities
-            .iter()
-            .map(|e| json!({ "id": e.id, "title": e.title }))
-            .collect();
+    #[tool(
+        name = "consolidate",
+        description = "Trigger background consolidation: promote supported observations to rules, merge confirmed duplicates. Dedup and contradiction detection happen automatically on every insert; this tool runs the deferred phases."
+    )]
+    async fn consolidate(
+        &self,
+        Parameters(params): Parameters<ConsolidateParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let storage = self.storage.clone();
+        let config = self.config.clone();
+        let cogz_dir = self.cogz_dir.clone();
+        let dry_run = params.dry_run;
+        let result = tokio::task::spawn_blocking(move || {
+            let promoted = crate::consolidate::promote::run_promotion(
+                &storage,
+                &cogz_dir,
+                &config.consolidation,
+                dry_run,
+            )
+            .map_err(|e| mcp_internal_error("consolidate", &e.to_string()))?;
 
-        Ok(tool_success(json!({
-            "entity_type": entity_type,
-            "entities": items,
-            "count": items.len(),
-        })))
+            let merged = crate::consolidate::merge::run_merge(
+                &storage,
+                &cogz_dir,
+                &config.consolidation,
+                dry_run,
+            )
+            .map_err(|e| mcp_internal_error("consolidate", &e.to_string()))?;
+            Ok::<_, McpError>(json!({
+                "promoted": promoted,
+                "merged": merged,
+                "promoted_count": promoted.len(),
+                "merged_count": merged.len(),
+                "dry_run": dry_run,
+            }))
+        })
+        .await
+        .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
+        Ok(tool_success(result))
     }
 }

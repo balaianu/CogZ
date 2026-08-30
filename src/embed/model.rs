@@ -1,9 +1,9 @@
-//! Embedding model trait and mock implementation.
+//! Embedding and NLI model traits and mock implementations.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-/// Error type for embedding operations.
+/// Error type for embedding and NLI operations.
 #[derive(Debug, thiserror::Error)]
 pub enum EmbeddingError {
     #[error("model not available: {0}")]
@@ -14,7 +14,7 @@ pub enum EmbeddingError {
     DimensionMismatch { expected: usize, actual: usize },
 }
 
-/// Result alias for embedding operations.
+/// Result alias for embedding and NLI operations.
 pub type EmbeddingResult<T> = std::result::Result<T, EmbeddingError>;
 
 /// Trait for text embedding models.
@@ -87,6 +87,94 @@ impl EmbeddingModel for MockEmbeddingModel {
     }
 }
 
+/// NLI classification label — the result of comparing a premise
+/// against a hypothesis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NliLabel {
+    /// The hypothesis follows from the premise.
+    Entailment,
+    /// The hypothesis is unrelated to the premise.
+    Neutral,
+    /// The hypothesis contradicts the premise.
+    Contradiction,
+}
+
+impl NliLabel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Entailment => "entailment",
+            Self::Neutral => "neutral",
+            Self::Contradiction => "contradiction",
+        }
+    }
+}
+
+/// Trait for natural language inference (NLI) models.
+///
+/// Used by consolidation to detect contradictions between observations
+/// and rules. Implementations include the ONNX Runtime model
+/// (`OnnxNliModel`) and a deterministic mock (`MockNliModel`) for
+/// testing.
+pub trait NliModel: Send + Sync {
+    /// Classify the relationship between a premise and a hypothesis.
+    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliLabel>;
+
+    /// Model identifier for logging.
+    fn model_name(&self) -> &str;
+
+    /// Whether the model is loaded and ready for inference.
+    fn is_available(&self) -> bool;
+}
+
+/// Deterministic mock NLI model for tests.
+///
+/// Classifies based on simple keyword matching: if the hypothesis
+/// contains a negation word ("not", "never", "wrong", "incorrect",
+/// "actually") and the premise doesn't, it's a contradiction. If the
+/// texts are identical or near-identical, it's entailment. Otherwise
+/// neutral. No network access, no ONNX dependency.
+pub struct MockNliModel;
+
+impl NliModel for MockNliModel {
+    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliLabel> {
+        let p_lower = premise.to_lowercase();
+        let h_lower = hypothesis.to_lowercase();
+
+        if p_lower == h_lower {
+            return Ok(NliLabel::Entailment);
+        }
+
+        let p_neg = has_negation(&p_lower);
+        let h_neg = has_negation(&h_lower);
+
+        if p_neg != h_neg {
+            return Ok(NliLabel::Contradiction);
+        }
+
+        Ok(NliLabel::Neutral)
+    }
+
+    fn model_name(&self) -> &str {
+        "mock-nli"
+    }
+
+    fn is_available(&self) -> bool {
+        true
+    }
+}
+
+fn has_negation(text: &str) -> bool {
+    let negations = [
+        " not ",
+        " never ",
+        " wrong",
+        " incorrect",
+        " actually",
+        "no ",
+    ];
+    negations.iter().any(|n| text.contains(n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +214,45 @@ mod tests {
     fn mock_is_available() {
         let model = MockEmbeddingModel::new();
         assert!(model.is_available());
+    }
+
+    #[test]
+    fn mock_nli_entailment_for_identical_text() {
+        let model = MockNliModel;
+        let label = model
+            .classify("The bug is in search", "The bug is in search")
+            .unwrap();
+        assert_eq!(label, NliLabel::Entailment);
+    }
+
+    #[test]
+    fn mock_nli_contradiction_for_negated_hypothesis() {
+        let model = MockNliModel;
+        let label = model
+            .classify("The bug is in search", "The bug is not in search")
+            .unwrap();
+        assert_eq!(label, NliLabel::Contradiction);
+    }
+
+    #[test]
+    fn mock_nli_neutral_for_unrelated() {
+        let model = MockNliModel;
+        let label = model
+            .classify("The bug is in search", "The config file is missing")
+            .unwrap();
+        assert_eq!(label, NliLabel::Neutral);
+    }
+
+    #[test]
+    fn mock_nli_is_available() {
+        let model = MockNliModel;
+        assert!(model.is_available());
+    }
+
+    #[test]
+    fn nli_label_as_str() {
+        assert_eq!(NliLabel::Entailment.as_str(), "entailment");
+        assert_eq!(NliLabel::Neutral.as_str(), "neutral");
+        assert_eq!(NliLabel::Contradiction.as_str(), "contradiction");
     }
 }

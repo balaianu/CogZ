@@ -12,5 +12,6 @@ pub mod responses;
 pub mod server;
 pub mod status;
 pub mod tools;
+pub mod update_knowledge;
 
 pub use server::CogzServer;

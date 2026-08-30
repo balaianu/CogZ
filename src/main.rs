@@ -112,6 +112,20 @@ enum Commands {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
     },
+
+    /// Run background consolidation: promote supported observations
+    /// to rules, merge confirmed duplicates. Dedup and contradiction
+    /// detection happen automatically on every insert; this runs the
+    /// deferred phases.
+    Consolidate {
+        /// Repository root directory. Defaults to current directory.
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+
+        /// Report what would be consolidated without making changes.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -150,5 +164,6 @@ fn main() -> anyhow::Result<()> {
             max_tokens,
         } => cli::run_context(&mode, query.as_deref(), &repo, include_stale, max_tokens),
         Commands::McpStdio { repo } => cli::run_mcp_stdio(&repo),
+        Commands::Consolidate { repo, dry_run } => commands::run_consolidate(&repo, dry_run),
     }
 }

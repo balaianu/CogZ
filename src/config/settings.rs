@@ -37,6 +37,10 @@ pub struct EmbeddingConfig {
     pub code_model: String,
     pub knowledge_model: String,
     pub dimension: usize,
+    /// NLI model ID for contradiction detection (Phase 9).
+    /// Empty string = use default (`nli-deberta-v3-xsmall`).
+    #[serde(default)]
+    pub nli_model: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -116,6 +120,7 @@ impl Config {
                 code_model: "nomic-ai/CodeRankEmbed-int8".to_string(),
                 knowledge_model: "BAAI/bge-base-en-v1.5".to_string(),
                 dimension: 768,
+                nli_model: "nli-deberta-v3-xsmall".to_string(),
             },
             search: SearchConfig {
                 fts_weight: 0.4,

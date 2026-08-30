@@ -28,6 +28,27 @@ pub fn delete_embedding(conn: &Connection, entity_id: &str) -> Result<(), Storag
     Ok(())
 }
 
+/// Get the embedding for a single entity. Returns `None` if no
+/// embedding is stored for the entity.
+pub fn get_embedding(conn: &Connection, entity_id: &str) -> Result<Option<Vec<f32>>, StorageError> {
+    let mut stmt = conn.prepare("SELECT embedding FROM entity_embeddings WHERE entity_id = ?1")?;
+    let result = stmt.query_row(params![entity_id], |r| {
+        let blob: Vec<u8> = r.get(0)?;
+        let floats: Vec<f32> = blob
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
+            .collect();
+        Ok(floats)
+    });
+    match result {
+        Ok(embedding) => Ok(Some(embedding)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Count total embeddings stored.
 pub fn count_embeddings(conn: &Connection) -> Result<i64, StorageError> {
     Ok(conn.query_row("SELECT COUNT(*) FROM entity_embeddings", [], |r| r.get(0))?)

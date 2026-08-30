@@ -6,10 +6,14 @@
 
 pub mod cache;
 pub mod model;
+pub mod nli;
 pub mod onnx;
 
 pub use cache::EmbeddingCache;
-pub use model::{EmbeddingModel, EmbeddingResult, MockEmbeddingModel};
+pub use model::{
+    EmbeddingModel, EmbeddingResult, MockEmbeddingModel, MockNliModel, NliLabel, NliModel,
+};
+pub use nli::OnnxNliModel;
 pub use onnx::{ModelType, OnnxEmbeddingModel};
 
 /// Get the models directory: `~/.local/share/cogz/models/` on Linux,

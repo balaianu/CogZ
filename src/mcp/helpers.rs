@@ -9,13 +9,15 @@ use rmcp::ErrorData as McpError;
 use serde_json::json;
 
 use crate::config::Config;
-use crate::embed::{EmbeddingModel, OnnxEmbeddingModel};
+use crate::consolidate::contradict::{
+    classify_candidates, fetch_contradiction_candidates, record_contradictions,
+};
+use crate::embed::{EmbeddingModel, NliModel, OnnxEmbeddingModel};
 use crate::files::embed_sync::store_embeddings;
-use crate::files::frontmatter::FmValue;
-use crate::files::{EntityFile, read_entity_file, sync_incremental, write_entity_file};
+use crate::files::{EntityFile, sync_incremental, write_entity_file};
 use crate::mcp::dedup::check_duplicate;
-use crate::mcp::params::UpdateKnowledgeParams;
-use crate::storage::{Storage, crud, events};
+use crate::storage::crud::Entity;
+use crate::storage::{Storage, events, query};
 
 // Re-export error helpers and response builders for backward-compatible imports.
 pub use crate::mcp::errors::{mcp_error, mcp_internal_error, mcp_invalid_parameter};
@@ -28,10 +30,7 @@ pub use crate::mcp::status::build_status_response;
 pub const DEFAULT_QUERY_STATUS: &str = "active";
 
 /// Type alias for the query result: entities with their references map.
-pub type QueryWithRefs = (
-    Vec<crud::Entity>,
-    std::collections::HashMap<String, Vec<String>>,
-);
+pub type QueryWithRefs = (Vec<Entity>, std::collections::HashMap<String, Vec<String>>);
 
 /// Query entities by type with status defaulting to "active", optional
 /// reference filtering, and batch-fetched references for the response.
@@ -97,7 +96,11 @@ pub fn auto_title(content: &str) -> String {
 /// Embed entity text for vector storage. Returns None if the model
 /// is unavailable (graceful degradation). The text is built from
 /// title + content, matching the sync pipeline's `embed_entities`.
-fn embed_entity_text(model: &OnnxEmbeddingModel, title: &str, content: &str) -> Option<Vec<f32>> {
+pub(crate) fn embed_entity_text(
+    model: &OnnxEmbeddingModel,
+    title: &str,
+    content: &str,
+) -> Option<Vec<f32>> {
     if !model.model_files_exist() {
         return None;
     }
@@ -115,14 +118,16 @@ fn embed_entity_text(model: &OnnxEmbeddingModel, title: &str, content: &str) -> 
     }
 }
 
-/// Create an entity file, write it, sync to DB, embed, and run dedup.
-/// The `EntityFile` is built by the caller with all frontmatter set.
+/// Create an entity file, write it, sync to DB, embed, and run dedup
+/// and contradiction checks. The `EntityFile` is built by the caller
+/// with all frontmatter set.
 pub fn create_entity_file(
     storage: &Arc<Storage>,
     config: &Config,
     cogz_dir: &std::path::Path,
     entity: &EntityFile,
     embed_model: Option<&OnnxEmbeddingModel>,
+    nli_model: Option<&dyn NliModel>,
 ) -> Result<serde_json::Value, McpError> {
     write_and_sync(
         storage,
@@ -131,11 +136,13 @@ pub fn create_entity_file(
         entity,
         entity.entity_type.as_str(),
         embed_model,
+        nli_model,
     )
 }
 
 /// Write an entity file and sync it to the DB. Returns the tool
-/// response JSON with id, file_path, status, and dedup results.
+/// response JSON with id, file_path, status, dedup results, and
+/// contradiction flag.
 pub fn write_and_sync(
     storage: &Arc<Storage>,
     config: &Config,
@@ -143,6 +150,7 @@ pub fn write_and_sync(
     entity: &EntityFile,
     entity_type: &str,
     embed_model: Option<&OnnxEmbeddingModel>,
+    nli_model: Option<&dyn NliModel>,
 ) -> Result<serde_json::Value, McpError> {
     // 1. Write file first (file-first invariant)
     let path = entity.file_path(cogz_dir);
@@ -182,6 +190,40 @@ pub fn write_and_sync(
         )
     };
 
+    // 5. Contradiction check — NLI inference is blocking I/O, so it
+    // must not hold the DB mutex. Fetch candidates under the lock,
+    // drop the lock, run NLI, then re-acquire to record results.
+    let contradiction_flagged = if matches!(
+        entity.entity_type,
+        crate::files::FileEntityType::Observation | crate::files::FileEntityType::Rule
+    ) {
+        let candidates = {
+            let conn = storage.conn();
+            fetch_contradiction_candidates(
+                &conn,
+                &entity.id,
+                &entity.body,
+                entity_type,
+                &config.consolidation,
+            )
+        };
+
+        // NLI classification outside the lock.
+        let contradicts_ids = classify_candidates(candidates, &entity.body, nli_model);
+
+        if !contradicts_ids.is_empty() {
+            let conn = storage.conn();
+            if let Err(e) = record_contradictions(&conn, &entity.id, &contradicts_ids) {
+                tracing::warn!("failed to record contradictions for {}: {}", entity.id, e);
+            }
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     // Sync already records the creation event via files::events::record_create_event.
     // We only need to record an additional event if dedup flagged something.
     if dedup.dedup_flagged {
@@ -204,131 +246,14 @@ pub fn write_and_sync(
         "file_path": relative_path.display().to_string(),
         "status": entity.status,
         "dedup_flagged": dedup.dedup_flagged,
-        "contradiction_flagged": dedup.contradiction_flagged,
+        "contradiction_flagged": contradiction_flagged,
         "duplicate_warning": dedup.duplicate_warning,
     }))
 }
 
 /// Update a knowledge file in-place: read existing, modify, write, sync.
-pub fn update_knowledge_file(
-    storage: &Arc<Storage>,
-    cogz_dir: &std::path::Path,
-    params: &UpdateKnowledgeParams,
-    embed_model: Option<&OnnxEmbeddingModel>,
-) -> Result<serde_json::Value, McpError> {
-    // 1. Get the existing entity from DB to find its file path
-    let entity = {
-        let conn = storage.conn();
-        crud::get_entity(&conn, &params.id).map_err(|e| match e {
-            crate::storage::StorageError::EntityNotFound(_) => mcp_error(
-                "entity_not_found",
-                &format!("Entity {} not found", params.id),
-            ),
-            other => mcp_error("db_error", &other.to_string()),
-        })?
-    };
-
-    if entity.r#type != "knowledge" {
-        return Err(mcp_error(
-            "invalid_parameter",
-            &format!("Entity {} is not a knowledge entry", params.id),
-        ));
-    }
-
-    // 2. Read the existing file
-    let file_path = entity
-        .file_path
-        .as_ref()
-        .ok_or_else(|| mcp_error("entity_not_found", "Entity has no file path"))?;
-    let abs_path = if file_path.starts_with(".cogz") {
-        cogz_dir.parent().unwrap_or(cogz_dir).join(file_path)
-    } else {
-        cogz_dir.join(file_path)
-    };
-
-    let mut entity_file = read_entity_file(&abs_path)
-        .map_err(|e| mcp_error("file_write_failed", &format!("Failed to read file: {}", e)))?;
-
-    // 3. Modify fields
-    let mut updated_fields = Vec::new();
-    entity_file.body = params.content.clone();
-    updated_fields.push("content");
-    if let Some(ref title) = params.title {
-        entity_file.title = title.clone();
-        updated_fields.push("title");
-    }
-    if let Some(ref category) = params.category {
-        entity_file
-            .frontmatter
-            .insert("category", FmValue::String(category.clone()));
-        updated_fields.push("category");
-    }
-    if let Some(ref tags) = params.tags {
-        entity_file
-            .frontmatter
-            .insert("tags", FmValue::Array(tags.clone()));
-        updated_fields.push("tags");
-    }
-    if let Some(ref refs) = params.references {
-        entity_file.references = refs.clone();
-        updated_fields.push("references");
-    }
-    entity_file.updated_at = chrono::Utc::now().to_rfc3339();
-
-    // 4. Write the file (may move to new path if category changed)
-    let new_path = entity_file.file_path(cogz_dir);
-    if new_path != abs_path
-        && let Err(e) = std::fs::remove_file(&abs_path)
-    {
-        tracing::warn!(
-            "failed to remove old entity file {}: {}",
-            abs_path.display(),
-            e
-        );
-    }
-    write_entity_file(&new_path, &entity_file)
-        .map_err(|e| mcp_error("file_write_failed", &format!("Failed to write file: {}", e)))?;
-
-    // 5. Sync to DB
-    let sync_result = sync_incremental(storage, cogz_dir);
-    if !sync_result.errors.is_empty() {
-        let err = &sync_result.errors[0];
-        return Err(mcp_error(
-            "db_error",
-            &format!("Sync failed: {}", err.error),
-        ));
-    }
-
-    // 6. Re-embed (no DB lock during ONNX inference)
-    let embedding =
-        embed_model.and_then(|m| embed_entity_text(m, &entity_file.title, &entity_file.body));
-
-    // 7. Store embedding + record update event (under lock)
-    {
-        let mut conn = storage.conn();
-        if let Some(ref emb) = embedding {
-            store_embeddings(&mut conn, &[(entity_file.id.clone(), emb.clone())]);
-        }
-        let payload = json!({"updated_fields": updated_fields});
-        let _ = events::record_event(
-            &conn,
-            events::EventType::KnowledgeUpdated,
-            Some(&entity_file.id),
-            &payload,
-        );
-    }
-
-    let relative_path = new_path
-        .strip_prefix(cogz_dir.parent().unwrap_or(cogz_dir))
-        .unwrap_or(&new_path);
-
-    Ok(json!({
-        "id": entity_file.id,
-        "file_path": relative_path.display().to_string(),
-        "status": entity_file.status,
-        "updated_fields": updated_fields,
-    }))
-}
+/// Implementation in `update_knowledge.rs`.
+pub use crate::mcp::update_knowledge::update_knowledge_file;
 
 // ─── Response builders ─────────────────────────────────────────────
 // Response builder functions live in `responses.rs` and are re-exported above.
@@ -351,4 +276,69 @@ pub fn embed_query_for_search(
             None
         }
     }
+}
+
+/// Build the `list_entities` response JSON. Queries entities by type
+/// with optional status filter, returns IDs and titles only.
+pub fn list_entities_response(
+    conn: &rusqlite::Connection,
+    entity_type: &str,
+    status: Option<&str>,
+) -> Result<serde_json::Value, crate::storage::StorageError> {
+    let status_filter = match status {
+        None => Some(DEFAULT_QUERY_STATUS),
+        Some("all") => None,
+        Some(s) => Some(s),
+    };
+    let entities = query::get_entities_by_type(conn, entity_type, status_filter, 1000)?;
+    let items: Vec<_> = entities
+        .iter()
+        .map(|e| json!({ "id": e.id, "title": e.title }))
+        .collect();
+    Ok(json!({
+        "entity_type": entity_type,
+        "entities": items,
+        "count": items.len(),
+    }))
+}
+
+/// Query knowledge entries with optional filters. Returns
+/// `(entities, references_map)` for the response builder.
+pub fn query_knowledge_with_refs(
+    conn: &rusqlite::Connection,
+    status: Option<&str>,
+    category: Option<&str>,
+    tags: Option<&[String]>,
+    limit: i64,
+) -> Result<QueryWithRefs, crate::storage::StorageError> {
+    let status_filter = match status {
+        None => Some(DEFAULT_QUERY_STATUS),
+        Some("all") => None,
+        Some(s) => Some(s),
+    };
+    let entities = query::get_knowledge_filtered(conn, status_filter, category, tags, limit)?;
+    let ids: Vec<String> = entities.iter().map(|e| e.id.clone()).collect();
+    let refs_map = crate::storage::graph::get_references_batch(conn, &ids)?;
+    Ok((entities, refs_map))
+}
+
+/// Parse and validate a context mode string. Returns the parsed mode
+/// or an MCP error if the mode is invalid or the query is missing.
+pub fn parse_context_mode(
+    mode_str: &str,
+    query: Option<&str>,
+) -> Result<crate::context::ContextMode, McpError> {
+    let mode = crate::context::ContextMode::parse(mode_str).ok_or_else(|| {
+        mcp_invalid_parameter(&format!(
+            "invalid mode '{}': expected cold_start, task, or escalation",
+            mode_str
+        ))
+    })?;
+    if mode.requires_query() && query.is_none() {
+        return Err(mcp_invalid_parameter(&format!(
+            "query is required for {} mode",
+            mode
+        )));
+    }
+    Ok(mode)
 }
