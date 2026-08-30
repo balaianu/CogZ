@@ -59,6 +59,30 @@ pub fn delete_edges_by_source_and_type(
     Ok(())
 }
 
+/// Delete all edges of the given types.
+///
+/// Used by code indexing to clear structural edges (calls, imports,
+/// extends) before re-inserting from a fresh AST pass. This prevents
+/// stale edges from accumulating when source code changes.
+pub fn delete_edges_by_type(conn: &Connection, edge_types: &[&str]) -> Result<(), StorageError> {
+    if edge_types.is_empty() {
+        return Ok(());
+    }
+    let placeholders = (0..edge_types.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let params: Vec<&dyn rusqlite::ToSql> = edge_types
+        .iter()
+        .map(|t| t as &dyn rusqlite::ToSql)
+        .collect();
+    conn.execute(
+        &format!("DELETE FROM edges WHERE edge_type IN ({placeholders})"),
+        params.as_slice(),
+    )?;
+    Ok(())
+}
+
 /// Insert an edge, silently skipping FK constraint violations.
 ///
 /// Used during file sync when a reference points to an entity that

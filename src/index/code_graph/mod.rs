@@ -105,6 +105,14 @@ pub fn sync_code_edges(
 
     // Phase 3: sync edges to DB.
     let conn = storage.conn();
+
+    // Clear existing structural edges before re-inserting. Edges are
+    // fully derived from source code, so a delete+rebuild is correct
+    // and prevents stale edges from accumulating when code changes.
+    if let Err(e) = storage::edges::delete_edges_by_type(&conn, &["calls", "imports", "extends"]) {
+        tracing::warn!("failed to clear structural edges: {}", e);
+    }
+
     let now = chrono::Utc::now().to_rfc3339();
 
     for edge in &edges {

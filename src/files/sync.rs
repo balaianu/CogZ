@@ -330,11 +330,14 @@ fn mark_deleted_as_stale(
     }
 }
 
-/// Get all file-backed entities (those with a non-null file_path).
+/// Get all file-backed entities (knowledge, rules, observations —
+/// not code entities, which are derived from source files and managed
+/// by the index layer).
 fn get_file_backed_entities(conn: &rusqlite::Connection) -> Result<Vec<Entity>, SyncError> {
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT {ENTITY_COLUMNS} FROM entities WHERE file_path IS NOT NULL"
+            "SELECT {ENTITY_COLUMNS} FROM entities \
+             WHERE type IN ('observation', 'rule', 'knowledge')"
         ))
         .map_err(|e| SyncError::Storage(e.into()))?;
     let rows = stmt

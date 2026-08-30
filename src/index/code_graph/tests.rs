@@ -122,3 +122,131 @@ fn no_edges_for_empty_file() {
         .unwrap();
     assert_eq!(edge_count, 0);
 }
+
+#[test]
+fn reindex_removes_stale_calls_edges() {
+    let storage = Storage::open_memory().unwrap();
+
+    // V1: foo calls bar
+    let code_v1 = "fn bar() {}\nfn foo() { bar(); }\n";
+    let files_v1 = vec![(
+        std::path::PathBuf::from("src/test.rs"),
+        code_v1.to_string(),
+        Language::Rust,
+    )];
+    sync_code_entities(&storage, Path::new("."), &files_v1);
+    sync_code_edges(&storage, Path::new("."), &files_v1);
+
+    let foo_id = code_entity_uuid("src/test.rs", "function", "foo");
+    let bar_id = code_entity_uuid("src/test.rs", "function", "bar");
+    {
+        let conn = storage.conn();
+        let has_foo_bar: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM edges WHERE source_id = ?1 AND target_id = ?2 AND edge_type = 'calls'",
+                rusqlite::params![foo_id, bar_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_foo_bar, 1, "foo→bar calls edge should exist after v1");
+    }
+
+    // V2: foo no longer calls bar, calls baz instead
+    let code_v2 = "fn baz() {}\nfn bar() {}\nfn foo() { baz(); }\n";
+    let files_v2 = vec![(
+        std::path::PathBuf::from("src/test.rs"),
+        code_v2.to_string(),
+        Language::Rust,
+    )];
+    sync_code_entities(&storage, Path::new("."), &files_v2);
+    sync_code_edges(&storage, Path::new("."), &files_v2);
+
+    let conn = storage.conn();
+    let stale_foo_bar: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_id = ?1 AND target_id = ?2 AND edge_type = 'calls'",
+            rusqlite::params![foo_id, bar_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stale_foo_bar, 0,
+        "stale foo→bar edge should be removed after reindex"
+    );
+
+    let baz_id = code_entity_uuid("src/test.rs", "function", "baz");
+    let has_foo_baz: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE source_id = ?1 AND target_id = ?2 AND edge_type = 'calls'",
+            rusqlite::params![foo_id, baz_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(has_foo_baz, 1, "foo→baz calls edge should exist after v2");
+}
+
+#[test]
+fn reindex_preserves_references_edges() {
+    let storage = Storage::open_memory().unwrap();
+
+    // Index code
+    let code = "fn bar() {}\nfn foo() { bar(); }\n";
+    let files = vec![(
+        std::path::PathBuf::from("src/test.rs"),
+        code.to_string(),
+        Language::Rust,
+    )];
+    sync_code_entities(&storage, Path::new("."), &files);
+    sync_code_edges(&storage, Path::new("."), &files);
+
+    // Manually add a references edge (simulating user-created edge from frontmatter)
+    let bar_id = code_entity_uuid("src/test.rs", "function", "bar");
+    {
+        let conn = storage.conn();
+        // Insert a dummy observation entity for the FK constraint
+        storage::crud::insert_entity(
+            &conn,
+            &storage::crud::Entity {
+                id: "manual-obs-id".to_string(),
+                r#type: "observation".to_string(),
+                title: Some("test obs".to_string()),
+                content: "test".to_string(),
+                properties: serde_json::json!({}),
+                file_path: None,
+                status: "active".to_string(),
+                content_hash: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+        storage::edges::insert_edge(
+            &conn,
+            &storage::edges::Edge {
+                source_id: "manual-obs-id".to_string(),
+                target_id: bar_id.clone(),
+                edge_type: "references".to_string(),
+                weight: 1.0,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+    }
+
+    // Reindex code edges
+    sync_code_edges(&storage, Path::new("."), &files);
+
+    // references edge should still exist
+    let conn = storage.conn();
+    let refs_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE edge_type = 'references'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        refs_count, 1,
+        "references edges must be preserved across code reindex"
+    );
+}

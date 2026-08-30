@@ -293,7 +293,7 @@ structural edges are inserted into the graph.
 - ✅ Search returns both code and knowledge results
 - ✅ Rebuildability: `cogz reset` + `cogz index` produces identical UUIDs
 - ✅ Stale marking: removed source files → entities marked stale
-- ✅ 278 tests pass (234 baseline + 44 new)
+- ✅ 279 tests pass (234 baseline + 45 new)
 
 **What's NOT built yet:** Git diff stale flagging, consolidation,
 hooks. Code is indexed but change detection is manual (full reindex).

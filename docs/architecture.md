@@ -59,16 +59,20 @@ cogz/
     commands.rs          — CLI command handlers (status, index, reindex, reset)
     cli.rs               — CLI helpers (embedding, search, context, MCP)
     lib.rs               — library root, public API
+    init.rs              — `cogz init` — directory scaffold, config generation
 
     config/
       mod.rs             — config loading, validation
       settings.rs        — typed config structs (serde)
 
     storage/
-      mod.rs             — storage root
+      mod.rs             — storage root, Storage struct, meta table
       schema.rs          — table definitions, migrations
       crud.rs            — entity CRUD operations
-      query.rs           — read queries (by type, graph, status)
+      query.rs           — read queries (by type, status, FTS search)
+      edges.rs           — edge CRUD, batch edge queries
+      graph.rs           — graph traversal (neighbors, batch, path queries)
+      embeddings.rs      — vec0 insert, delete, KNN search
       events.rs          — domain event recording
       status.rs          — status state machine validation
 
@@ -95,6 +99,7 @@ cogz/
       hybrid.rs          — FTS5 + vec search
       rrf.rs             — reciprocal rank fusion
       expand.rs          — graph-aware expansion from search results
+      describe.rs        — batched path description (provenance strings)
 
     context/
       mod.rs             — context root
@@ -102,7 +107,7 @@ cogz/
       compress.rs        — token budget management, section prioritization
       modes.rs           — cold_start, task, escalation mode definitions
 
-    consolidate/
+    consolidate/         — (Phase 9, not yet implemented)
       mod.rs             — consolidation root
       dedup.rs           — duplicate detection (embedding similarity + title match)
       merge.rs           — entity merging, edge redirection
@@ -111,15 +116,25 @@ cogz/
 
     files/
       mod.rs             — file layer root
-      entities.rs        — markdown file I/O, frontmatter parsing for all entity types
+      entities.rs        — entity file structs, UUID generation
+      frontmatter.rs     — YAML frontmatter parser (custom, no yaml crate)
       sync.rs            — file → database synchronization (one-directional)
+      refs.rs            — reference edge sync from frontmatter
+      embed_sync.rs      — embedding integration for sync pipeline
+      events.rs          — file-layer event recording helpers
 
     mcp/
-      mod.rs             — MCP root
-      server.rs          — MCP protocol server
-      tools.rs           — tool definitions (13 tools)
+      mod.rs             — MCP root, re-exports
+      server.rs          — CogzServer struct, ServerHandler impl
+      tools.rs           — #[tool] method definitions (11 tools implemented)
+      params.rs          — parameter structs (serde + schemars)
+      helpers.rs         — file-first write logic, response builders, embedding
+      dedup.rs           — title match + embedding similarity dedup
+      responses.rs       — response JSON builders
+      errors.rs          — MCP error helpers
+      status.rs          — get_status implementation
 
-    hooks/
+    hooks/               — (Phase 11, not yet implemented)
       mod.rs             — hooks root
       lifecycle.rs       — session_start, prompt_submit, pre/post_tool_use
       capture.rs         — event capture from external scripts
@@ -324,8 +339,9 @@ CREATE TABLE entities (
     content     TEXT NOT NULL,
     properties  TEXT DEFAULT '{}',       -- JSON: type-specific fields
                                          -- (confidence, supporting_ids, file_path, etc.)
-    file_path   TEXT,                    -- path to canonical file (NULL for code entities
-                                         -- extracted from source, which use properties.file_path)
+    file_path   TEXT,                    -- path to canonical file for file-backed entities
+                                         -- (knowledge/rules/observations); source file path
+                                         -- for code entities (also in properties.file_path)
     status      TEXT DEFAULT 'active',   -- active, stale, superseded, rejected, pruned
     content_hash TEXT,                   -- hash of file content for change detection
     created_at  TEXT NOT NULL,
@@ -596,15 +612,10 @@ Code entities and knowledge entities use different embedding models
 - Knowledge: `BAAI/bge-base-en-v1.5` (768d, general-purpose)
 
 Both share the same vec0 table (same dimension). The `type` field
-distinguishes which model produced the embedding. Search runs both
-code and knowledge queries separately and merges, preventing knowledge
-entries from drowning out code results.
-
-> **Phase 7 note:** Model selection is hardcoded via `ModelType` in
-> `src/embed/onnx.rs`. The `code_model` and `knowledge_model` config
-> fields are metadata for status display only — they are not yet wired
-> to model loading. Configurable model selection arrives with Phase 8
-> (multi-model embedding for code indexing).
+distinguishes which model produced the embedding. The query embedding
+uses the knowledge model (bge-base). Code entities are findable via
+FTS5 (model-independent) and graph expansion. A future improvement
+will run separate KNN queries per embedding model and merge results.
 
 ---
 
@@ -908,8 +919,8 @@ name = "cogz"                    # autodetected on init, saved, versioned
 db_path = ".cogz/cogz.db"        # per-repo database
 
 [embedding]
-code_model = "nomic-ai/CodeRankEmbed-int8"   # metadata only in Phase 7 — model selection is fixed
-knowledge_model = "BAAI/bge-base-en-v1.5"    # metadata only in Phase 7 — model selection is fixed
+code_model = "nomic-ai/CodeRankEmbed-int8"   # used for code entity embeddings
+knowledge_model = "BAAI/bge-base-en-v1.5"    # used for knowledge entity + query embeddings
 dimension = 768
 
 [search]

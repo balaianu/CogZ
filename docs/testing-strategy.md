@@ -31,58 +31,67 @@ prove it works and catch regressions.
 Live in each module as `#[cfg(test)]` blocks. Test individual
 functions and structs in isolation.
 
-| Module | What's tested |
-|---|---|
-| `config/` | Config parsing, validation, default generation, project name autodetection |
-| `storage/schema.rs` | Schema creation, migrations, version tracking |
-| `storage/crud.rs` | Insert, update, get, delete entities; edge CRUD |
-| `storage/query.rs` | Type/status/file_path queries; graph traversal (1-hop, 2-hop, N-hop) |
-| `storage/events.rs` | Event recording, event query |
-| `storage/status.rs` | Status state machine: all legal transitions succeed, all illegal transitions fail (rejected→active, superseded→active, pruned→active) |
-| `files/entities.rs` | Frontmatter parsing, file writing, slug generation, UUID generation |
-| `files/sync.rs` | Change detection (content hash), sync state machine, stale flagging, policy-aware content change handling per entity type |
-| `index/gitignore.rs` | .gitignore parsing, path filtering, allow overrides |
-| `index/tree_sitter.rs` | AST parsing, entity extraction (Rust) |
-| `index/tree_sitter/python.rs` | AST parsing, entity extraction (Python) |
-| `index/code_graph/mod.rs` | Edge construction — calls, imports, extends (Rust) |
-| `index/code_graph/python.rs` | Edge construction — calls, imports, extends (Python) |
-| `index/sync/mod.rs` | UUID v5 generation, content hash, stale marking, entity sync |
-| `index/git_diff.rs` | Diff parsing, changed file detection |
-| `embed/cache.rs` | Cache hit/miss, content-hash-based lookup |
-| `search/rrf.rs` | RRF fusion correctness, score computation |
-| `search/expand.rs` | Graph expansion, path recording |
-| `context/compress.rs` | Token budgeting, section prioritization, truncation |
-| `consolidate/dedup.rs` | Similarity threshold, duplicate flagging, exact title match, fuzzy title match |
-| `consolidate/merge.rs` | Edge redirection, superseded marking, `superseded_by` field set |
-| `consolidate/promote.rs` | Promotion threshold, rule creation from observation, `derived_from` edge |
-| `hooks/lifecycle.rs` | Event handling, context pack generation per mode |
+| Module | What's tested | Phase |
+|---|---|---|
+| `config/` | Config parsing, validation, default generation, project name autodetection | 1 |
+| `storage/schema.rs` | Schema creation, migrations, version tracking | 2 |
+| `storage/crud.rs` | Insert, update, get, delete entities; edge CRUD | 2 |
+| `storage/query.rs` | Type/status/file_path queries; graph traversal (1-hop, 2-hop, N-hop) | 2 |
+| `storage/edges.rs` | Edge CRUD, batch edge queries, chunked IN queries | 2 |
+| `storage/graph.rs` | Graph traversal, batch neighbors, path queries | 2 |
+| `storage/embeddings.rs` | vec0 insert, delete, KNN search | 4 |
+| `storage/events.rs` | Event recording, event query | 2 |
+| `storage/status.rs` | Status state machine: all legal transitions succeed, all illegal transitions fail (rejected→active, superseded→active, pruned→active) | 2 |
+| `files/entities.rs` | Entity file structs, UUID generation, file path derivation | 3 |
+| `files/frontmatter.rs` | Custom YAML frontmatter parser: parsing, writing, round-trip | 3 |
+| `files/sync.rs` | Change detection (content hash), sync state machine, stale flagging, policy-aware content change handling per entity type | 3 |
+| `index/gitignore.rs` | .gitignore parsing, path filtering, allow overrides | 8 |
+| `index/tree_sitter.rs` | AST parsing, entity extraction (Rust) | 8 |
+| `index/tree_sitter/python.rs` | AST parsing, entity extraction (Python) | 8 |
+| `index/code_graph/mod.rs` | Edge construction — calls, imports, extends (Rust) | 8 |
+| `index/code_graph/python.rs` | Edge construction — calls, imports, extends (Python) | 8 |
+| `index/sync/mod.rs` | UUID v5 generation, content hash, stale marking, entity sync | 8 |
+| `index/git_diff.rs` | Diff parsing, changed file detection | 10 (planned) |
+| `embed/cache.rs` | Cache hit/miss, content-hash-based lookup | 4 |
+| `search/rrf.rs` | RRF fusion correctness, score computation | 5 |
+| `search/expand.rs` | Graph expansion, path recording | 5 |
+| `search/describe.rs` | Batched path description, provenance strings | 5 |
+| `context/compress.rs` | Token budgeting, section prioritization, truncation | 6 |
+| `consolidate/dedup.rs` | Similarity threshold, duplicate flagging, exact title match, fuzzy title match | 9 (planned) |
+| `consolidate/merge.rs` | Edge redirection, superseded marking, `superseded_by` field set | 9 (planned) |
+| `consolidate/promote.rs` | Promotion threshold, rule creation from observation, `derived_from` edge | 9 (planned) |
+| `hooks/lifecycle.rs` | Event handling, context pack generation per mode | 11 (planned) |
 
 ### Integration Tests
 
 Live in `tests/` directory. Test multiple modules working together.
 
-| Test file | What's tested |
-|---|---|
-| `tests/test_file_sync.rs` | File → DB sync end-to-end: create file, index, verify DB entity; edit file, reindex, verify update; delete file, reindex, verify stale; observation content edit logs `observation_edited` event |
-| `tests/test_search.rs` | Full search pipeline: insert entities, run hybrid search, verify ranking and graph expansion |
-| `tests/test_context.rs` | Context assembly: insert entities with references, run each mode, verify pack structure and token budget |
-| `tests/test_consolidation.rs` | Consolidation pipeline: insert duplicates, verify dedup + `duplicate_warning`; insert same-title knowledge, verify title match; insert contradictions, verify flagging; insert supporting observations, verify promotion; verify `superseded_by` and `derived_from` edges |
-| `tests/test_update_policy.rs` | Update policy enforcement: `update_knowledge` edits knowledge in-place; no `update_observation` or `edit_rule` tool exists; status state machine rejects illegal transitions; observation content edit detected by sync, event logged |
-| `tests/test_code_index.rs` | Tree-sitter indexing: index a test repo, verify code entities and structural edges |
-| `tests/test_git_diff.rs` | Change detection: index, modify source file, reindex, verify stale flagging on referenced knowledge |
-| `tests/test_mcp_server.rs` | MCP protocol: start server, call each of 13 tools, verify responses; `update_knowledge` edits knowledge; `create_knowledge` returns `duplicate_warning` when title matches |
+| Test file | What's tested | Phase |
+|---|---|---|
+| `tests/test_file_sync.rs` | File → DB sync end-to-end: create file, index, verify DB entity; edit file, reindex, verify update; delete file, reindex, verify stale; observation content edit logs `observation_edited` event | 3 |
+| `tests/test_entities.rs` | Entity file structs, UUID generation, file path derivation | 3 |
+| `tests/test_frontmatter.rs` | Custom YAML frontmatter parser: parsing, writing, round-trip, edge cases | 3 |
+| `tests/test_search.rs` | Full search pipeline: insert entities, run hybrid search, verify ranking and graph expansion | 5 |
+| `tests/test_context.rs` | Context assembly: insert entities with references, run each mode, verify pack structure and token budget | 6 |
+| `tests/test_embed_sync.rs` | Embedding sync pipeline: embed entities, store embeddings, cache behavior | 4 |
+| `tests/test_mcp_server.rs` | MCP protocol: start server, call each implemented tool, verify responses; `update_knowledge` edits knowledge; `create_knowledge` returns `duplicate_warning` when title matches | 7 |
+| `tests/test_code_index.rs` | Tree-sitter indexing: index a test repo, verify code entities and structural edges | 8 |
+| `tests/test_consolidation.rs` | Consolidation pipeline: insert duplicates, verify dedup + `duplicate_warning`; insert same-title knowledge, verify title match; insert contradictions, verify flagging; insert supporting observations, verify promotion; verify `superseded_by` and `derived_from` edges | 9 (planned) |
+| `tests/test_update_policy.rs` | Update policy enforcement: `update_knowledge` edits knowledge in-place; no `update_observation` or `edit_rule` tool exists; status state machine rejects illegal transitions; observation content edit detected by sync, event logged | 7 (planned) |
+| `tests/test_git_diff.rs` | Change detection: index, modify source file, reindex, verify stale flagging on referenced knowledge | 10 (planned) |
 
 ### End-to-End Tests
 
 Live in `tests/` directory. Test the full system from CLI to output.
+Not yet implemented — planned for future phases.
 
-| Test file | What's tested |
-|---|---|
-| `tests/e2e_init.rs` | `cogz init` creates correct directory structure, config, .gitignore |
-| `tests/e2e_lifecycle.rs` | Full lifecycle: init → index → search → context → record observation → reindex → search again → consolidate → update knowledge → status |
-| `tests/e2e_reset.rs` | `cogz reset` drops DB, `cogz reset --purge` removes observations but not knowledge/rules |
-| `tests/e2e_fresh_clone.rs` | Simulate fresh clone: copy knowledge + rules (no DB, no observations), run `cogz index`, verify full DB rebuild |
-| `tests/e2e_doctor.rs` | `cogz doctor` on healthy repo reports no issues; edit observation file directly → doctor reports policy violation; create near-duplicate knowledge → doctor reports similarity; delete knowledge file without reindex → doctor reports missing file; `cogz doctor --prune-observations` dry-run reports rejected/superseded observations by age; `--confirm` prunes observations, preserves tombstones, edges to tombstones remain valid; active/stale observations are not pruned |
+| Test file | What's tested | Phase |
+|---|---|---|
+| `tests/e2e_init.rs` | `cogz init` creates correct directory structure, config, .gitignore | 1 (planned) |
+| `tests/e2e_lifecycle.rs` | Full lifecycle: init → index → search → context → record observation → reindex → search again → consolidate → update knowledge → status | 7 (planned) |
+| `tests/e2e_reset.rs` | `cogz reset` drops DB, `cogz reset --purge` removes observations but not knowledge/rules | 2 (planned) |
+| `tests/e2e_fresh_clone.rs` | Simulate fresh clone: copy knowledge + rules (no DB, no observations), run `cogz index`, verify full DB rebuild | 7 (planned) |
+| `tests/e2e_doctor.rs` | `cogz doctor` on healthy repo reports no issues; edit observation file directly → doctor reports policy violation; create near-duplicate knowledge → doctor reports similarity; delete knowledge file without reindex → doctor reports missing file; `cogz doctor --prune-observations` dry-run reports rejected/superseded observations by age; `--confirm` prunes observations, preserves tombstones, edges to tombstones remain valid; active/stale observations are not pruned | 12 (planned) |
 
 ---
 
@@ -129,51 +138,28 @@ cargo test -- --ignored  # run model-dependent tests
 
 ## Test Fixtures
 
-### Test repo
+Tests create temporary directories with `.cogz/` structure and
+inline test data. There are no static fixture files — everything is
+generated in `tempfile::tempdir()` at test time. This keeps tests
+self-contained and avoids fixture maintenance.
 
-A minimal repo in `tests/fixtures/test-repo/` used for code indexing
-tests:
+### Test repo (inline)
 
-```
-tests/fixtures/test-repo/
-  src/
-    main.rs           — calls functions from lib.rs
-    lib.rs            — defines functions and a struct
-  .gitignore          — ignores target/ and *.db
-  .cogz/
-    config.toml       — test config
-    knowledge/
-      architecture/
-        overview.md   — test knowledge entry
-    rules/
-      test-rule.md    — test rule
-```
-
-This is a real Rust project with real code that tree-sitter can parse.
-It's small enough to index in milliseconds but complex enough to
+Code indexing tests create a minimal Rust project inside a temp dir
+with `src/main.rs` and `src/lib.rs` containing functions and a struct.
+This is small enough to index in milliseconds but complex enough to
 produce meaningful entities and edges.
 
-### Entity file fixtures
+### Entity file fixtures (inline)
 
-Sample entity files in `tests/fixtures/entities/`:
+Entity file tests create sample observation, rule, and knowledge files
+inline in temp dirs. Invalid files (missing required fields, bad
+references, illegal status transitions) are also generated inline.
 
-```
-tests/fixtures/entities/
-  observation.md              — valid observation (status: active)
-  observation-stale.md        — valid observation (status: stale)
-  observation-rejected.md     — valid observation (status: rejected, terminal)
-  rule.md                     — valid rule (status: active)
-  rule-superseded.md          — valid rule (status: superseded, superseded_by set)
-  knowledge.md                — valid knowledge
-  duplicate-knowledge.md      — knowledge with same title as knowledge.md (for dedup tests)
-  invalid-missing-id.md       — missing required field (for validation tests)
-  invalid-bad-references.md   — references non-existent entity (for validation tests)
-  invalid-illegal-status.md   — status transitioned from rejected to active (for state machine tests)
-```
+### Config fixture (inline)
 
-### Config fixture
-
-`tests/fixtures/config.toml` — a minimal valid config for tests:
+Tests define a minimal valid config as a constant string and write it
+to a temp dir's `.cogz/config.toml`:
 
 ```toml
 [project]
@@ -318,9 +304,8 @@ cargo test e2e_               # all end-to-end tests
 cargo tarpaulin --out Html
 ```
 
-Target: 80% line coverage for MVP (phases 1-7). Code indexing and
-consolidation (phases 8-9) may have lower coverage initially due to
-tree-sitter and NLI complexity.
+Target: 80% line coverage for MVP (phases 1-8). Consolidation
+(phase 9) may have lower coverage initially due to NLI complexity.
 
 ---
 
