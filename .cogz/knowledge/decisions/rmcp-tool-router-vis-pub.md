@@ -1,5 +1,5 @@
 ---
-id: a1b2c3d4-rmcp-4dec-ision-000000000001
+id: ed848e1e-0825-4d17-8c14-fb0f8df06073
 type: knowledge
 status: active
 title: rmcp tool_router vis=pub requirement

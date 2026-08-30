@@ -1,5 +1,5 @@
 ---
-id: a1b2c3d4-mcp0-4mcp-8mcp-000000000001
+id: 4cc109e1-09cc-414e-831c-8f5710374d4a
 type: knowledge
 status: active
 title: MCP Server Layer

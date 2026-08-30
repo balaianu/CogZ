@@ -1,5 +1,5 @@
 ---
-id: b2c3d4e5-rule-4no-reentry-000000000001
+id: 0b83613e-61d6-4a60-af20-2e377d72e4f7
 type: rule
 status: active
 title: No mutex reentrancy in storage helpers
