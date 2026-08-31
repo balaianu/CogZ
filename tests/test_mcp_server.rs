@@ -22,9 +22,14 @@ fn setup() -> (CogzServer, tempfile::TempDir) {
     std::fs::create_dir_all(cogz_dir.join("rules")).unwrap();
     std::fs::create_dir_all(cogz_dir.join("knowledge")).unwrap();
 
+    // Use a temp models directory so tests don't pick up real downloaded
+    // models and try to load the ONNX Runtime.
+    let models_dir = dir.path().join("models");
+    std::fs::create_dir_all(&models_dir).unwrap();
+
     let storage = Arc::new(Storage::open_memory().unwrap());
     let config = Config::default_for("test-project");
-    let server = CogzServer::new(storage, config, cogz_dir);
+    let server = CogzServer::with_models_dir(storage, config, cogz_dir, &models_dir);
     (server, dir)
 }
 
@@ -607,7 +612,7 @@ async fn db_rebuildable_from_files_after_mcp_writes() {
     // Rebuild DB from files using a fresh storage
     let config = Config::default_for("test-project");
     let db_path = dir.path().join(&config.storage.db_path);
-    let new_storage = Storage::open(&db_path).unwrap();
+    let new_storage = Storage::open(&db_path, 768).unwrap();
     let sync_result = cogz::files::sync_all(&new_storage, &cogz_dir);
     assert!(sync_result.errors.is_empty(), "sync has no errors");
 
@@ -1031,5 +1036,108 @@ async fn update_knowledge_category_change_moves_file() {
         std::fs::read_dir(&new_dir).unwrap().count(),
         1,
         "file exists in new category"
+    );
+}
+
+#[tokio::test]
+async fn capture_event_session_start_returns_context_pack() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("capture_event").with_arguments(
+                call_tool_args(json!({
+                    "event_type": "session_start",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let value = parse_result(result);
+    assert_eq!(value["event_type"], "session_start");
+    assert!(value["event_id"].as_i64().unwrap() > 0);
+    assert!(
+        value["context_pack"].is_object(),
+        "session_start should return a context pack"
+    );
+    assert_eq!(value["context_pack"]["mode"], "cold_start");
+    assert!(value["observation_id"].is_null());
+}
+
+#[tokio::test]
+async fn capture_event_post_tool_use_records_observation() {
+    let (server, dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("capture_event").with_arguments(
+                call_tool_args(json!({
+                    "event_type": "post_tool_use",
+                    "tool_name": "edit_file",
+                    "tool_result": "modified src/main.rs",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let value = parse_result(result);
+    assert_eq!(value["event_type"], "post_tool_use");
+    assert!(value["event_id"].as_i64().unwrap() > 0);
+    assert!(
+        value["context_pack"].is_null(),
+        "post_tool_use should not return a context pack"
+    );
+    let obs_id = value["observation_id"].as_str();
+    assert!(obs_id.is_some(), "observation should be recorded");
+    assert!(!obs_id.unwrap().is_empty());
+
+    // Verify the observation file was written.
+    let cogz_dir = dir.path().join(".cogz");
+    let obs_count: usize = std::fs::read_dir(cogz_dir.join("observations"))
+        .unwrap()
+        .flatten()
+        .flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten())
+        .count();
+    assert_eq!(obs_count, 1, "one observation file should exist");
+}
+
+#[tokio::test]
+async fn capture_event_invalid_type_returns_error() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("capture_event").with_arguments(
+                call_tool_args(json!({
+                    "event_type": "invalid_event",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await;
+
+    assert!(result.is_err(), "invalid event type should return an error");
+}
+
+#[tokio::test]
+async fn mcp_server_lists_13_tools() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let tools = client.list_tools(std::option::Option::None).await.unwrap();
+
+    let tool_names: Vec<String> = tools.tools.iter().map(|t| t.name.to_string()).collect();
+
+    assert_eq!(tool_names.len(), 13, "server should expose 13 tools");
+    assert!(
+        tool_names.contains(&"capture_event".to_string()),
+        "capture_event should be listed"
     );
 }

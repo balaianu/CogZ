@@ -91,36 +91,32 @@ pub fn flag_stale_knowledge(
         return 0;
     }
 
-    // Fetch the entities to check their type and status. Only active
-    // file-backed entities (observation, rule, knowledge) are candidates.
+    // Batch-fetch only the referencing entities, then filter by type
+    // and status in Rust. This avoids 3 queries scanning up to 100k
+    // entities each when the referencing set is typically 1-10 IDs.
     let knowledge_types = ["observation", "rule", "knowledge"];
+    let entities = match storage::crud::get_entities_batch(&conn, &referencing_ids) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!("failed to batch-fetch entities for stale flagging: {}", e);
+            return 0;
+        }
+    };
+
     let mut to_flag: Vec<(storage::crud::Entity, PathBuf)> = Vec::new();
 
-    for entity_type in &knowledge_types {
-        let entities =
-            match storage::query::get_entities_by_type(&conn, entity_type, Some("active"), 100_000)
-            {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!(
-                        "failed to query {} entities for stale flagging: {}",
-                        entity_type,
-                        e
-                    );
-                    continue;
-                }
-            };
-
-        for entity in entities {
-            if !referencing_ids.contains(&entity.id) {
-                continue;
-            }
-            let Some(file_path) = entity.file_path.clone() else {
-                tracing::warn!("entity {} has no file_path, cannot flag stale", entity.id);
-                continue;
-            };
-            to_flag.push((entity, resolve_file_path(&file_path, cogz_dir)));
+    for entity in entities {
+        if !knowledge_types.contains(&entity.r#type.as_str()) {
+            continue;
         }
+        if entity.status != "active" {
+            continue;
+        }
+        let Some(file_path) = entity.file_path.clone() else {
+            tracing::warn!("entity {} has no file_path, cannot flag stale", entity.id);
+            continue;
+        };
+        to_flag.push((entity, resolve_file_path(&file_path, cogz_dir)));
     }
 
     drop(conn);
@@ -199,7 +195,7 @@ mod tests {
         std::fs::create_dir_all(cogz_dir.join("knowledge/test")).unwrap();
 
         let db_path = cogz_dir.join("cogz.db");
-        let storage = Storage::open(&db_path).unwrap();
+        let storage = Storage::open(&db_path, 768).unwrap();
         (dir, storage)
     }
 

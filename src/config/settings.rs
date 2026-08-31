@@ -41,6 +41,13 @@ pub struct EmbeddingConfig {
     /// Empty string = use default (`nli-deberta-v3-xsmall`).
     #[serde(default)]
     pub nli_model: String,
+    /// Auto-download models from HuggingFace on first use (default: true).
+    #[serde(default = "default_true")]
+    pub auto_download: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -117,10 +124,11 @@ impl Config {
                 db_path: ".cogz/cogz.db".to_string(),
             },
             embedding: EmbeddingConfig {
-                code_model: "nomic-ai/CodeRankEmbed-int8".to_string(),
-                knowledge_model: "BAAI/bge-base-en-v1.5".to_string(),
-                dimension: 768,
-                nli_model: "nli-deberta-v3-xsmall".to_string(),
+                code_model: crate::embed::registry::DEFAULT_CODE_MODEL.to_string(),
+                knowledge_model: crate::embed::registry::DEFAULT_KNOWLEDGE_MODEL.to_string(),
+                dimension: crate::embed::registry::DEFAULT_DIMENSION,
+                nli_model: crate::embed::registry::DEFAULT_NLI_MODEL.to_string(),
+                auto_download: true,
             },
             search: SearchConfig {
                 fts_weight: 0.4,
@@ -217,7 +225,7 @@ db_path = ".cogz/cogz.db"
 [embedding]
 code_model = "test"
 knowledge_model = "test"
-dimension = 768
+dimension = 384
 
 [search]
 fts_weight = 0.4

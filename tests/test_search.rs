@@ -350,7 +350,7 @@ fn search_with_mock_embedding_end_to_end() {
     std::fs::write(cogz_dir.join("rules/test-rule.md"), rule).unwrap();
 
     let db_path = dir.path().join(".cogz/cogz.db");
-    let storage = Storage::open(&db_path).unwrap();
+    let storage = Storage::open(&db_path, 768).unwrap();
 
     // Sync files to DB
     let sync_result = cogz::files::sync_all(&storage, &cogz_dir);

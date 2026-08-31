@@ -240,153 +240,59 @@ pub fn entity_counts_by_type(conn: &Connection) -> Result<Vec<(String, i64)>, St
     Ok(counts)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::super::crud::insert_entity;
-    use super::super::ensure_vec_extension;
-    use super::super::schema::run_migrations;
-    use super::*;
-
-    fn setup() -> Connection {
-        ensure_vec_extension();
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn
-    }
-
-    #[test]
-    fn query_entities_by_type() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "content a")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "rule", "B", "content b")).unwrap();
-
-        let result = get_entities_by_type(&conn, "observation", Some("active"), 20).unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].id, "u1");
-    }
-
-    #[test]
-    fn query_entities_by_status() {
-        let conn = setup();
-        let mut e1 = Entity::new("u1", "observation", "A", "c");
-        e1.status = "stale".to_string();
-        insert_entity(&conn, &e1).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
-
-        let active = get_entities_by_type(&conn, "observation", Some("active"), 20).unwrap();
-        assert_eq!(active.len(), 1);
-        assert_eq!(active[0].id, "u2");
-
-        let stale = get_entities_by_type(&conn, "observation", Some("stale"), 20).unwrap();
-        assert_eq!(stale.len(), 1);
-        assert_eq!(stale[0].id, "u1");
-    }
-
-    #[test]
-    fn fts_search_finds_content() {
-        let conn = setup();
-        let e1 = Entity::new(
-            "u1",
-            "observation",
-            "FTS5 ranking bug",
-            "The RRF fusion produces incorrect rankings",
-        );
-        insert_entity(&conn, &e1).unwrap();
-        insert_entity(
-            &conn,
-            &Entity::new("u2", "rule", "Unrelated", "completely different content"),
-        )
-        .unwrap();
-
-        let results = fts_search(&conn, "ranking", None, Some("active"), 20).unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "u1");
-    }
-
-    #[test]
-    fn fts_search_with_type_filter() {
-        let conn = setup();
-        insert_entity(
-            &conn,
-            &Entity::new("u1", "observation", "ranking", "ranking content"),
-        )
-        .unwrap();
-        insert_entity(
-            &conn,
-            &Entity::new("u2", "rule", "ranking", "ranking content"),
-        )
-        .unwrap();
-
-        let obs = fts_search(&conn, "ranking", Some("observation"), Some("active"), 20).unwrap();
-        assert_eq!(obs.len(), 1);
-        assert_eq!(obs[0].r#type, "observation");
-    }
-
-    #[test]
-    fn fts_search_with_hyphenated_query() {
-        let conn = setup();
-        insert_entity(
-            &conn,
-            &Entity::new(
-                "u1",
-                "knowledge",
-                "tree-sitter parsing",
-                "AST extraction with tree-sitter",
-            ),
-        )
-        .unwrap();
-
-        // Hyphenated query should not crash (FTS5 treats - as NOT)
-        let results = fts_search(&conn, "tree-sitter", None, Some("active"), 20).unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].id, "u1");
-    }
-
-    #[test]
-    fn count_stale_entities() {
-        let conn = setup();
-        let mut e1 = Entity::new("u1", "observation", "A", "c");
-        e1.status = "stale".to_string();
-        insert_entity(&conn, &e1).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
-
-        assert_eq!(count_stale(&conn).unwrap(), 1);
-    }
-
-    #[test]
-    fn get_entity_counts_by_type() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u3", "rule", "R", "c")).unwrap();
-
-        let counts = entity_counts_by_type(&conn).unwrap();
-        let obs = counts.iter().find(|(t, _)| t == "observation").unwrap();
-        assert_eq!(obs.1, 2);
-    }
-
-    #[test]
-    fn rules_sorted_by_confidence_then_recency() {
-        let conn = setup();
-
-        // Low confidence rule (0.3)
-        let mut r1 = Entity::new("r1", "rule", "Low confidence", "c");
-        r1.properties = serde_json::json!({"confidence": 0.3});
-        insert_entity(&conn, &r1).unwrap();
-
-        // High confidence rule (0.9)
-        let mut r2 = Entity::new("r2", "rule", "High confidence", "c");
-        r2.properties = serde_json::json!({"confidence": 0.9});
-        insert_entity(&conn, &r2).unwrap();
-
-        // No confidence property — defaults to 1.0
-        let r3 = Entity::new("r3", "rule", "Default confidence", "c");
-        insert_entity(&conn, &r3).unwrap();
-
-        let rules = get_rules_by_confidence(&conn, Some("active"), 20).unwrap();
-        // r3 (1.0) > r2 (0.9) > r1 (0.3)
-        assert_eq!(rules[0].id, "r3");
-        assert_eq!(rules[1].id, "r2");
-        assert_eq!(rules[2].id, "r1");
-    }
+/// A candidate for pruning — an observation with terminal status
+/// (rejected or superseded) that has a file path and is old enough
+/// to prune based on the configured retention threshold.
+pub struct PruneCandidateRow {
+    pub entity_id: String,
+    pub file_path: String,
+    pub status: String,
+    pub updated_at: String,
 }
+
+/// Find observations eligible for pruning. Returns entities with
+/// status `rejected` or `superseded` that have a file path. The
+/// caller filters by age using the `updated_at` timestamp.
+pub fn find_prune_candidates(conn: &Connection) -> Result<Vec<PruneCandidateRow>, StorageError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, file_path, status, updated_at FROM entities \
+         WHERE type = 'observation' \
+         AND status IN ('rejected', 'superseded') \
+         AND file_path IS NOT NULL",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(PruneCandidateRow {
+            entity_id: r.get(0)?,
+            file_path: r.get(1)?,
+            status: r.get(2)?,
+            updated_at: r.get(3)?,
+        })
+    })?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        candidates.push(row?);
+    }
+    Ok(candidates)
+}
+
+/// Get the IDs of the oldest tombstoned (pruned) entities, ordered
+/// by `updated_at` ascending. Used by tombstone limit enforcement
+/// to identify which tombstones to remove first.
+pub fn get_oldest_tombstone_ids(
+    conn: &Connection,
+    limit: i64,
+) -> Result<Vec<String>, StorageError> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM entities WHERE status = 'pruned' \
+         ORDER BY updated_at ASC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row?);
+    }
+    Ok(ids)
+}
+
+#[cfg(test)]
+mod tests;

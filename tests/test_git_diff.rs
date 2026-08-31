@@ -82,7 +82,7 @@ fn reindex_detects_modified_source_and_flags_stale_knowledge() {
 
     // Index.
     let db_path = dir.path().join(".cogz/cogz.db");
-    let storage = Storage::open(&db_path).unwrap();
+    let storage = Storage::open(&db_path, 768).unwrap();
     let config = default_config();
     index::index_code(&storage, dir.path(), &config);
 
@@ -193,7 +193,7 @@ fn reindex_no_changes_is_fast_noop() {
     let sha = commit_all(dir.path());
 
     let db_path = dir.path().join(".cogz/cogz.db");
-    let storage = Storage::open(&db_path).unwrap();
+    let storage = Storage::open(&db_path, 768).unwrap();
     let config = default_config();
     index::index_code(&storage, dir.path(), &config);
 
@@ -221,7 +221,7 @@ fn reindex_falls_back_to_full_scan_without_git() {
     );
 
     let db_path = dir.path().join(".cogz/cogz.db");
-    let storage = Storage::open(&db_path).unwrap();
+    let storage = Storage::open(&db_path, 768).unwrap();
     let config = default_config();
 
     // No git repo, no baseline — should fall back to full scan.
@@ -249,7 +249,7 @@ fn deleted_source_marks_code_stale_and_flags_knowledge() {
     let sha = commit_all(dir.path());
 
     let db_path = dir.path().join(".cogz/cogz.db");
-    let storage = Storage::open(&db_path).unwrap();
+    let storage = Storage::open(&db_path, 768).unwrap();
     let config = default_config();
     index::index_code(&storage, dir.path(), &config);
 
@@ -358,7 +358,7 @@ fn unchanged_files_not_re_parsed() {
     let sha = commit_all(dir.path());
 
     let db_path = dir.path().join(".cogz/cogz.db");
-    let storage = Storage::open(&db_path).unwrap();
+    let storage = Storage::open(&db_path, 768).unwrap();
     let config = default_config();
     index::index_code(&storage, dir.path(), &config);
 

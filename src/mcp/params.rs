@@ -124,3 +124,21 @@ pub struct ConsolidateParams {
     #[serde(default)]
     pub dry_run: bool,
 }
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CaptureEventParams {
+    /// Event type: session_start, prompt_submit, pre_tool_use, post_tool_use, file_save, session_end.
+    pub event_type: String,
+    /// Prompt text (for prompt_submit).
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Tool name (for pre_tool_use, post_tool_use).
+    #[serde(default)]
+    pub tool_name: Option<String>,
+    /// Tool result summary (for post_tool_use).
+    #[serde(default)]
+    pub tool_result: Option<String>,
+    /// Saved file path, relative to repo root (for file_save).
+    #[serde(default)]
+    pub file_path: Option<String>,
+}

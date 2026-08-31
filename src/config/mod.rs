@@ -58,7 +58,7 @@ mod tests {
         let config = Config::default_for("my-repo");
         assert_eq!(config.project.name, "my-repo");
         assert_eq!(config.storage.db_path, ".cogz/cogz.db");
-        assert_eq!(config.embedding.dimension, 768);
+        assert_eq!(config.embedding.dimension, 384);
         assert_eq!(config.search.rrf_k, 60);
         assert_eq!(config.consolidation.dedup_threshold, 0.92);
         assert_eq!(config.retention.observation_prune_after_days, 90);

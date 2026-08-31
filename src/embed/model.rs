@@ -25,7 +25,7 @@ pub trait EmbeddingModel: Send + Sync {
     /// Embed a batch of texts, returning one vector per input.
     fn embed(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>>;
 
-    /// Embedding dimension (e.g. 768 for CodeRankEmbed and bge-base).
+    /// Embedding dimension (e.g. 768 for nomic-embed and bge-base).
     fn dimension(&self) -> usize;
 
     /// Model identifier for logging and cache keys.

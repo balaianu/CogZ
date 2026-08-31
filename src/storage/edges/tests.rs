@@ -10,7 +10,7 @@ use rusqlite::Connection;
 fn setup() -> Connection {
     ensure_vec_extension();
     let conn = Connection::open_in_memory().unwrap();
-    run_migrations(&conn).unwrap();
+    run_migrations(&conn, 768).unwrap();
     conn
 }
 
@@ -154,4 +154,21 @@ fn delete_structural_edges_by_sources_targets_only_changed() {
     assert_eq!(count_edges(&conn).unwrap(), 1);
     let remaining = get_edges_from(&conn, "u3").unwrap();
     assert_eq!(remaining.len(), 1);
+}
+
+#[test]
+fn delete_edges_for_entity_removes_both_directions() {
+    let conn = setup();
+    for id in &["u1", "u2", "u3"] {
+        insert_entity(&conn, &Entity::new(id, "observation", id, "c")).unwrap();
+    }
+    // u1 → u2 (outgoing from u1)
+    insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
+    // u3 → u1 (incoming to u1)
+    insert_edge(&conn, &edge("u3", "u1", "supports")).unwrap();
+
+    delete_edges_for_entity(&conn, "u1").unwrap();
+
+    // Both edges involving u1 should be gone.
+    assert_eq!(count_edges(&conn).unwrap(), 0);
 }

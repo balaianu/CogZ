@@ -147,4 +147,15 @@ impl CogzServer {
     ) -> Result<CallToolResult, McpError> {
         tools_system::consolidate(self, params).await
     }
+
+    #[tool(
+        name = "capture_event",
+        description = "Capture a lifecycle event. Called by hook scripts (session_start, prompt_submit, pre_tool_use, post_tool_use, file_save, session_end). For session_start and prompt_submit, returns a context pack for injection. For file_save, triggers an incremental code reindex and stale-knowledge flagging. For session_end, runs consolidation (promotion + merge) and reports counts."
+    )]
+    async fn capture_event(
+        &self,
+        params: Parameters<CaptureEventParams>,
+    ) -> Result<CallToolResult, McpError> {
+        tools_system::capture_event(self, params).await
+    }
 }

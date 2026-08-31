@@ -12,7 +12,10 @@ pub const SCHEMA_VERSION: u32 = 2;
 ///
 /// Migrations are forward-only. On a fresh database, all tables are
 /// created. On an existing database, only new migrations run.
-pub fn run_migrations(conn: &Connection) -> Result<(), StorageError> {
+///
+/// `embedding_dim` is used for the vec0 virtual table dimension.
+/// It must match the configured model dimension.
+pub fn run_migrations(conn: &Connection, embedding_dim: usize) -> Result<(), StorageError> {
     let current: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
 
     if current >= SCHEMA_VERSION {
@@ -20,7 +23,7 @@ pub fn run_migrations(conn: &Connection) -> Result<(), StorageError> {
     }
 
     if current < 1 {
-        migrate_v1(conn)?;
+        migrate_v1(conn, embedding_dim)?;
     }
 
     if current < 2 {
@@ -47,7 +50,7 @@ pub fn check_version(conn: &Connection) -> Result<(), StorageError> {
 }
 
 /// Migration v1: initial schema — all tables, indexes, FTS5 triggers.
-fn migrate_v1(conn: &Connection) -> Result<(), StorageError> {
+fn migrate_v1(conn: &Connection, embedding_dim: usize) -> Result<(), StorageError> {
     // --- Entities table ---
     conn.execute_batch(
         r#"
@@ -123,9 +126,11 @@ fn migrate_v1(conn: &Connection) -> Result<(), StorageError> {
     )?;
 
     // --- Embeddings (vec0 virtual table) ---
-    conn.execute_batch(
-        "CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(\n            embedding FLOAT[768],\n            entity_id TEXT\n        );",
-    )?;
+    let vec0_sql = format!(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS entity_embeddings USING vec0(\n            embedding FLOAT[{}],\n            entity_id TEXT\n        );",
+        embedding_dim
+    );
+    conn.execute_batch(&vec0_sql)?;
 
     // --- Events table ---
     conn.execute_batch(
@@ -167,7 +172,7 @@ mod tests {
     fn fresh_db_has_all_tables() {
         let conn = Connection::open_in_memory().unwrap();
         crate::storage::ensure_vec_extension();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
 
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -189,7 +194,7 @@ mod tests {
     #[test]
     fn fts_triggers_sync_on_insert() {
         let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
 
         conn.execute(
             "INSERT INTO entities (id, type, title, content, properties, status, created_at, updated_at)
@@ -207,7 +212,7 @@ mod tests {
     #[test]
     fn fts_triggers_sync_on_delete() {
         let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
 
         conn.execute(
             "INSERT INTO entities (id, type, title, content, properties, status, created_at, updated_at)
@@ -228,7 +233,7 @@ mod tests {
     #[test]
     fn fts_triggers_sync_on_update() {
         let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
 
         conn.execute(
             "INSERT INTO entities (id, type, title, content, properties, status, created_at, updated_at)
@@ -256,8 +261,8 @@ mod tests {
     #[test]
     fn migrations_are_idempotent() {
         let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
         // Running again should not error
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
     }
 }

@@ -16,8 +16,9 @@ serde_json = "1"
 toml = "0.8"
 
 # Embedding / ML
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = "0.21"
+hf-hub = { version = "1.0", features = ["blocking"] }
 
 # MCP server
 rmcp = { version = "=3.1.4", features = ["transport-io"] }
@@ -52,9 +53,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zerocopy = "0.8"
 ndarray = "0.16"
 
+# Self-update (cogz update)
+ureq = { version = "3", features = ["rustls", "json"] }
+
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
+filetime = "0.2"
 rmcp = { version = "=3.1.4", features = ["transport-io", "client"] }
 
 [profile.release]

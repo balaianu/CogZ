@@ -355,7 +355,7 @@ fn sync_resets_db_rebuilds_from_files() {
 
     // First sync
     {
-        let storage = Storage::open(&dir.path().join("test.db")).unwrap();
+        let storage = Storage::open(&dir.path().join("test.db"), 768).unwrap();
         sync_all(&storage, dir.path());
         let conn = storage.conn();
         assert_eq!(storage::crud::count_all(&conn).unwrap(), 2);
@@ -366,7 +366,7 @@ fn sync_resets_db_rebuilds_from_files() {
 
     // Rebuild from files
     {
-        let storage = Storage::open(&dir.path().join("test.db")).unwrap();
+        let storage = Storage::open(&dir.path().join("test.db"), 768).unwrap();
         let result = sync_all(&storage, dir.path());
         assert_eq!(result.created, 2);
         let conn = storage.conn();

@@ -46,6 +46,16 @@ pub fn delete_edge(
     Ok(())
 }
 
+/// Delete all edges where the entity is either source or target.
+/// Used by tombstone cleanup before deleting an entity.
+pub fn delete_edges_for_entity(conn: &Connection, id: &str) -> Result<(), StorageError> {
+    conn.execute(
+        "DELETE FROM edges WHERE source_id = ?1 OR target_id = ?1",
+        params![id],
+    )?;
+    Ok(())
+}
+
 /// Delete all edges of a given type from a source entity.
 pub fn delete_edges_by_source_and_type(
     conn: &Connection,

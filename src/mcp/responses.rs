@@ -84,6 +84,12 @@ pub fn search_response(results: SearchResults) -> serde_json::Value {
 
 /// Build a context pack response.
 pub fn context_response(pack: crate::context::ContextPack) -> serde_json::Value {
+    context_response_ref(&pack)
+}
+
+/// Same as `context_response` but takes a reference, for embedding
+/// a context pack inside a larger response (e.g. `capture_event`).
+pub fn context_response_ref(pack: &crate::context::ContextPack) -> serde_json::Value {
     let sections: Vec<_> = pack
         .sections
         .iter()

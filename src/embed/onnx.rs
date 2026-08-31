@@ -12,35 +12,37 @@ use ort::value::Tensor;
 use tracing::warn;
 
 use super::model::{EmbeddingError, EmbeddingModel, EmbeddingResult};
+use super::pooling::mean_pool_with_mask;
+use super::registry;
 
 /// Which embedding model to use — determines the model file path
 /// and tokenizer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelType {
-    /// `nomic-ai/CodeRankEmbed-int8` — code-specific embeddings.
+    /// Code embedding model (CodeRankEmbed-int8).
     Code,
-    /// `BAAI/bge-base-en-v1.5` — general-purpose embeddings.
+    /// Knowledge embedding model (bge-base-en-v1.5).
     Knowledge,
 }
 
 impl ModelType {
-    pub fn model_id(&self) -> &'static str {
+    pub fn default_model_id(&self) -> &'static str {
         match self {
-            Self::Code => "nomic-ai/CodeRankEmbed-int8",
-            Self::Knowledge => "BAAI/bge-base-en-v1.5",
+            Self::Code => registry::DEFAULT_CODE_MODEL,
+            Self::Knowledge => registry::DEFAULT_KNOWLEDGE_MODEL,
         }
     }
 
     pub fn model_name(&self) -> &'static str {
         match self {
-            Self::Code => "coderank-embed",
+            Self::Code => "coderankembed",
             Self::Knowledge => "bge-base",
         }
     }
 
     /// Local path for the downloaded model directory.
     pub fn model_dir(&self, base: &std::path::Path) -> PathBuf {
-        base.join(self.model_id())
+        base.join(self.default_model_id())
     }
 }
 
@@ -57,6 +59,10 @@ pub struct OnnxEmbeddingModel {
     session: Mutex<Option<Session>>,
     tokenizer: Mutex<Option<tokenizers::Tokenizer>>,
     available: Mutex<bool>,
+    /// Whether the model's graph declares `token_type_ids` as an input.
+    /// CodeRankEmbed does not; BERT-based models do. Checked at load
+    /// time to avoid passing extra inputs the model rejects.
+    has_token_type_ids: Mutex<bool>,
 }
 
 impl OnnxEmbeddingModel {
@@ -73,6 +79,7 @@ impl OnnxEmbeddingModel {
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
             available: Mutex::new(false),
+            has_token_type_ids: Mutex::new(true),
         }
     }
 
@@ -100,6 +107,7 @@ impl OnnxEmbeddingModel {
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
             available: Mutex::new(false),
+            has_token_type_ids: Mutex::new(true),
         }
     }
 
@@ -109,15 +117,32 @@ impl OnnxEmbeddingModel {
             return Ok(());
         }
 
-        let model_path = self.model_dir.join("model.onnx");
-        let tokenizer_path = self.model_dir.join("tokenizer.json");
-
-        if !model_path.exists() {
-            return Err(EmbeddingError::ModelUnavailable(format!(
-                "model file not found: {}",
-                model_path.display()
-            )));
+        // Ensure the ONNX Runtime library is available and initialized.
+        // This discovers or downloads the ORT shared library and calls
+        // ort::init_from() to point ort to it.
+        if !super::runtime::ensure_ort() {
+            return Err(EmbeddingError::ModelUnavailable(
+                "ONNX Runtime library not available".to_string(),
+            ));
         }
+
+        // Clean broken cache artifacts before loading. The cache root
+        // is the parent of the model directory.
+        if let Some(cache_root) = self.model_dir.parent() {
+            super::download::clean_broken_cache(cache_root);
+        }
+
+        // Find the ONNX model file. The registry knows which layout
+        // each model uses (root, onnx subdir, optimized, quantized).
+        let model_path = self.find_onnx_file();
+        let Some(model_path) = model_path else {
+            return Err(EmbeddingError::ModelUnavailable(format!(
+                "model file not found under: {}",
+                self.model_dir.display()
+            )));
+        };
+
+        let tokenizer_path = self.model_dir.join("tokenizer.json");
         if !tokenizer_path.exists() {
             return Err(EmbeddingError::ModelUnavailable(format!(
                 "tokenizer file not found: {}",
@@ -125,17 +150,65 @@ impl OnnxEmbeddingModel {
             )));
         }
 
-        let session = Session::builder()
-            .and_then(|b| b.commit_from_file(&model_path))
-            .map_err(|e| {
+        let session = {
+            let mut builder = Session::builder().map_err(|e| {
+                warn!("ONNX session builder failed: {}", e);
+                EmbeddingError::ModelUnavailable(format!("session builder: {}", e))
+            })?;
+            builder = builder
+                .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+                .map_err(|e| {
+                    warn!("ONNX optimization level failed: {}", e);
+                    EmbeddingError::ModelUnavailable(format!("optimization level: {}", e))
+                })?;
+            // Disable memory pattern to prevent ORT's arena from
+            // growing unbounded across batched inference calls. Without
+            // this, RSS climbs to 5GB+ during large embedding workloads.
+            builder = builder.with_memory_pattern(false).map_err(|e| {
+                warn!("ONNX memory pattern failed: {}", e);
+                EmbeddingError::ModelUnavailable(format!("memory pattern: {}", e))
+            })?;
+            builder.commit_from_file(&model_path).map_err(|e| {
                 warn!("ONNX session load failed: {}", e);
                 EmbeddingError::ModelUnavailable(format!("failed to load ONNX model: {}", e))
-            })?;
+            })?
+        };
+
+        // Check whether the model declares token_type_ids as an input.
+        // CodeRankEmbed does not; BERT-based models do. Passing an
+        // extra input the model doesn't accept causes a runtime error.
+        let has_tti = session
+            .inputs()
+            .iter()
+            .any(|i| i.name() == "token_type_ids");
+        *self.has_token_type_ids.lock().unwrap() = has_tti;
 
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             warn!("tokenizer load failed: {}", e);
             EmbeddingError::ModelUnavailable(format!("failed to load tokenizer: {}", e))
         })?;
+
+        // Truncate to 256 tokens. BERT-based models support 512, but
+        // 256 captures sufficient semantic information for code/knowledge
+        // embedding while halving inference time for long sequences.
+        // Also set padding to the longest in the batch — the tokenizer
+        // handles padding automatically, which is much faster than
+        // manual padding in Rust.
+        let mut tokenizer = tokenizer;
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: 256,
+                ..Default::default()
+            }))
+            .map_err(|e| {
+                warn!("tokenizer truncation setup failed: {}", e);
+                EmbeddingError::ModelUnavailable(format!("truncation setup: {}", e))
+            })?;
+        tokenizer.with_padding(Some(tokenizers::PaddingParams {
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
+            ..Default::default()
+        }));
+        let tokenizer = tokenizer;
 
         *self.session.lock().unwrap() = Some(session);
         *self.tokenizer.lock().unwrap() = Some(tokenizer);
@@ -143,9 +216,23 @@ impl OnnxEmbeddingModel {
         Ok(())
     }
 
+    /// Find the ONNX model file in the model directory, trying all
+    /// known layouts: root model.onnx, root model_optimized.onnx,
+    /// onnx/model.onnx, onnx/model_quantized.onnx.
+    fn find_onnx_file(&self) -> Option<PathBuf> {
+        [
+            self.model_dir.join("model_optimized.onnx"),
+            self.model_dir.join("model.onnx"),
+            self.model_dir.join("onnx").join("model_quantized.onnx"),
+            self.model_dir.join("onnx").join("model.onnx"),
+        ]
+        .into_iter()
+        .find(|p| p.exists())
+    }
+
     /// Check if the model files exist on disk (without loading them).
     pub fn model_files_exist(&self) -> bool {
-        self.model_dir.join("model.onnx").exists() && self.model_dir.join("tokenizer.json").exists()
+        self.find_onnx_file().is_some() && self.model_dir.join("tokenizer.json").exists()
     }
 }
 
@@ -157,49 +244,74 @@ impl EmbeddingModel for OnnxEmbeddingModel {
 
         self.try_load()?;
 
+        // Process in chunks to avoid excessive memory use on large
+        // batches. 32 balances throughput and memory for 512-token
+        // sequences with 768-dim embeddings. Larger batches (64+)
+        // cause ORT's memory arena to grow beyond 5GB RSS.
+        const CHUNK_SIZE: usize = 32;
+        let mut all_results = Vec::with_capacity(texts.len());
+
+        for chunk in texts.chunks(CHUNK_SIZE) {
+            let embeddings = self.embed_chunk(chunk)?;
+            all_results.extend(embeddings);
+        }
+
+        Ok(all_results)
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+
+    fn model_name(&self) -> &str {
+        self.model_type.model_name()
+    }
+
+    fn is_available(&self) -> bool {
+        *self.available.lock().unwrap()
+    }
+}
+
+impl OnnxEmbeddingModel {
+    /// Embed a single chunk of texts (≤ CHUNK_SIZE). Holds the session
+    /// and tokenizer locks for the duration of inference.
+    fn embed_chunk(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
         let mut session_guard = self.session.lock().unwrap();
         let tokenizer_guard = self.tokenizer.lock().unwrap();
         let session = session_guard.as_mut().unwrap();
         let tokenizer = tokenizer_guard.as_ref().unwrap();
 
-        // Phase 1: tokenize all texts and collect encoded results.
-        let mut all_input_ids: Vec<Vec<i64>> = Vec::with_capacity(texts.len());
+        // Phase 1: batch tokenize all texts. The tokenizer handles
+        // truncation and padding automatically (configured at load time).
+        // This is much faster than encoding one at a time.
+        let encodings = tokenizer
+            .encode_batch(texts.to_vec(), true)
+            .map_err(|e| EmbeddingError::InferenceFailed(format!("tokenization: {}", e)))?;
+
+        // Phase 2: build batch tensors from encoded results.
+        // All sequences are padded to the same length by the tokenizer.
+        let batch_size = texts.len() as i64;
+        let padded_len = encodings[0].get_ids().len() as i64;
+
+        let mut batch_input_ids = Vec::with_capacity(texts.len() * padded_len as usize);
+        let mut batch_attention_mask = Vec::with_capacity(texts.len() * padded_len as usize);
+        let mut batch_token_type_ids = Vec::with_capacity(texts.len() * padded_len as usize);
         let mut all_attention_masks: Vec<Vec<i64>> = Vec::with_capacity(texts.len());
-        let mut max_seq_len: usize = 0;
 
-        for text in texts {
-            let encoded = tokenizer
-                .encode(*text, true)
-                .map_err(|e| EmbeddingError::InferenceFailed(format!("tokenization: {}", e)))?;
-
+        for encoded in &encodings {
             let input_ids: Vec<i64> = encoded.get_ids().iter().map(|&v| v as i64).collect();
             let attention_mask: Vec<i64> = encoded
                 .get_attention_mask()
                 .iter()
                 .map(|&v| v as i64)
                 .collect();
+            let token_type_ids: Vec<i64> =
+                encoded.get_type_ids().iter().map(|&v| v as i64).collect();
 
-            max_seq_len = max_seq_len.max(input_ids.len());
-            all_input_ids.push(input_ids);
-            all_attention_masks.push(attention_mask);
-        }
-
-        // Phase 2: pad all sequences to max_seq_len and build batch tensors.
-        let batch_size = texts.len() as i64;
-        let padded_len = max_seq_len as i64;
-
-        let mut batch_input_ids = Vec::with_capacity(texts.len() * max_seq_len);
-        let mut batch_attention_mask = Vec::with_capacity(texts.len() * max_seq_len);
-
-        for (input_ids, attention_mask) in all_input_ids.iter().zip(all_attention_masks.iter()) {
-            // Pad with zeros (padding token id = 0, attention mask = 0)
-            batch_input_ids.extend_from_slice(input_ids);
-            batch_input_ids.extend(std::iter::repeat_n(0i64, max_seq_len - input_ids.len()));
-            batch_attention_mask.extend_from_slice(attention_mask);
-            batch_attention_mask.extend(std::iter::repeat_n(
-                0i64,
-                max_seq_len - attention_mask.len(),
-            ));
+            all_attention_masks.push(attention_mask.clone());
+            batch_input_ids.extend_from_slice(&input_ids);
+            batch_attention_mask.extend_from_slice(&attention_mask);
+            batch_token_type_ids.extend_from_slice(&token_type_ids);
         }
 
         let input_ids_tensor = Tensor::from_array((vec![batch_size, padded_len], batch_input_ids))
@@ -208,10 +320,25 @@ impl EmbeddingModel for OnnxEmbeddingModel {
             Tensor::from_array((vec![batch_size, padded_len], batch_attention_mask.clone()))
                 .map_err(|e| EmbeddingError::InferenceFailed(format!("mask tensor: {}", e)))?;
 
-        // Phase 3: single batched inference call.
-        let outputs = session
-            .run(ort::inputs![input_ids_tensor, attention_mask_tensor])
-            .map_err(|e| EmbeddingError::InferenceFailed(format!("inference: {}", e)))?;
+        // Phase 3: single batched inference call. Only pass
+        // token_type_ids if the model declares it as an input.
+        let has_tti = *self.has_token_type_ids.lock().unwrap();
+        let outputs = if has_tti {
+            let token_type_ids_tensor =
+                Tensor::from_array((vec![batch_size, padded_len], batch_token_type_ids))
+                    .map_err(|e| EmbeddingError::InferenceFailed(format!("type tensor: {}", e)))?;
+            session
+                .run(ort::inputs![
+                    input_ids_tensor,
+                    attention_mask_tensor,
+                    token_type_ids_tensor
+                ])
+                .map_err(|e| EmbeddingError::InferenceFailed(format!("inference: {}", e)))?
+        } else {
+            session
+                .run(ort::inputs![input_ids_tensor, attention_mask_tensor])
+                .map_err(|e| EmbeddingError::InferenceFailed(format!("inference: {}", e)))?
+        };
 
         // Phase 4: extract and pool embeddings from batched output.
         let (shape, data) = outputs[0]
@@ -263,101 +390,5 @@ impl EmbeddingModel for OnnxEmbeddingModel {
         }
 
         Ok(results)
-    }
-
-    fn dimension(&self) -> usize {
-        self.dimension
-    }
-
-    fn model_name(&self) -> &str {
-        self.model_type.model_name()
-    }
-
-    fn is_available(&self) -> bool {
-        *self.available.lock().unwrap()
-    }
-}
-
-/// Mean-pool a rank-3 model output `[seq, dim]` using the attention
-/// mask to exclude padding tokens. Padding positions (mask == 0)
-/// contribute nothing to the sum and are not counted in the divisor.
-///
-/// Falls back to dividing by `seq` if the mask is all-zero (should
-/// not happen with valid input but avoids division by zero).
-pub fn mean_pool_with_mask(
-    data: &[f32],
-    attention_mask: &[i64],
-    seq: usize,
-    dim: usize,
-) -> Vec<f32> {
-    let mut pooled = vec![0.0_f32; dim];
-    let mut mask_sum = 0.0_f32;
-    for s in 0..seq {
-        if s < attention_mask.len() && attention_mask[s] == 0 {
-            continue;
-        }
-        mask_sum += 1.0;
-        let offset = s * dim;
-        for d in 0..dim {
-            pooled[d] += data[offset + d];
-        }
-    }
-    let divisor = if mask_sum > 0.0 { mask_sum } else { seq as f32 };
-    for v in &mut pooled {
-        *v /= divisor;
-    }
-    pooled
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mean_pool_all_ones_mask_averages_all_tokens() {
-        // 3 tokens, 2 dims: [[1,2],[3,4],[5,6]]
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let mask = vec![1, 1, 1];
-        let pooled = mean_pool_with_mask(&data, &mask, 3, 2);
-        assert_eq!(pooled, vec![3.0, 4.0]); // (1+3+5)/3, (2+4+6)/3
-    }
-
-    #[test]
-    fn mean_pool_excludes_padding_tokens() {
-        // 3 tokens, 2 dims, last token is padding
-        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
-        let mask = vec![1, 1, 0];
-        let pooled = mean_pool_with_mask(&data, &mask, 3, 2);
-        assert_eq!(pooled, vec![2.0, 3.0]); // (1+3)/2, (2+4)/2
-    }
-
-    #[test]
-    fn mean_pool_single_token() {
-        let data = vec![1.0, 2.0, 3.0];
-        let mask = vec![1];
-        let pooled = mean_pool_with_mask(&data, &mask, 1, 3);
-        assert_eq!(pooled, vec![1.0, 2.0, 3.0]);
-    }
-
-    #[test]
-    fn mean_pool_all_padding_falls_back_to_seq_divisor() {
-        // All-zero mask → all tokens skipped, sum stays 0.
-        // Fallback to seq divisor avoids division by zero.
-        let data = vec![1.0, 2.0, 3.0, 4.0];
-        let mask = vec![0, 0];
-        let pooled = mean_pool_with_mask(&data, &mask, 2, 2);
-        assert_eq!(pooled, vec![0.0, 0.0]); // 0/2, 0/2
-    }
-
-    #[test]
-    fn mean_pool_mask_shorter_than_seq_uses_seq_for_overflow() {
-        // Mask shorter than seq: overflow positions are treated as
-        // active (mask_sum counts them) — defensive for misaligned
-        // mask lengths.
-        let data = vec![1.0, 2.0, 3.0, 4.0];
-        let mask = vec![1]; // only 1 entry, seq=2
-        let pooled = mean_pool_with_mask(&data, &mask, 2, 2);
-        // Token 0: mask=1, token 1: no mask entry → included
-        assert_eq!(pooled, vec![2.0, 3.0]); // (1+3)/2, (2+4)/2
     }
 }

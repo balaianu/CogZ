@@ -73,8 +73,9 @@ impl Storage {
     /// Open or create a database at the given path.
     ///
     /// Enables WAL mode, registers sqlite-vec, runs migrations, and
-    /// verifies the schema version.
-    pub fn open(path: &Path) -> Result<Self, StorageError> {
+    /// verifies the schema version. `embedding_dim` configures the
+    /// vec0 virtual table dimension and must match the model.
+    pub fn open(path: &Path, embedding_dim: usize) -> Result<Self, StorageError> {
         ensure_vec_extension();
 
         let conn = if path == Path::new(":memory:") {
@@ -92,7 +93,7 @@ impl Storage {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
 
-        schema::run_migrations(&conn)?;
+        schema::run_migrations(&conn, embedding_dim)?;
         schema::check_version(&conn)?;
 
         Ok(Self {
@@ -100,9 +101,9 @@ impl Storage {
         })
     }
 
-    /// Open an in-memory database (for tests).
+    /// Open an in-memory database (for tests). Uses 768-dim embeddings.
     pub fn open_memory() -> Result<Self, StorageError> {
-        Self::open(Path::new(":memory:"))
+        Self::open(Path::new(":memory:"), 768)
     }
 
     /// Access the underlying connection. For internal use within
@@ -181,7 +182,7 @@ mod tests {
     fn open_file_based_db() {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("test.db");
-        let storage = Storage::open(&db_path).unwrap();
+        let storage = Storage::open(&db_path, 768).unwrap();
         let conn = storage.conn();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))

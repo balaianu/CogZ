@@ -25,13 +25,24 @@ pub struct CogzServer {
 impl CogzServer {
     pub fn new(storage: Arc<Storage>, config: Config, cogz_dir: PathBuf) -> Self {
         let models_dir = crate::embed::models_dir();
+        Self::with_models_dir(storage, config, cogz_dir, &models_dir)
+    }
+
+    /// Create a server with an explicit models directory. Used by tests
+    /// to isolate from the real model cache.
+    pub fn with_models_dir(
+        storage: Arc<Storage>,
+        config: Config,
+        cogz_dir: PathBuf,
+        models_dir: &std::path::Path,
+    ) -> Self {
         let query_model = Arc::new(OnnxEmbeddingModel::with_model_id(
             ModelType::Knowledge,
-            &models_dir,
+            models_dir,
             config.embedding.dimension,
             &config.embedding.knowledge_model,
         ));
-        let nli_model = Arc::new(OnnxNliModel::new(&models_dir, &config.embedding.nli_model));
+        let nli_model = Arc::new(OnnxNliModel::new(models_dir, &config.embedding.nli_model));
         Self {
             storage,
             config,
@@ -62,7 +73,8 @@ impl ServerHandler for CogzServer {
                 "CogZ — local-first engineering cognition runtime. \
                  Tools: record_observation, query_observations, create_rule, \
                  query_rules, create_knowledge, update_knowledge, query_knowledge, \
-                 search, get_context, get_status, list_entities, consolidate."
+                 search, get_context, get_status, list_entities, consolidate, \
+                 capture_event."
                     .to_string(),
             )
     }

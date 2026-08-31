@@ -1,8 +1,8 @@
 //! ONNX Runtime NLI model for contradiction detection.
 //!
-//! Loads an NLI model (e.g. `nli-deberta-v3-xsmall`) via `ort` with
-//! dynamic linking. Degrades gracefully when the ONNX Runtime library
-//! or model files are unavailable.
+//! Loads an NLI model (`cross-encoder/nli-deberta-v3-xsmall`) via `ort`
+//! with dynamic linking. Degrades gracefully when the ONNX Runtime
+//! library or model files are unavailable.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -12,9 +12,10 @@ use ort::value::Tensor;
 use tracing::warn;
 
 use super::model::{EmbeddingError, EmbeddingResult, NliLabel, NliModel};
+use super::registry;
 
 /// Default NLI model ID.
-const DEFAULT_NLI_MODEL: &str = "nli-deberta-v3-xsmall";
+const DEFAULT_NLI_MODEL: &str = registry::DEFAULT_NLI_MODEL;
 
 /// ONNX Runtime NLI model for contradiction detection.
 ///
@@ -35,7 +36,7 @@ pub struct OnnxNliModel {
 impl OnnxNliModel {
     /// Create a new NLI model. `model_id` selects the model directory
     /// under `models_base`. Empty string uses the default
-    /// (`nli-deberta-v3-xsmall`).
+    /// (`Xenova/nli-deberta-v3-xsmall`).
     pub fn new(models_base: &std::path::Path, model_id: &str) -> Self {
         let id = if model_id.is_empty() {
             DEFAULT_NLI_MODEL
@@ -50,20 +51,41 @@ impl OnnxNliModel {
         }
     }
 
+    /// Find the ONNX model file, trying all known layouts.
+    /// Prefer quantized (smaller, faster) then full model.
+    fn find_onnx_file(&self) -> Option<PathBuf> {
+        [
+            self.model_dir.join("onnx").join("model_quint8_avx2.onnx"),
+            self.model_dir.join("onnx").join("model.onnx"),
+            self.model_dir.join("model.onnx"),
+        ]
+        .into_iter()
+        .find(|p| p.exists())
+    }
+
     fn try_load(&self) -> EmbeddingResult<()> {
         if self.session.lock().unwrap().is_some() {
             return Ok(());
         }
 
-        let model_path = self.model_dir.join("model.onnx");
-        let tokenizer_path = self.model_dir.join("tokenizer.json");
-
-        if !model_path.exists() {
-            return Err(EmbeddingError::ModelUnavailable(format!(
-                "NLI model file not found: {}",
-                model_path.display()
-            )));
+        // Ensure the ONNX Runtime library is available.
+        if !super::runtime::ensure_ort() {
+            return Err(EmbeddingError::ModelUnavailable(
+                "ONNX Runtime library not available".to_string(),
+            ));
         }
+
+        // Find the ONNX model file, trying all known layouts.
+        // Prefer quantized (smaller, faster) then full model.
+        let model_path = self.find_onnx_file();
+        let Some(model_path) = model_path else {
+            return Err(EmbeddingError::ModelUnavailable(format!(
+                "NLI model file not found under: {}",
+                self.model_dir.display()
+            )));
+        };
+
+        let tokenizer_path = self.model_dir.join("tokenizer.json");
         if !tokenizer_path.exists() {
             return Err(EmbeddingError::ModelUnavailable(format!(
                 "NLI tokenizer file not found: {}",
@@ -71,17 +93,40 @@ impl OnnxNliModel {
             )));
         }
 
-        let session = Session::builder()
-            .and_then(|b| b.commit_from_file(&model_path))
-            .map_err(|e| {
+        let session = {
+            let mut builder = Session::builder().map_err(|e| {
+                warn!("NLI session builder failed: {}", e);
+                EmbeddingError::ModelUnavailable(format!("session builder: {}", e))
+            })?;
+            builder = builder
+                .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+                .map_err(|e| {
+                    warn!("NLI optimization level failed: {}", e);
+                    EmbeddingError::ModelUnavailable(format!("optimization level: {}", e))
+                })?;
+            builder.commit_from_file(&model_path).map_err(|e| {
                 warn!("NLI session load failed: {}", e);
                 EmbeddingError::ModelUnavailable(format!("failed to load NLI model: {}", e))
-            })?;
+            })?
+        };
 
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             warn!("NLI tokenizer load failed: {}", e);
             EmbeddingError::ModelUnavailable(format!("failed to load NLI tokenizer: {}", e))
         })?;
+
+        // Truncate to the model's max sequence length.
+        let mut tokenizer = tokenizer;
+        tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: 512,
+                ..Default::default()
+            }))
+            .map_err(|e| {
+                warn!("NLI tokenizer truncation setup failed: {}", e);
+                EmbeddingError::ModelUnavailable(format!("truncation setup: {}", e))
+            })?;
+        let tokenizer = tokenizer;
 
         *self.session.lock().unwrap() = Some(session);
         *self.tokenizer.lock().unwrap() = Some(tokenizer);
@@ -91,7 +136,10 @@ impl OnnxNliModel {
 
     /// Check if the model files exist on disk (without loading them).
     pub fn model_files_exist(&self) -> bool {
-        self.model_dir.join("model.onnx").exists() && self.model_dir.join("tokenizer.json").exists()
+        let has_model = self.model_dir.join("model.onnx").exists()
+            || self.model_dir.join("onnx").join("model.onnx").exists();
+        let has_tokenizer = self.model_dir.join("tokenizer.json").exists();
+        has_model && has_tokenizer
     }
 }
 

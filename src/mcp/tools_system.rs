@@ -1,13 +1,15 @@
-//! System tools — get_status, consolidate.
+//! System tools — get_status, consolidate, capture_event.
 //!
 //! `get_status` reports DB stats and model availability.
 //! `consolidate` runs the deferred promotion and merge phases.
+//! `capture_event` handles lifecycle events from hook scripts.
 
 use rmcp::{ErrorData as McpError, handler::server::wrapper::Parameters, model::CallToolResult};
 use serde_json::json;
 
+use crate::hooks::lifecycle::{LifecycleEvent, LifecycleInput, handle_lifecycle_event};
 use crate::mcp::helpers::{build_status_response, mcp_internal_error};
-use crate::mcp::params::ConsolidateParams;
+use crate::mcp::params::{CaptureEventParams, ConsolidateParams};
 use crate::mcp::responses::tool_success;
 use crate::mcp::server::CogzServer;
 
@@ -61,4 +63,55 @@ pub async fn consolidate(
     .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))??;
 
     Ok(tool_success(result))
+}
+
+pub async fn capture_event(
+    server: &CogzServer,
+    Parameters(params): Parameters<CaptureEventParams>,
+) -> Result<CallToolResult, McpError> {
+    let event = LifecycleEvent::parse(&params.event_type).ok_or_else(|| {
+        mcp_internal_error(
+            "capture_event",
+            &format!(
+                "invalid event_type '{}': expected session_start, prompt_submit, pre_tool_use, post_tool_use, file_save, or session_end",
+                params.event_type
+            ),
+        )
+    })?;
+
+    let storage = server.storage.clone();
+    let config = server.config.clone();
+    let cogz_dir = server.cogz_dir.clone();
+    let query_model = server.query_model.clone();
+    let prompt = params.prompt.clone();
+    let tool_name = params.tool_name.clone();
+    let tool_result = params.tool_result.clone();
+    let file_path = params.file_path.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let input = LifecycleInput {
+            event,
+            prompt: prompt.as_deref(),
+            tool_name: tool_name.as_deref(),
+            tool_result: tool_result.as_deref(),
+            file_path: file_path.as_deref(),
+        };
+        handle_lifecycle_event(&storage, &config, &cogz_dir, &query_model, &input)
+    })
+    .await
+    .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?
+    .map_err(|e| mcp_internal_error("capture_event", &e.to_string()))?;
+
+    let response = json!({
+        "event_type": params.event_type,
+        "event_id": result.event_id,
+        "observation_id": result.observation_id,
+        "context_pack": result.context_pack.as_ref().map(|pack| {
+            crate::mcp::responses::context_response_ref(pack)
+        }),
+        "reindex_summary": result.reindex_summary,
+        "consolidation_summary": result.consolidation_summary,
+    });
+
+    Ok(tool_success(response))
 }

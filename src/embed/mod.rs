@@ -5,16 +5,25 @@
 //! Degrades gracefully when models are unavailable (FTS-only search).
 
 pub mod cache;
+pub mod download;
 pub mod model;
 pub mod nli;
 pub mod onnx;
+pub mod pooling;
+pub mod registry;
+pub mod runtime;
 
 pub use cache::EmbeddingCache;
+pub use download::{
+    DownloadError, DownloadedModel, clean_broken_cache, download_model, is_model_cached,
+};
 pub use model::{
     EmbeddingModel, EmbeddingResult, MockEmbeddingModel, MockNliModel, NliLabel, NliModel,
 };
 pub use nli::OnnxNliModel;
 pub use onnx::{ModelType, OnnxEmbeddingModel};
+pub use registry::{ModelKind, lookup, onnx_filename, onnx_relative_path, resolve_source};
+pub use runtime::ensure_ort;
 
 /// Get the models directory: `~/.local/share/cogz/models/` on Linux,
 /// `%LOCALAPPDATA%/cogz/models/` on Windows. Falls back to

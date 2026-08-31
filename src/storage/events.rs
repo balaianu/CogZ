@@ -22,6 +22,12 @@ pub enum EventType {
     KnowledgeMerged,
     ContradictionFound,
     CodeChanged,
+    SessionStart,
+    PromptSubmit,
+    PreToolUse,
+    PostToolUse,
+    FileSave,
+    SessionEnd,
 }
 
 impl EventType {
@@ -38,6 +44,12 @@ impl EventType {
             Self::KnowledgeMerged => "knowledge_merged",
             Self::ContradictionFound => "contradiction_found",
             Self::CodeChanged => "code_changed",
+            Self::SessionStart => "session_start",
+            Self::PromptSubmit => "prompt_submit",
+            Self::PreToolUse => "pre_tool_use",
+            Self::PostToolUse => "post_tool_use",
+            Self::FileSave => "file_save",
+            Self::SessionEnd => "session_end",
         }
     }
 }
@@ -144,7 +156,7 @@ mod tests {
     fn setup() -> Connection {
         ensure_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
         conn
     }
 

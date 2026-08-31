@@ -187,54 +187,39 @@ fn parse_source_files(
 }
 
 /// Mark code entities as stale for a set of deleted file paths.
-/// Returns the count of entities marked stale.
+/// Returns the count of entities marked stale. Uses a single batched
+/// UPDATE query instead of fetching all entities and updating in a loop.
 pub fn mark_stale_for_deleted_files(
     storage: &storage::Storage,
     deleted_paths: &[std::path::PathBuf],
 ) -> usize {
     let conn = storage.conn();
-    let deleted_set: std::collections::HashSet<String> = deleted_paths
+    let deleted: Vec<String> = deleted_paths
         .iter()
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
-    let code_types = ["function", "class", "file", "module"];
-    let mut stale_count = 0;
-
-    for entity_type in &code_types {
-        let entities =
-            match storage::query::get_entities_by_type(&conn, entity_type, Some("active"), 100_000)
-            {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-        for entity in entities {
-            if let Some(ref fp) = entity.file_path
-                && deleted_set.contains(fp)
-            {
-                let mut updated = entity.clone();
-                updated.status = "stale".to_string();
-                updated.updated_at = chrono::Utc::now().to_rfc3339();
-                if storage::crud::update_entity(&conn, &updated).is_ok() {
-                    stale_count += 1;
-                }
-            }
-        }
-    }
-
-    stale_count
+    storage::crud::mark_code_entities_stale_by_file_paths(&conn, &deleted).unwrap_or(0)
 }
 
 /// Core DB sync — insert or update each entity, tracking results.
+/// Batch-fetches all existing entities in one query to avoid N+1.
 fn sync_entities_to_db(
     conn: &rusqlite::Connection,
     all_entities: &[ParsedEntity],
     result: &mut CodeSyncResult,
 ) {
+    let ids: Vec<String> = all_entities.iter().map(|(id, _)| id.clone()).collect();
+    let existing_map: HashMap<String, storage::crud::Entity> =
+        storage::crud::get_entities_batch(conn, &ids)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| (e.id.clone(), e))
+            .collect();
+
     for (id, entity) in all_entities {
-        match storage::crud::get_entity(conn, id) {
-            Ok(existing) => {
+        match existing_map.get(id) {
+            Some(existing) => {
                 if existing.status == "stale" {
                     // Reactivate stale entity even if content is unchanged.
                     let mut updated = entity.clone();
@@ -263,7 +248,7 @@ fn sync_entities_to_db(
                 result.updated += 1;
                 result.synced_entity_ids.push(id.clone());
             }
-            Err(storage::StorageError::EntityNotFound(_)) => {
+            None => {
                 if let Err(e) = storage::crud::insert_entity(conn, entity) {
                     tracing::warn!("failed to insert code entity {}: {}", id, e);
                     continue;
@@ -271,49 +256,56 @@ fn sync_entities_to_db(
                 result.created += 1;
                 result.synced_entity_ids.push(id.clone());
             }
-            Err(e) => {
-                tracing::warn!("failed to query code entity {}: {}", id, e);
-            }
         }
     }
 }
 
 /// Mark code entities as stale if their source file is no longer present.
 ///
-/// Returns the number of entities marked stale.
+/// Returns the number of entities marked stale. Uses a single batched
+/// UPDATE query instead of fetching all entities and updating in a loop.
 fn mark_stale_code_entities(
     conn: &rusqlite::Connection,
     current_files: &HashMap<String, Vec<String>>,
 ) -> usize {
-    // Get all active code entities grouped by file_path.
+    // Find active code entities whose file_path is NOT in current_files.
+    // We need to query the file paths first, then batch-update.
     let code_types = ["function", "class", "file", "module"];
-    let mut stale_count = 0;
+    let type_placeholders = (0..code_types.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
 
-    for entity_type in &code_types {
-        let entities = match storage::query::get_entities_by_type(
-            conn,
-            entity_type,
-            Some("active"),
-            100_000,
-        ) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+    let sql = format!(
+        "SELECT DISTINCT file_path FROM entities \
+         WHERE status = 'active' AND type IN ({type_placeholders}) \
+         AND file_path IS NOT NULL"
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = code_types
+        .iter()
+        .map(|t| t as &dyn rusqlite::ToSql)
+        .collect();
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to query code entity file paths: {}", e);
+            return 0;
+        }
+    };
+    let rows = match stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0)) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("failed to query code entity file paths: {}", e);
+            return 0;
+        }
+    };
 
-        for entity in entities {
-            if let Some(ref fp) = entity.file_path
-                && !current_files.contains_key(fp)
-            {
-                // Source file is gone — mark stale
-                let mut updated = entity.clone();
-                updated.status = "stale".to_string();
-                updated.updated_at = chrono::Utc::now().to_rfc3339();
-                if storage::crud::update_entity(conn, &updated).is_ok() {
-                    stale_count += 1;
-                }
-            }
+    let mut stale_paths: Vec<String> = Vec::new();
+    for row in rows.flatten() {
+        if !current_files.contains_key(&row) {
+            stale_paths.push(row);
         }
     }
 
-    stale_count
+    storage::crud::mark_code_entities_stale_by_file_paths(conn, &stale_paths).unwrap_or(0)
 }

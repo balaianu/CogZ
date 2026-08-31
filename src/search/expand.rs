@@ -187,7 +187,7 @@ mod tests {
     fn setup() -> Connection {
         ensure_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
+        run_migrations(&conn, 768).unwrap();
         conn
     }
 

@@ -5,9 +5,11 @@ name = "CogZ"
 db_path = ".cogz/cogz.db"
 
 [embedding]
-code_model = "nomic-ai/CodeRankEmbed-int8"
-knowledge_model = "BAAI/bge-base-en-v1.5"
-dimension = 768
+code_model = "BAAI/bge-small-en-v1.5"
+knowledge_model = "BAAI/bge-small-en-v1.5"
+dimension = 384
+nli_model = "cross-encoder/nli-deberta-v3-xsmall"
+auto_download = true
 
 [search]
 fts_weight = 0.4

@@ -12,7 +12,7 @@ use cogz::storage::{self, crud::Entity};
 
 fn setup_storage(dir: &std::path::Path) -> storage::Storage {
     let db_path = dir.join(".cogz/cogz.db");
-    storage::Storage::open(&db_path).unwrap()
+    storage::Storage::open(&db_path, 768).unwrap()
 }
 
 fn make_entity(id: &str, etype: &str, title: &str, content: &str) -> Entity {
@@ -148,7 +148,7 @@ fn full_sync_with_mock_embedding() {
     fs::write(cogz_dir.join("observations/test-obs.md"), obs_content).unwrap();
 
     let db_path = dir.path().join(".cogz/cogz.db");
-    let storage = storage::Storage::open(&db_path).unwrap();
+    let storage = storage::Storage::open(&db_path, 768).unwrap();
     let result = cogz::files::sync_all(&storage, &cogz_dir);
 
     assert_eq!(result.created, 1);
