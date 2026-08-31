@@ -182,8 +182,8 @@ The search system uses hybrid FTS5 + vector search with RRF fusion.
 ## Components
 
 - **FTS5**: Full-text search over entity titles and content
-- **Vector**: Cosine similarity over embeddings (CodeRankEmbed for
-  code, bge-base for knowledge)
+- **Vector**: Cosine similarity over embeddings (bge-small for
+  code and knowledge)
 - **RRF**: Reciprocal Rank Fusion merges FTS and vector results
 
 ## Flow
@@ -279,7 +279,7 @@ entity:
 - **File**: the full file content
 - **Module**: the module declaration and its doc comment (if any)
 
-This content is what gets embedded (with CodeRankEmbed) and indexed
+This content is what gets embedded (with bge-small) and indexed
 in FTS5. When a search returns a code entity, the agent sees the
 actual source code.
 

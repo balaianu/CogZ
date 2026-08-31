@@ -116,8 +116,8 @@ population (FTS works but vec0 is empty).
 
 **What's built:**
 - `src/embed/model.rs` — `EmbeddingModel` trait
-- `src/embed/onnx.rs` — ONNX Runtime implementation (CodeRankEmbed,
-  bge-base)
+- `src/embed/onnx.rs` — ONNX Runtime implementation (bge-small,
+  bge-small, NLI)
 - `src/embed/cache.rs` — content-hash-based embedding cache
 - Model download on first use (HuggingFace via `hf-hub`, cached at
   `~/.local/share/cogz/models/`). Auto-download unless
@@ -271,8 +271,8 @@ structural edges are inserted into the graph.
 - `src/index/mod.rs` — orchestration: scan → read → parse → sync
   entities → sync edges. Integrated into `cogz index` and
   `cogz reindex` CLI commands.
-- Multi-model embedding (CodeRankEmbed for code, bge-base for
-  knowledge) — already implemented in `cli.rs` from Phase 7.
+- Multi-model embedding (bge-small for code and knowledge,
+  optional CodeRankEmbed/bge-base alternatives) — already implemented in `cli.rs` from Phase 7.
 - `OnnxEmbeddingModel::with_model_id()` — wires `code_model` and
   `knowledge_model` config fields to actual model directory paths.
   Updated in `cli.rs`, `mcp/server.rs`, and `mcp/status.rs`.
@@ -368,28 +368,45 @@ merge — built on top of the basic dedup from Phase 7.
 - Incremental reindex preserves structural edges from unchanged files
   (regression: full index → modify one file → reindex → edge count unchanged)
 
-**What's NOT built yet:** Hooks. Everything else is done.
+**What's NOT built yet:** Nothing in Phase 10 scope. Hooks arrived in Phase 11.
 
 ---
 
-## Phase 11: Hooks
+## Phase 11: Hooks ✅
 
 **Goal:** Lifecycle events are captured, context is injected.
 
 **What's built:**
+- `src/hooks/mod.rs` — hooks root, re-exports
 - `src/hooks/lifecycle.rs` — session_start, prompt_submit,
-  pre_tool_use, post_tool_use handlers
-- `src/hooks/capture.rs` — `cogz capture-event` CLI command
-- session_start → generates cold_start context pack, prints to stdout
-- prompt_submit → generates task context pack, prints to stdout
-- pre/post_tool_use → records observations if meaningful
+  pre_tool_use, post_tool_use handlers. session_start and
+  prompt_submit assemble context packs. post_tool_use records an
+  observation when both tool_name and tool_result are provided.
+- `src/hooks/capture.rs` — `cogz capture-event` CLI handler.
+  Reads prompt from `--prompt` or `--prompt-file`. Prints context
+  pack sections to stdout (for agent injection), status to stderr.
+- `capture_event` MCP tool — 13th MCP tool, same logic via MCP
+  (brings total from 12 to 13 tools)
+- `CaptureEventParams` in `src/mcp/params.rs`
+- Tool router entry in `src/mcp/tools.rs`, implementation in
+  `src/mcp/tools_system.rs`
+- `context_response_ref` in `src/mcp/responses.rs` for embedding
+  a context pack inside a larger response
+- 4 new event types in `EventType` enum: `SessionStart`,
+  `PromptSubmit`, `PreToolUse`, `PostToolUse`
+- `cogz capture-event <type>` CLI command with `--prompt`,
+  `--prompt-file`, `--tool-name`, `--tool-result` flags
 
 **Verification:**
 - `cogz capture-event session_start` prints a cold_start context pack
 - `cogz capture-event prompt_submit --prompt "search bug"` prints a
   task context pack
 - Events are recorded in the DB
-- Hook scripts work when configured in an agent's hooks config
+- `capture_event` MCP tool returns context pack for session_start
+- `capture_event` MCP tool records observation for post_tool_use
+- MCP server lists 13 tools
+- 6 integration tests in `tests/test_hooks.rs`
+- 4 MCP tests in `tests/test_mcp_server.rs`
 
 ---
 

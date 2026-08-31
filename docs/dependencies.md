@@ -111,17 +111,18 @@ because we use it directly for allow-list matching.
 ### Embedding / ML
 
 ```toml
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = "0.21"
 ndarray = "0.16"
 ```
 
-**ort 2.0.0-rc.10** (latest: 2.0.0-rc.13, published 2026-07-28)
+**ort 2.0.0-rc.13** (published 2026-07-28)
 
-ONNX Runtime Rust wrapper. We pin to rc.10 (published 2025-06-01)
-rather than rc.13 because:
-- rc.10 has 4.4M downloads — widely used and tested.
-- rc.13 is only a month old (2026-07-28). We follow the 7-day rule.
+ONNX Runtime Rust wrapper. Supports ONNX Runtime 1.28 API. We pin
+to rc.13 because:
+- It supports ORT 1.27+ which matches FastEmbed's runtime version,
+  ensuring comparable inference performance.
+- rc.13 is over a month old, passing the 7-day rule.
 - The ort docs explicitly say "this version is production-ready
   (just not API stable)."
 
@@ -130,13 +131,13 @@ Features:
   instead of linking at build time. Avoids the `download-binaries`
   feature's build-time TLS dependency (openssl-sys via ureq/native-tls),
   which requires `pkg-config` and OpenSSL dev headers on the build
-  machine. The user must have `libonnxruntime.so` available at
-  runtime (or set `ORT_DYLIB_PATH`). This aligns with the graceful
-  degradation design: if the library isn't found, the system falls
-  back to FTS-only search.
+  machine. CogZ auto-discovers or downloads the ORT shared library
+  to `~/.local/share/cogz/lib/libonnxruntime.so` at runtime. This
+  aligns with the graceful degradation design: if the library isn't
+  found, the system falls back to FTS-only search.
 - `ndarray` — enables ndarray-based tensor operations.
 
-We use `=2.0.0-rc.10` (exact pin) because pre-release versions can
+We use `=2.0.0-rc.13` (exact pin) because pre-release versions can
 have breaking changes between release candidates. We upgrade
 deliberately, not via floating ranges.
 
@@ -225,17 +226,17 @@ zerocopy = "0.8"
 | `zerocopy` | Zero-copy byte conversion for sqlite-vec vector I/O |
 | `ndarray` | Tensor operations for ONNX embedding (pinned to match ort) |
 
-### HuggingFace Hub client (for model download — deferred to Phase 12)
+### HuggingFace Hub client (Phase 12 — model download)
 
 ```toml
-# hf-hub = { version = "1.0", features = ["blocking"] }
+hf-hub = "1.0"
 ```
 
 **hf-hub 1.0** — official Rust client for the Hugging Face Hub API,
 the Rust equivalent of Python's `huggingface_hub`. Replaces the
 earlier `reqwest` plan: `hf-hub` handles the HF API, content-addressed
 caching, on-disk locking (concurrent fetch deduplication), and retry
-logic. `blocking` feature because model download happens in a
+logic. Synchronous API used because model download happens in a
 synchronous context (first `cogz index` or `cogz models download`).
 
 **Why hf-hub over raw reqwest:** the HF cache layout
@@ -262,6 +263,26 @@ in `src/embed/download.rs` that runs before model loading:
 This mirrors the Mnemos fix (`_clean_broken_cache` in `embed.py`)
 adapted to Rust.
 
+### Self-update HTTP client (Phase 12 — `cogz update`)
+
+```toml
+ureq = { version = "3", features = ["rustls", "json"] }
+```
+
+**ureq 3.x** — minimal HTTP client for the GitHub releases API.
+Used by `cogz update` to check the latest release version, download
+the new binary, and verify the SHA-256 checksum. `rustls` feature
+avoids OpenSSL system dependency. `json` feature enables
+`read_json()` for parsing the GitHub API response.
+
+**Why ureq over reqwest:** `cogz update` is a one-shot CLI command,
+not an async server. ureq's synchronous API is simpler and adds
+fewer dependencies. reqwest is already pulled in transitively by
+hf-hub, but ureq keeps the `update` module self-contained and
+testable without the tokio runtime.
+
+**Published:** v3.4.0 released 2026-09-15. Satisfies the 7-day rule.
+
 ---
 
 ## Dev Dependencies
@@ -270,12 +291,16 @@ adapted to Rust.
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
+filetime = "0.2"
+rmcp = { version = "=3.1.4", features = ["transport-io", "client"] }
 ```
 
 | Crate | Purpose |
 |---|---|
 | `tempfile` | Temp directories and files for tests |
 | `pretty_assertions` | Readable diff output for test assertions |
+| `filetime` | Setting file modification times in download cleanup tests |
+| `rmcp` | Client-side MCP transport for server integration tests |
 
 ---
 
@@ -362,6 +387,7 @@ toml = "0.8"
 # Embedding / ML
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "ndarray"] }
 tokenizers = "0.21"
+hf-hub = { version = "1.0", features = ["blocking"] }
 
 # MCP server
 rmcp = { version = "=3.1.4", features = ["transport-io"] }
@@ -372,21 +398,18 @@ schemars = "1"
 git2 = { version = "0.19", default-features = false }
 walkdir = "2"
 slug = "0.1"
-
-# Database
-rusqlite = { version = "0.40", features = ["bundled"] }
-sqlite-vec = "0.1"
-
-# HuggingFace Hub client (model download — deferred to Phase 12)
-# hf-hub = { version = "1.0", features = ["blocking"] }
+ignore = "0.4"
 
 # Code parsing (Phase 8)
 tree-sitter = "0.25"
 tree-sitter-language = "0.1"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
-ignore = "0.4"
 globset = "0.4"
+
+# Database
+rusqlite = { version = "0.40", features = ["bundled"] }
+sqlite-vec = "0.1"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "v5"] }
@@ -399,9 +422,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zerocopy = "0.8"
 ndarray = "0.16"
 
+# Self-update (cogz update)
+ureq = { version = "3", features = ["rustls", "json"] }
+
 [dev-dependencies]
 tempfile = "3"
 pretty_assertions = "1"
+filetime = "0.2"
 rmcp = { version = "=3.1.4", features = ["transport-io", "client"] }
 
 [profile.release]
@@ -438,14 +465,13 @@ debug = true
 | CLI | clap | 1 |
 | Config/Serialization | serde, serde_json, toml | 3 |
 | Code Parsing | tree-sitter, tree-sitter-language, tree-sitter-rust, tree-sitter-python, ignore, globset | 6 |
-| Embedding/ML | ort, tokenizers, ndarray | 3 |
+| Embedding/ML | ort, tokenizers, ndarray, hf-hub | 4 |
 | MCP server | rmcp, tokio, schemars | 3 |
 | File system/Git | git2, walkdir, slug | 3 |
 | Utilities | uuid, sha2, chrono, anyhow, thiserror, tracing, tracing-subscriber, zerocopy | 8 |
-| HF Hub | _(deferred to Phase 12)_ | 0 |
-| Dev | tempfile, pretty_assertions, rmcp (client feature) | 3 |
-| **Total** | | **32** |
+| Self-update | ureq | 1 |
+| Dev | tempfile, pretty_assertions, filetime, rmcp (client feature) | 4 |
+| **Total** | | **35** |
 
-32 direct dependencies (Phase 8 scope). `hf-hub` will be added in
-Phase 12 (model download). Transitive count will be higher but
-manageable. The binary will be ~15-25 MB with static linking.
+35 direct dependencies (Phase 12 scope). Transitive count is higher
+but manageable. The binary is ~22 MB with static linking.

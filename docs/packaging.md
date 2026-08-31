@@ -39,12 +39,16 @@ Models are downloaded to `~/.local/share/cogz/models/` on first use:
 
 ```
 ~/.local/share/cogz/models/
-  nomic-ai/CodeRankEmbed-int8/   ~100 MB (code embeddings)
-  BAAI/bge-base-en-v1.5/         ~400 MB (knowledge embeddings)
-  nli-deberta-v3-xsmall/         ~280 MB (contradiction detection, optional)
+  BAAI/bge-small-en-v1.5/         ~64 MB (code + knowledge embeddings)
+  cross-encoder/nli-deberta-v3-xsmall/  ~87 MB (contradiction detection, optional)
 ```
 
-Total model cache: ~780 MB for full capability, ~500 MB without NLI.
+Total model cache: ~151 MB for full capability, ~64 MB without NLI.
+
+The default model is Qdrant's graph-optimized bge-small-en-v1.5 (384d,
+INT8). It's used for both code and knowledge embeddings, keeping the
+cache small and inference fast. CodeRankEmbed (768d, code-specific) and bge-base (768d) are
+bge-base (768d, higher quality) are available as config alternatives.
 
 Download is lazy and automatic unless disabled:
 - `cogz index` triggers code model download (if `auto_download = true`)
@@ -75,8 +79,27 @@ retry logic on transient failures.
 the disk-filling retry loop that affected Mnemos (Python
 `huggingface_hub` leaves `.incomplete` files on interrupted
 downloads). The 1-hour threshold preserves files from active
-downloads — a 400 MB model downloads in minutes on any reasonable
+downloads — a 64 MB model downloads in seconds on any reasonable
 connection.
+
+### ONNX Runtime
+
+CogZ uses ONNX Runtime for model inference. The `ort` crate is
+configured with `load-dynamic`, meaning the ONNX Runtime shared
+library is loaded at runtime (not linked at build time). This avoids
+build-time TLS dependencies and allows graceful degradation.
+
+**Runtime discovery order:**
+1. `ORT_DYLIB_PATH` environment variable
+2. `~/.local/share/cogz/lib/libonnxruntime.so` (CogZ-managed)
+3. System library paths (`/usr/lib/x86_64-linux-gnu/libonnxruntime.so`, etc.)
+
+If no library is found, CogZ downloads ONNX Runtime 1.27.0 (CPU-only,
+~23 MB) from GitHub releases and installs it to
+`~/.local/share/cogz/lib/libonnxruntime.so`.
+
+When no runtime is available and download fails, CogZ falls back to
+FTS-only search (graceful degradation).
 
 ---
 
@@ -207,23 +230,24 @@ cogz index
 ```
 
 This:
-1. Downloads the code embedding model (~100 MB) if not cached and `auto_download` is true
+1. Downloads the code embedding model (~64 MB) if not cached and `auto_download` is true
 2. Parses the repo with tree-sitter (respecting .gitignore)
 3. Extracts code entities (functions, classes, files, modules)
 4. Builds structural edges (calls, imports, extends)
 5. Scans `.cogz/knowledge/` and `.cogz/rules/` for entity files
-6. Downloads the knowledge embedding model (~400 MB) if knowledge files exist and `auto_download` is true
-7. Generates embeddings for all entities (skipped if models unavailable — FTS-only)
-8. Builds FTS index
-9. Creates `.cogz/cogz.db`
+6. Embeds knowledge entities inline (skipped if model unavailable — FTS-only)
+7. Builds FTS index
+8. Creates `.cogz/cogz.db`
+9. Spawns a background process to embed code entities (returns immediately)
 
 Use `cogz index --no-download` to skip model download and operate in
 FTS-only mode. Use `cogz models download` to pre-fetch models before
 indexing.
 
-First index takes a few minutes on a large repo (model download +
-parsing + embedding). Subsequent indexes are incremental (only
-changed files re-embedded).
+Foreground index takes ~3 minutes on this repo (~1000 code entities).
+Code embedding continues in the background for ~25 minutes. Search
+works immediately after the foreground command returns — vector
+results appear as embeddings are stored.
 
 ---
 
@@ -274,8 +298,9 @@ updating config and re-indexing (embeddings are model-specific).
 
 ```toml
 [embedding]
-code_model = "nomic-ai/CodeRankEmbed-int8"
-knowledge_model = "BAAI/bge-base-en-v1.5"
+code_model = "BAAI/bge-small-en-v1.5"
+knowledge_model = "BAAI/bge-small-en-v1.5"
+dimension = 384
 ```
 
 If a model is updated in config, `cogz index` detects the mismatch
@@ -532,8 +557,8 @@ After full installation and setup, the filesystem looks like:
 ```
 ~/.local/bin/cogz                              — binary (10-20 MB)
 ~/.local/share/cogz/models/                    — model cache (~780 MB)
-  nomic-ai/CodeRankEmbed-int8/
-  BAAI/bge-base-en-v1.5/
+  BAAI/bge-small-en-v1.5/
+  BAAI/bge-small-en-v1.5/
   nli-deberta-v3-xsmall/
 
 ~/projects/my-project/                         — a repo using CogZ

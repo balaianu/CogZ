@@ -693,8 +693,8 @@ Get system status — DB stats, model availability, entity counts.
   "edges": 1245,
   "events": 789,
   "models": {
-    "embedding_code": {"available": true, "name": "nomic-ai/CodeRankEmbed-int8"},
-    "embedding_knowledge": {"available": true, "name": "BAAI/bge-base-en-v1.5"},
+    "embedding_code": {"available": true, "name": "BAAI/bge-small-en-v1.5"},
+    "embedding_knowledge": {"available": true, "name": "BAAI/bge-small-en-v1.5"},
     "nli": {"available": false, "name": null}
   },
   "last_index": "2026-08-27T14:00:00Z"

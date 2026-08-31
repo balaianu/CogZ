@@ -60,7 +60,7 @@ functions and structs in isolation.
 | `consolidate/dedup.rs` | Similarity threshold, duplicate flagging, exact title match, fuzzy title match | 9 |
 | `consolidate/merge.rs` | Edge redirection, superseded marking, `superseded_by` field set | 9 |
 | `consolidate/promote.rs` | Promotion threshold, rule creation from observation, `derived_from` edge | 9 |
-| `hooks/lifecycle.rs` | Event handling, context pack generation per mode | 11 (planned) |
+| `hooks/lifecycle.rs` | Event handling, context pack generation per mode | 11 |
 
 ### Integration Tests
 
@@ -74,11 +74,13 @@ Live in `tests/` directory. Test multiple modules working together.
 | `tests/test_search.rs` | Full search pipeline: insert entities, run hybrid search, verify ranking and graph expansion | 5 |
 | `tests/test_context.rs` | Context assembly: insert entities with references, run each mode, verify pack structure and token budget | 6 |
 | `tests/test_embed_sync.rs` | Embedding sync pipeline: embed entities, store embeddings, cache behavior | 4 |
-| `tests/test_mcp_server.rs` | MCP protocol: start server, call each implemented tool, verify responses; `update_knowledge` edits knowledge; `create_knowledge` returns `duplicate_warning` when title matches | 7 |
+| `tests/test_mcp_server.rs` | MCP protocol: start server, call each implemented tool, verify responses; `update_knowledge` edits knowledge; `create_knowledge` returns `duplicate_warning` when title matches; `capture_event` returns context pack for session_start, records observation for post_tool_use, errors on invalid event type; server lists 13 tools | 7 |
 | `tests/test_code_index.rs` | Tree-sitter indexing: index a test repo, verify code entities and structural edges | 8 |
 | `tests/test_consolidation.rs` | Consolidation pipeline: insert duplicates, verify dedup + `duplicate_warning`; insert same-title knowledge, verify title match; insert contradictions, verify flagging; insert supporting observations, verify promotion; verify `superseded_by` and `derived_from` edges | 9 |
 | `tests/test_update_policy.rs` | Update policy enforcement: `update_knowledge` edits knowledge in-place; no `update_observation` or `edit_rule` tool exists; status state machine rejects illegal transitions; observation content edit detected by sync, event logged | 7 (not yet created — covered by `test_mcp_server.rs` and `test_file_sync.rs`) |
 | `tests/test_git_diff.rs` | Change detection: index, modify source file, reindex, verify stale flagging on referenced knowledge | 10 |
+| `tests/test_hooks.rs` | Lifecycle events: session_start cold_start pack, prompt_submit task pack, pre/post_tool_use event recording, post_tool_use observation creation, event parsing | 11 |
+| `tests/test_doctor.rs` | Doctor health checks: healthy repo, missing file detection, observation edit detection, orphaned supersede detection, prune dry-run, prune confirm with tombstones, active observations never pruned, knowledge never pruned, graph edges preserved to tombstones, tombstone limit enforced | 12 |
 
 ### End-to-End Tests
 
@@ -110,11 +112,11 @@ impl EmbeddingModel for MockEmbeddingModel {
             let mut hasher = DefaultHasher::new();
             t.hash(&mut hasher);
             let h = hasher.finish();
-            (0..768).map(|i| ((h >> (i % 64)) & 1) as f32).collect()
+            (0..384).map(|i| ((h >> (i % 64)) & 1) as f32).collect()
         }).collect())
     }
 
-    fn dimension(&self) -> usize { 768 }
+    fn dimension(&self) -> usize { 384 }
     fn model_name(&self) -> &str { "mock" }
 }
 ```
@@ -171,7 +173,7 @@ db_path = ".cogz/cogz.db"
 [embedding]
 code_model = "mock"
 knowledge_model = "mock"
-dimension = 768
+dimension = 384
 
 [search]
 fts_weight = 0.4
@@ -260,7 +262,7 @@ Tests that require real ONNX models are:
 
 | Test | What it verifies |
 |---|---|
-| `test_real_embedding_dimension` | CodeRankEmbed produces 768-dim vectors |
+| `test_real_embedding_dimension` | bge-small produces 384-dim vectors |
 | `test_real_dedup_semantic` | Semantically similar observations are flagged as duplicates |
 | `test_real_contradiction` | Contradictory rules are detected by NLI model |
 | `test_real_search_quality` | Search returns relevant results for natural language queries |

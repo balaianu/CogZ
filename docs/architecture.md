@@ -15,7 +15,7 @@ decisions.
 | Vector search | sqlite-vec | Same SQLite database, no separate vector store. |
 | Full-text search | SQLite FTS5 | Same database. One FTS table with type filter. |
 | Code parsing | tree-sitter (Rust bindings) | Multi-language AST extraction. Mature Rust crate. |
-| Embedding inference | ort (ONNX Runtime) | Same models as v1 (CodeRankEmbed, bge-base), Rust-native inference. |
+| Embedding inference | ort (ONNX Runtime) | Same models as v1 (bge-small, NLI models), Rust-native inference. |
 | MCP server | mcp Rust SDK | Native MCP protocol implementation. |
 | CLI | clap | Standard Rust CLI framework. |
 | Config | serde + TOML | Typed, validated at startup, single file. |
@@ -56,7 +56,10 @@ folder renames — but it is metadata, not a query filter.
 cogz/
   src/
     main.rs              — CLI entry point (clap)
-    commands.rs          — CLI command handlers (status, index, reindex, reset)
+    commands/            — CLI command handlers
+      mod.rs             — status, index, reindex, reset, consolidate
+      models.rs          — cogz models (download, list, clean)
+      doctor.rs          — cogz doctor (health check, pruning)
     cli.rs               — CLI helpers (embedding, search, context, MCP)
     lib.rs               — library root, public API
     init.rs              — `cogz init` — directory scaffold, config generation
@@ -131,7 +134,7 @@ cogz/
     mcp/
       mod.rs             — MCP root, re-exports
       server.rs          — CogzServer struct, ServerHandler impl
-      tools.rs           — #[tool] method definitions (12 tools implemented)
+      tools.rs           — #[tool] method definitions (13 tools implemented)
       params.rs          — parameter structs (serde + schemars)
       helpers.rs         — file-first write logic, response builders, embedding
       dedup.rs           — title match + embedding similarity dedup
@@ -139,10 +142,17 @@ cogz/
       errors.rs          — MCP error helpers
       status.rs          — get_status implementation
 
-    hooks/               — (Phase 11, not yet implemented)
-      mod.rs             — hooks root
+    hooks/               — (Phase 11)
+      mod.rs             — hooks root, re-exports
       lifecycle.rs       — session_start, prompt_submit, pre/post_tool_use
-      capture.rs         — event capture from external scripts
+      capture.rs         — CLI handler for cogz capture-event
+
+    doctor/              — (Phase 12)
+      mod.rs             — doctor root, re-exports
+      checks.rs          — health checks (DB integrity, file sync, policy violations)
+      prune.rs           — observation pruning with tombstones
+
+    update.rs            — (Phase 12) self-update from GitHub releases
 ```
 
 ### File size rule
@@ -385,7 +395,7 @@ CREATE INDEX idx_edges_target ON edges(target_id, edge_type);
 -- Embeddings: one vec0 table for all entity types
 -- entity_id is a TEXT column (UUID) mapping to entities.id
 CREATE VIRTUAL TABLE entity_embeddings USING vec0(
-    embedding FLOAT[768],
+    embedding FLOAT[dimension],
     entity_id TEXT
 );
 
@@ -402,7 +412,11 @@ CREATE TABLE events (
                                          -- 'knowledge_updated',
                                          -- 'knowledge_merged',
                                          -- 'contradiction_found',
-                                         -- 'code_changed'
+                                         -- 'code_changed',
+                                         -- 'session_start',
+                                         -- 'prompt_submit',
+                                         -- 'pre_tool_use',
+                                         -- 'post_tool_use'
     entity_id   TEXT REFERENCES entities(id),
     payload     TEXT DEFAULT '{}',       -- JSON
     created_at  TEXT NOT NULL
@@ -517,7 +531,7 @@ implementations based on config at startup.
 ### Implementations
 
 - `onnx.rs` — ONNX Runtime inference for local models
-  (CodeRankEmbed, bge-base, NLI models)
+  (bge-small, NLI models, NLI models)
 - Future: `api.rs` — HTTP-based embedding API (OpenAI, etc.) if needed
 
 ### Process isolation
@@ -624,12 +638,12 @@ are excluded from search and context unless explicitly requested).
 Code entities and knowledge entities use different embedding models
 (inherited from CogZ-py):
 
-- Code: `nomic-ai/CodeRankEmbed-int8` (768d, code-specific)
-- Knowledge: `BAAI/bge-base-en-v1.5` (768d, general-purpose)
+- Code: `BAAI/bge-small-en-v1.5 (384d, default for both code and knowledge))
+- Knowledge: `BAAI/bge-small-en-v1.5 (384d, default for both code and knowledge))
 
 Both share the same vec0 table (same dimension). The `type` field
 distinguishes which model produced the embedding. The query embedding
-uses the knowledge model (bge-base). Code entities are findable via
+uses the knowledge model (bge-small). Code entities are findable via
 FTS5 (model-independent) and graph expansion. A future improvement
 will run separate KNN queries per embedding model and merge results.
 
@@ -867,7 +881,7 @@ integrity. See Retention and Bounded Growth above.
 
 ## MCP Interface
 
-### 13 tools (12 implemented, 1 planned for Phase 11)
+### 13 tools (all implemented)
 
 ```
 record_observation      query_observations      (implemented)
@@ -876,7 +890,7 @@ create_knowledge        update_knowledge        (implemented)
 query_knowledge         search                  (implemented)
 get_context             consolidate             (implemented)
 get_status              list_entities           (implemented)
-capture_event                                   (Phase 11, not yet implemented)
+capture_event                                   (implemented)
 ```
 
 ### Design rules
@@ -892,41 +906,41 @@ capture_event                                   (Phase 11, not yet implemented)
 
 ## CLI
 
-### Current commands (Phase 10)
+### Current commands (Phase 12)
 
 ```
 cogz init                    — initialize .cogz/ in a repo (autodetect project name, generate config.toml)
-cogz index                   — index the repository (code + .cogz/ files)
+cogz index [--no-download]   — index the repository (code + .cogz/ files)
 cogz reindex                 — re-index changed files (incremental, git diff-based)
 cogz search <query>          — search entities
 cogz context [--mode] [q]    — assemble context pack
 cogz consolidate             — trigger background consolidation
 cogz status                  — show system status
 cogz mcp-stdio               — run MCP server (stdin/stdout)
+cogz capture-event <type>    — capture a lifecycle event (hook scripts)
+cogz models download         — download models from HuggingFace
+cogz models list             — show model download status
+cogz models clean            — clean broken cache artifacts
+cogz doctor                  — health check (DB integrity, file sync, policy violations)
+cogz doctor --prune-observations — dry-run: report prunable observations
+cogz doctor --prune-observations --confirm — prune observations, preserve tombstones
+cogz update                  — self-update from GitHub releases
 cogz reset                   — drop DB only (safe, rebuildable)
 cogz reset --purge           — drop DB + observations + generated .gitignore (keeps knowledge/rules/config)
 ```
 
-### Planned commands (Phase 11+)
+### Planned commands (post-12)
 
 ```
-cogz capture-event <type>    — capture a lifecycle event (hook scripts)           (Phase 11)
-cogz record-observation      — record an observation                              (Phase 11)
-cogz create-rule             — create a rule                                      (Phase 11)
-cogz create-knowledge        — create a knowledge entry                           (Phase 11)
-cogz update-knowledge <id>   — update a knowledge entry (opens $EDITOR)           (Phase 11)
-cogz doctor                  — health check (policy violations, stale entities)   (Phase 12)
-cogz doctor --prune-observations — dry-run: report prunable observations          (Phase 12)
-cogz doctor --prune-observations --confirm — prune observations, preserve tombstones (Phase 12)
-cogz models download         — download models from HuggingFace                   (Phase 12)
-cogz models list             — show model download status                         (Phase 12)
-cogz models clean            — clean broken cache artifacts                       (Phase 12)
-cogz update                  — self-update from GitHub releases                   (Phase 12)
+cogz record-observation      — record an observation (CLI equivalent of MCP tool)
+cogz create-rule             — create a rule (CLI equivalent of MCP tool)
+cogz create-knowledge        — create a knowledge entry (CLI equivalent of MCP tool)
+cogz update-knowledge <id>   — update a knowledge entry (opens $EDITOR)
 ```
 
 Pinned commands (referenced by external scripts, must not rename):
 - `cogz mcp-stdio` — referenced in MCP config files
-- `cogz capture-event` — called by hook shell scripts (Phase 11)
+- `cogz capture-event` — called by hook shell scripts
 
 ---
 
@@ -946,10 +960,11 @@ name = "cogz"                    # autodetected on init, saved, versioned
 db_path = ".cogz/cogz.db"        # per-repo database
 
 [embedding]
-code_model = "nomic-ai/CodeRankEmbed-int8"   # used for code entity embeddings
-knowledge_model = "BAAI/bge-base-en-v1.5"    # used for knowledge entity + query embeddings
+code_model = "BAAI/bge-small-en-v1.5"  # used for code entity embeddings
+knowledge_model = "BAAI/bge-small-en-v1.5"  # used for knowledge entity + query embeddings
 nli_model = "nli-deberta-v3-xsmall"          # NLI model for contradiction detection
-dimension = 768
+dimension = 384
+auto_download = true                          # auto-download models on first use (Phase 12)
 
 [search]
 fts_weight = 0.4
