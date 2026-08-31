@@ -1,114 +1,11 @@
-//! CLI helpers — embedding orchestration and path resolution.
+//! CLI helpers — path resolution and command dispatch.
 //!
 //! These functions are only compiled into the `cogz` binary, not the
 //! library crate. They bridge CLI commands to library functionality.
 
-use cogz::config::Config;
 use cogz::storage::Storage;
 
-/// Embed synced entities, selecting the model per entity type.
-/// Code entities use CodeRankEmbed; knowledge entities use bge-base.
-/// Returns the count of entities successfully embedded. If a model
-/// is unavailable, those entities are skipped (graceful degradation).
-///
-/// Entity data is fetched under the DB lock, then the lock is dropped
-/// during model inference, then re-acquired to store vectors. This
-/// prevents blocking other DB callers during potentially slow ONNX
-/// inference.
-pub fn embed_synced(storage: &Storage, config: &Config, entity_ids: &[String]) -> usize {
-    use cogz::embed::{EmbeddingCache, ModelType, OnnxEmbeddingModel};
-    use cogz::storage::crud::EntityType;
-
-    let models_dir = models_dir();
-    let cache = EmbeddingCache::new();
-
-    // Phase 1: fetch entity data under the lock, then drop it
-    let entities: Vec<_> = {
-        let conn = storage.conn();
-        cogz::storage::crud::get_entities_batch(&conn, entity_ids).unwrap_or_default()
-    };
-
-    let (code_entities, knowledge_entities): (Vec<_>, Vec<_>) =
-        entities.iter().cloned().partition(|e| {
-            EntityType::parse(&e.r#type)
-                .map(|t| t.is_code())
-                .unwrap_or(false)
-        });
-
-    // Phase 2: embed without holding the DB lock
-    let mut all_embeddings = Vec::new();
-
-    if !knowledge_entities.is_empty() {
-        let model = OnnxEmbeddingModel::with_model_id(
-            ModelType::Knowledge,
-            &models_dir,
-            config.embedding.dimension,
-            &config.embedding.knowledge_model,
-        );
-        if model.model_files_exist() {
-            all_embeddings.extend(cogz::files::embed_sync::embed_entities(
-                &model,
-                &cache,
-                &knowledge_entities,
-            ));
-        }
-    }
-
-    if !code_entities.is_empty() {
-        let model = OnnxEmbeddingModel::with_model_id(
-            ModelType::Code,
-            &models_dir,
-            config.embedding.dimension,
-            &config.embedding.code_model,
-        );
-        if model.model_files_exist() {
-            all_embeddings.extend(cogz::files::embed_sync::embed_entities(
-                &model,
-                &cache,
-                &code_entities,
-            ));
-        }
-    }
-
-    // Phase 3: store vectors under the lock
-    if all_embeddings.is_empty() {
-        return 0;
-    }
-    let mut conn = storage.conn();
-    cogz::files::embed_sync::store_embeddings(&mut conn, &all_embeddings)
-}
-
-/// Get the models directory: `~/.local/share/cogz/models/`
-pub fn models_dir() -> std::path::PathBuf {
-    cogz::embed::models_dir()
-}
-
-/// Embed a search query using the configured knowledge model.
-/// Returns None if the model is unavailable (graceful degradation
-/// to FTS-only search).
-pub fn embed_query(config: &Config, query: &str) -> Option<Vec<f32>> {
-    use cogz::embed::{EmbeddingModel, ModelType, OnnxEmbeddingModel};
-
-    let models_dir = models_dir();
-    let model = OnnxEmbeddingModel::with_model_id(
-        ModelType::Knowledge,
-        &models_dir,
-        config.embedding.dimension,
-        &config.embedding.knowledge_model,
-    );
-
-    if !model.model_files_exist() {
-        return None;
-    }
-
-    match model.embed(&[query]) {
-        Ok(embeddings) => embeddings.into_iter().next(),
-        Err(e) => {
-            tracing::warn!("query embedding failed: {}", e);
-            None
-        }
-    }
-}
+pub use crate::cli_embed::{embed_query, embed_synced, models_dir};
 
 /// Run the `cogz search` command.
 #[allow(clippy::too_many_arguments)]
@@ -140,7 +37,7 @@ pub fn run_search(
         );
     }
 
-    let storage = Storage::open(&db_path)?;
+    let storage = Storage::open(&db_path, config.embedding.dimension)?;
 
     let query_embedding = embed_query(&config, query);
 
@@ -241,7 +138,7 @@ pub fn run_context(
         );
     }
 
-    let storage = Storage::open(&db_path)?;
+    let storage = Storage::open(&db_path, config.embedding.dimension)?;
 
     let query_embedding = query.and_then(|q| embed_query(&config, q));
 
@@ -339,7 +236,7 @@ pub fn run_mcp_stdio(repo: &std::path::Path) -> anyhow::Result<()> {
         );
     }
 
-    let storage = std::sync::Arc::new(Storage::open(&db_path)?);
+    let storage = std::sync::Arc::new(Storage::open(&db_path, config.embedding.dimension)?);
     let server = cogz::mcp::CogzServer::new(storage, config, cogz_dir);
 
     // tracing must go to stderr, not stdout — stdout is the MCP transport
@@ -349,4 +246,58 @@ pub fn run_mcp_stdio(repo: &std::path::Path) -> anyhow::Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(cogz::mcp::server::run_stdio(server))
+}
+
+/// Run `cogz capture-event` — capture a lifecycle event from hook
+/// scripts. For session_start and prompt_submit, prints a context
+/// pack to stdout for agent injection. For file_save, prints reindex
+/// summary to stderr. Status info goes to stderr so stdout stays
+/// clean for context pack injection.
+pub fn run_capture_event(
+    repo: &std::path::Path,
+    event_type: &str,
+    prompt: Option<&str>,
+    prompt_file: Option<&str>,
+    tool_name: Option<&str>,
+    tool_result: Option<&str>,
+    file_path: Option<&str>,
+) -> anyhow::Result<()> {
+    let result = cogz::hooks::run_capture_event(
+        repo,
+        event_type,
+        prompt,
+        prompt_file,
+        tool_name,
+        tool_result,
+        file_path,
+    )?;
+
+    eprintln!("Event {} recorded (id: {})", event_type, result.event_id);
+    if let Some(ref obs_id) = result.observation_id {
+        eprintln!("Observation recorded: {}", obs_id);
+    }
+    if let Some(ref summary) = result.reindex_summary {
+        if summary.reindexed {
+            eprintln!(
+                "Code reindex: {} created, {} updated, {} stale, {} knowledge flagged",
+                summary.created,
+                summary.updated,
+                summary.marked_stale,
+                summary.stale_knowledge_flagged
+            );
+        } else if summary.synced {
+            eprintln!(
+                "File sync: {} created, {} updated, {} stale, {} embedded",
+                summary.created, summary.updated, summary.marked_stale, summary.embedded
+            );
+        }
+    }
+    if let Some(ref summary) = result.consolidation_summary {
+        eprintln!(
+            "Consolidation: {} promoted, {} merged",
+            summary.promotions, summary.merges
+        );
+    }
+
+    Ok(())
 }

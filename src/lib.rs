@@ -6,10 +6,13 @@
 pub mod config;
 pub mod consolidate;
 pub mod context;
+pub mod doctor;
 pub mod embed;
 pub mod files;
+pub mod hooks;
 pub mod index;
 pub mod init;
 pub mod mcp;
 pub mod search;
 pub mod storage;
+pub mod update;
