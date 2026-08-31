@@ -4,7 +4,8 @@
 //! extract structural relationships between code entities. Edges are
 //! matched by name to the deterministic UUIDs assigned during sync.
 
-mod python;
+mod incremental;
+pub(crate) mod python;
 #[cfg(test)]
 mod tests;
 
@@ -27,10 +28,16 @@ pub struct CodeEdge {
     pub edge_type: &'static str,
 }
 
+pub use incremental::sync_code_edges_incremental;
+
 /// Extract and sync structural edges for a set of source files.
 ///
 /// Must be called after `sync_code_entities` so that all entities
 /// exist in the DB for FK constraints.
+///
+/// **Full scan only.** This function deletes ALL structural edges
+/// and rebuilds from the given source files. For incremental reindex,
+/// use `sync_code_edges_incremental` instead.
 pub fn sync_code_edges(
     storage: &storage::Storage,
     repo_root: &Path,
@@ -133,7 +140,7 @@ pub fn sync_code_edges(
 
 // ── Rust edge extraction ──────────────────────────────────────────
 
-fn extract_rust_edges(
+pub(crate) fn extract_rust_edges(
     root: &Node,
     source: &[u8],
     file_path: &str,

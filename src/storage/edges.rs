@@ -83,6 +83,37 @@ pub fn delete_edges_by_type(conn: &Connection, edge_types: &[&str]) -> Result<()
     Ok(())
 }
 
+/// Delete structural edges (calls, imports, extends) where the source
+/// entity is in the given set. Used by incremental reindex to clear
+/// only edges from changed files before re-inserting.
+pub fn delete_structural_edges_by_sources(
+    conn: &Connection,
+    source_ids: &[String],
+) -> Result<(), StorageError> {
+    if source_ids.is_empty() {
+        return Ok(());
+    }
+    let edge_types = ["calls", "imports", "extends"];
+    let id_placeholders = (0..source_ids.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let type_placeholders = (0..edge_types.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "DELETE FROM edges WHERE source_id IN ({id_placeholders}) AND edge_type IN ({type_placeholders})"
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = source_ids
+        .iter()
+        .map(|s| s as &dyn rusqlite::ToSql)
+        .collect();
+    params.extend(edge_types.iter().map(|t| t as &dyn rusqlite::ToSql));
+    conn.execute(&sql, params.as_slice())?;
+    Ok(())
+}
+
 /// Insert an edge, silently skipping FK constraint violations.
 ///
 /// Used during file sync when a reference points to an entity that
@@ -237,144 +268,4 @@ pub fn get_neighbors_batch(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::crud::Entity;
-    use super::super::crud::insert_entity;
-    use super::super::ensure_vec_extension;
-    use super::super::schema::run_migrations;
-    use super::*;
-
-    fn setup() -> Connection {
-        ensure_vec_extension();
-        let conn = Connection::open_in_memory().unwrap();
-        run_migrations(&conn).unwrap();
-        conn
-    }
-
-    fn edge(source: &str, target: &str, edge_type: &str) -> Edge {
-        Edge {
-            source_id: source.to_string(),
-            target_id: target.to_string(),
-            edge_type: edge_type.to_string(),
-            weight: 1.0,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        }
-    }
-
-    #[test]
-    fn insert_and_count_edges() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
-
-        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
-        assert_eq!(count_edges(&conn).unwrap(), 1);
-    }
-
-    #[test]
-    fn get_edges_from_and_to() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
-
-        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
-
-        let from = get_edges_from(&conn, "u1").unwrap();
-        assert_eq!(from.len(), 1);
-        assert_eq!(from[0].target_id, "u2");
-
-        let to = get_edges_to(&conn, "u2").unwrap();
-        assert_eq!(to.len(), 1);
-        assert_eq!(to[0].source_id, "u1");
-    }
-
-    #[test]
-    fn remove_edge() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
-
-        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
-        assert_eq!(count_edges(&conn).unwrap(), 1);
-
-        delete_edge(&conn, "u1", "u2", "references").unwrap();
-        assert_eq!(count_edges(&conn).unwrap(), 0);
-    }
-
-    #[test]
-    fn neighbors_batch_returns_both_directions() {
-        let conn = setup();
-        for id in &["u1", "u2", "u3", "u4"] {
-            insert_entity(&conn, &Entity::new(id, "observation", id, "c")).unwrap();
-        }
-        // u1 → u2 (outgoing from u1)
-        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
-        // u3 → u1 (incoming to u1)
-        insert_edge(&conn, &edge("u3", "u1", "references")).unwrap();
-        // u2 → u3 (outgoing from u2, incoming to u3)
-
-        let (outgoing, incoming) = get_neighbors_batch(&conn, &["u1".to_string()]).unwrap();
-        assert!(outgoing.contains(&"u2".to_string()));
-        assert!(incoming.contains(&"u3".to_string()));
-    }
-
-    #[test]
-    fn neighbors_batch_multi_node() {
-        let conn = setup();
-        for id in &["u1", "u2", "u3", "u4", "u5"] {
-            insert_entity(&conn, &Entity::new(id, "observation", id, "c")).unwrap();
-        }
-        insert_edge(&conn, &edge("u1", "u4", "references")).unwrap();
-        insert_edge(&conn, &edge("u2", "u5", "references")).unwrap();
-        insert_edge(&conn, &edge("u3", "u1", "references")).unwrap();
-
-        let frontier = vec!["u1".to_string(), "u2".to_string()];
-        let (outgoing, incoming) = get_neighbors_batch(&conn, &frontier).unwrap();
-        assert!(outgoing.contains(&"u4".to_string()));
-        assert!(outgoing.contains(&"u5".to_string()));
-        assert!(incoming.contains(&"u3".to_string()));
-    }
-
-    #[test]
-    fn neighbors_batch_empty_frontier() {
-        let conn = setup();
-        let (outgoing, incoming) = get_neighbors_batch(&conn, &[]).unwrap();
-        assert!(outgoing.is_empty());
-        assert!(incoming.is_empty());
-    }
-
-    #[test]
-    fn edge_type_between_outgoing() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
-        insert_edge(&conn, &edge("u1", "u2", "references")).unwrap();
-
-        assert_eq!(
-            get_edge_type_between(&conn, "u1", "u2").unwrap(),
-            Some("references".to_string())
-        );
-    }
-
-    #[test]
-    fn edge_type_between_incoming() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
-        insert_edge(&conn, &edge("u2", "u1", "references")).unwrap();
-
-        assert_eq!(
-            get_edge_type_between(&conn, "u1", "u2").unwrap(),
-            Some("references".to_string())
-        );
-    }
-
-    #[test]
-    fn edge_type_between_none() {
-        let conn = setup();
-        insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("u2", "function", "B", "c")).unwrap();
-
-        assert_eq!(get_edge_type_between(&conn, "u1", "u2").unwrap(), None);
-    }
-}
+mod tests;

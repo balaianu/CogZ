@@ -195,9 +195,9 @@ fn reindex_incremental(
     result.synced_entity_ids = sync_result.synced_entity_ids.clone();
     result.changed_code_ids = sync_result.synced_entity_ids;
 
-    // Re-extract structural edges for changed files only.
+    // Re-extract structural edges for changed files only (incremental).
     if !source_files.is_empty() {
-        code_graph::sync_code_edges(storage, repo_root, &source_files);
+        code_graph::sync_code_edges_incremental(storage, repo_root, &source_files);
     }
 
     // Mark deleted files' code entities as stale.

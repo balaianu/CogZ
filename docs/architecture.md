@@ -88,6 +88,7 @@ cogz/
         mod.rs           — code entity sync (UUID v5, content hash, stale)
       code_graph/
         mod.rs           — Rust edge extraction + shared utilities
+        incremental.rs   — incremental edge sync (changed files only)
         python.rs        — Python edge extraction
 
     embed/
@@ -95,6 +96,8 @@ cogz/
       model.rs           — EmbeddingModel trait
       onnx.rs            — ONNX implementation
       cache.rs           — embedding cache (avoid re-embedding unchanged content)
+      nli.rs             — NLI model for contradiction detection
+      download.rs        — model download via hf-hub + broken cache cleanup (Phase 12)
 
     search/
       mod.rs             — search root
@@ -109,7 +112,7 @@ cogz/
       compress.rs        — token budget management, section prioritization
       modes.rs           — cold_start, task, escalation mode definitions
 
-    consolidate/         — (Phase 9, not yet implemented)
+    consolidate/         — (Phase 9)
       mod.rs             — consolidation root
       dedup.rs           — duplicate detection (embedding similarity + title match)
       merge.rs           — entity merging, edge redirection
@@ -128,7 +131,7 @@ cogz/
     mcp/
       mod.rs             — MCP root, re-exports
       server.rs          — CogzServer struct, ServerHandler impl
-      tools.rs           — #[tool] method definitions (11 tools implemented)
+      tools.rs           — #[tool] method definitions (12 tools implemented)
       params.rs          — parameter structs (serde + schemars)
       helpers.rs         — file-first write logic, response builders, embedding
       dedup.rs           — title match + embedding similarity dedup
@@ -407,6 +410,12 @@ CREATE TABLE events (
 
 CREATE INDEX idx_events_type ON events(event_type);
 CREATE INDEX idx_events_entity ON events(entity_id);
+
+-- Key-value metadata (schema v2): last_indexed_commit, etc.
+CREATE TABLE meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 ```
 
 ### What this eliminates vs CogZ-py
@@ -527,7 +536,12 @@ a GIL.
 | None | FTS-only search. Title-based dedup only (exact + fuzzy). No embedding dedup, no contradiction, no vector search. |
 
 The system always functions. Missing models reduce capability, not
-availability.
+availability. When `auto_download = true` (default), models are
+fetched from HuggingFace via `hf-hub` on first use. A defensive
+`clean_broken_cache()` runs before each model load to remove
+`.incomplete` files and empty `refs/main` files that can accumulate
+from interrupted downloads — preventing the disk-filling retry loop
+that affected Mnemos.
 
 ---
 
@@ -853,16 +867,16 @@ integrity. See Retention and Bounded Growth above.
 
 ## MCP Interface
 
-### 13 tools
+### 13 tools (12 implemented, 1 planned for Phase 11)
 
 ```
-record_observation      query_observations
-create_rule             query_rules
-create_knowledge        update_knowledge
-query_knowledge         search
-get_context             consolidate
-get_status              capture_event
-list_entities
+record_observation      query_observations      (implemented)
+create_rule             query_rules             (implemented)
+create_knowledge        update_knowledge        (implemented)
+query_knowledge         search                  (implemented)
+get_context             consolidate             (implemented)
+get_status              list_entities           (implemented)
+capture_event                                   (Phase 11, not yet implemented)
 ```
 
 ### Design rules
@@ -878,30 +892,41 @@ list_entities
 
 ## CLI
 
+### Current commands (Phase 10)
+
 ```
 cogz init                    — initialize .cogz/ in a repo (autodetect project name, generate config.toml)
 cogz index                   — index the repository (code + .cogz/ files)
+cogz reindex                 — re-index changed files (incremental, git diff-based)
 cogz search <query>          — search entities
 cogz context [--mode] [q]    — assemble context pack
 cogz consolidate             — trigger background consolidation
 cogz status                  — show system status
 cogz mcp-stdio               — run MCP server (stdin/stdout)
-cogz capture-event <type>    — capture a lifecycle event (hook scripts)
-cogz record-observation      — record an observation
-cogz create-rule             — create a rule
-cogz create-knowledge        — create a knowledge entry
-cogz update-knowledge <id>   — update a knowledge entry (opens $EDITOR)
-cogz reindex                 — re-index changed files
-cogz doctor                  — health check (policy violations, stale entities, near-duplicates, missing files)
-cogz doctor --prune-observations — dry-run: report prunable observations (rejected/superseded, aged)
-cogz doctor --prune-observations --confirm — prune observations, preserve tombstones
 cogz reset                   — drop DB only (safe, rebuildable)
 cogz reset --purge           — drop DB + observations + generated .gitignore (keeps knowledge/rules/config)
 ```
 
+### Planned commands (Phase 11+)
+
+```
+cogz capture-event <type>    — capture a lifecycle event (hook scripts)           (Phase 11)
+cogz record-observation      — record an observation                              (Phase 11)
+cogz create-rule             — create a rule                                      (Phase 11)
+cogz create-knowledge        — create a knowledge entry                           (Phase 11)
+cogz update-knowledge <id>   — update a knowledge entry (opens $EDITOR)           (Phase 11)
+cogz doctor                  — health check (policy violations, stale entities)   (Phase 12)
+cogz doctor --prune-observations — dry-run: report prunable observations          (Phase 12)
+cogz doctor --prune-observations --confirm — prune observations, preserve tombstones (Phase 12)
+cogz models download         — download models from HuggingFace                   (Phase 12)
+cogz models list             — show model download status                         (Phase 12)
+cogz models clean            — clean broken cache artifacts                       (Phase 12)
+cogz update                  — self-update from GitHub releases                   (Phase 12)
+```
+
 Pinned commands (referenced by external scripts, must not rename):
 - `cogz mcp-stdio` — referenced in MCP config files
-- `cogz capture-event` — called by hook shell scripts
+- `cogz capture-event` — called by hook shell scripts (Phase 11)
 
 ---
 

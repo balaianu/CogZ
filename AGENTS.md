@@ -78,6 +78,15 @@ core promises. The compiler won't catch most of them.
 - **The system must function without ONNX models.** No model download
   should be required for `cogz init`, `cogz index` (files sync without
   embeddings), or `cogz search` (FTS-only).
+- **Auto-download is opt-out, not opt-in.** When `auto_download = true`
+  (default), `cogz index` fetches models from HuggingFace via `hf-hub`.
+  `--no-download` or `auto_download = false` disables this. The system
+  must still function in FTS-only mode when download is disabled or
+  fails.
+- **Partial download cleanup.** `clean_broken_cache()` runs before
+  every model load: removes `.incomplete` files >1h old and empty
+  `refs/main` files. Prevents the disk-filling retry loop that
+  affected Mnemos. Never panic on cleanup failures — log and continue.
 - **Title-based dedup works without embeddings.** Exact + fuzzy title
   match does not require the embedding model. Embedding similarity
   dedup degrades to title-only when models are absent.

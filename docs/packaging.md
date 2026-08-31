@@ -46,15 +46,37 @@ Models are downloaded to `~/.local/share/cogz/models/` on first use:
 
 Total model cache: ~780 MB for full capability, ~500 MB without NLI.
 
-Download is lazy:
-- `cogz index` triggers code model download
+Download is lazy and automatic unless disabled:
+- `cogz index` triggers code model download (if `auto_download = true`)
 - First knowledge/observation embedding triggers knowledge model download
 - First contradiction check triggers NLI model download
 - Each model is downloaded only when first needed, not all upfront
 
-Download is resumable and cached. If a download is interrupted, it
-resumes on next trigger. If a model is already cached, it's not
-re-downloaded.
+**Disabling auto-download:**
+- Config: `[embedding].auto_download = false` in `.cogz/config.toml`
+- CLI: `cogz index --no-download` for a one-time opt-out
+- When disabled, CogZ operates in FTS-only mode (graceful degradation)
+
+**Manual download:**
+- `cogz models download` — download all configured models
+- `cogz models download --code` — download only the code model
+- `cogz models download --knowledge` — download only the knowledge model
+- `cogz models download --nli` — download only the NLI model
+- `cogz models list` — show configured models and download status
+- `cogz models clean` — remove `.incomplete` files and empty `refs/main`
+
+Download is cached via `hf-hub` (content-addressed, on-disk locking).
+If a model is already cached, it's not re-downloaded. `hf-hub` uses
+retry logic on transient failures.
+
+**Partial download cleanup:** before each model load, CogZ runs
+`clean_broken_cache()` which removes `.incomplete` files older than
+1 hour and empty `refs/main` files from the HF cache. This prevents
+the disk-filling retry loop that affected Mnemos (Python
+`huggingface_hub` leaves `.incomplete` files on interrupted
+downloads). The 1-hour threshold preserves files from active
+downloads — a 400 MB model downloads in minutes on any reasonable
+connection.
 
 ---
 
@@ -185,15 +207,19 @@ cogz index
 ```
 
 This:
-1. Downloads the code embedding model (~100 MB) if not cached
+1. Downloads the code embedding model (~100 MB) if not cached and `auto_download` is true
 2. Parses the repo with tree-sitter (respecting .gitignore)
 3. Extracts code entities (functions, classes, files, modules)
 4. Builds structural edges (calls, imports, extends)
 5. Scans `.cogz/knowledge/` and `.cogz/rules/` for entity files
-6. Downloads the knowledge embedding model (~400 MB) if knowledge files exist
-7. Generates embeddings for all entities
+6. Downloads the knowledge embedding model (~400 MB) if knowledge files exist and `auto_download` is true
+7. Generates embeddings for all entities (skipped if models unavailable — FTS-only)
 8. Builds FTS index
 9. Creates `.cogz/cogz.db`
+
+Use `cogz index --no-download` to skip model download and operate in
+FTS-only mode. Use `cogz models download` to pre-fetch models before
+indexing.
 
 First index takes a few minutes on a large repo (model download +
 parsing + embedding). Subsequent indexes are incremental (only

@@ -37,7 +37,7 @@ functions and structs in isolation.
 | `storage/schema.rs` | Schema creation, migrations, version tracking | 2 |
 | `storage/crud.rs` | Insert, update, get, delete entities; edge CRUD | 2 |
 | `storage/query.rs` | Type/status/file_path queries; graph traversal (1-hop, 2-hop, N-hop) | 2 |
-| `storage/edges.rs` | Edge CRUD, batch edge queries, chunked IN queries | 2 |
+| `storage/edges.rs` | Edge CRUD, batch edge queries, chunked IN queries, incremental edge deletion | 11 |
 | `storage/graph.rs` | Graph traversal, batch neighbors, path queries | 2 |
 | `storage/embeddings.rs` | vec0 insert, delete, KNN search | 4 |
 | `storage/events.rs` | Event recording, event query | 2 |
@@ -57,9 +57,9 @@ functions and structs in isolation.
 | `search/expand.rs` | Graph expansion, path recording | 5 |
 | `search/describe.rs` | Batched path description, provenance strings | 5 |
 | `context/compress.rs` | Token budgeting, section prioritization, truncation | 6 |
-| `consolidate/dedup.rs` | Similarity threshold, duplicate flagging, exact title match, fuzzy title match | 9 (planned) |
-| `consolidate/merge.rs` | Edge redirection, superseded marking, `superseded_by` field set | 9 (planned) |
-| `consolidate/promote.rs` | Promotion threshold, rule creation from observation, `derived_from` edge | 9 (planned) |
+| `consolidate/dedup.rs` | Similarity threshold, duplicate flagging, exact title match, fuzzy title match | 9 |
+| `consolidate/merge.rs` | Edge redirection, superseded marking, `superseded_by` field set | 9 |
+| `consolidate/promote.rs` | Promotion threshold, rule creation from observation, `derived_from` edge | 9 |
 | `hooks/lifecycle.rs` | Event handling, context pack generation per mode | 11 (planned) |
 
 ### Integration Tests
@@ -76,8 +76,8 @@ Live in `tests/` directory. Test multiple modules working together.
 | `tests/test_embed_sync.rs` | Embedding sync pipeline: embed entities, store embeddings, cache behavior | 4 |
 | `tests/test_mcp_server.rs` | MCP protocol: start server, call each implemented tool, verify responses; `update_knowledge` edits knowledge; `create_knowledge` returns `duplicate_warning` when title matches | 7 |
 | `tests/test_code_index.rs` | Tree-sitter indexing: index a test repo, verify code entities and structural edges | 8 |
-| `tests/test_consolidation.rs` | Consolidation pipeline: insert duplicates, verify dedup + `duplicate_warning`; insert same-title knowledge, verify title match; insert contradictions, verify flagging; insert supporting observations, verify promotion; verify `superseded_by` and `derived_from` edges | 9 (planned) |
-| `tests/test_update_policy.rs` | Update policy enforcement: `update_knowledge` edits knowledge in-place; no `update_observation` or `edit_rule` tool exists; status state machine rejects illegal transitions; observation content edit detected by sync, event logged | 7 (planned) |
+| `tests/test_consolidation.rs` | Consolidation pipeline: insert duplicates, verify dedup + `duplicate_warning`; insert same-title knowledge, verify title match; insert contradictions, verify flagging; insert supporting observations, verify promotion; verify `superseded_by` and `derived_from` edges | 9 |
+| `tests/test_update_policy.rs` | Update policy enforcement: `update_knowledge` edits knowledge in-place; no `update_observation` or `edit_rule` tool exists; status state machine rejects illegal transitions; observation content edit detected by sync, event logged | 7 (not yet created — covered by `test_mcp_server.rs` and `test_file_sync.rs`) |
 | `tests/test_git_diff.rs` | Change detection: index, modify source file, reindex, verify stale flagging on referenced knowledge | 10 |
 
 ### End-to-End Tests

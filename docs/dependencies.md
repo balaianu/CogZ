@@ -194,9 +194,9 @@ and source files.
 
 **git2 0.19** — libgit2 bindings for git diff and remote URL
 detection (project name autodetection on `cogz init`). We disable
-default features to avoid pulling in OpenSSL (we use `rustls-tls`
-via reqwest instead). libgit2 is bundled via the `bundled` feature
-which is enabled by default in recent versions.
+default features to avoid pulling in OpenSSL (hf-hub uses reqwest
+with rustls-tls internally). libgit2 is bundled via the `bundled`
+feature which is enabled by default in recent versions.
 
 ### Utilities
 
@@ -225,20 +225,42 @@ zerocopy = "0.8"
 | `zerocopy` | Zero-copy byte conversion for sqlite-vec vector I/O |
 | `ndarray` | Tensor operations for ONNX embedding (pinned to match ort) |
 
-### HTTP (for model download — deferred to Phase 12)
+### HuggingFace Hub client (for model download — deferred to Phase 12)
 
 ```toml
-# reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+# hf-hub = { version = "1.0", features = ["blocking"] }
 ```
 
-**reqwest 0.12** — HTTP client for downloading ONNX models from
-HuggingFace. Not yet added to Cargo.toml — will be included when
-model download is implemented in Phase 12. `blocking` feature
-because model download happens in a synchronous context (first
-`cogz index`). `default-features = false` to avoid pulling in
-unnecessary dependencies. We use `rustls-tls` instead of the
-default `native-tls` to avoid an OpenSSL build-time dependency —
-rustls is pure Rust and links cleanly.
+**hf-hub 1.0** — official Rust client for the Hugging Face Hub API,
+the Rust equivalent of Python's `huggingface_hub`. Replaces the
+earlier `reqwest` plan: `hf-hub` handles the HF API, content-addressed
+caching, on-disk locking (concurrent fetch deduplication), and retry
+logic. `blocking` feature because model download happens in a
+synchronous context (first `cogz index` or `cogz models download`).
+
+**Why hf-hub over raw reqwest:** the HF cache layout
+(`models--{org}/{model}/blobs/`, `refs/main`, `snapshots/`) is
+non-trivial. `hf-hub` manages it correctly and is compatible with
+Python `huggingface_hub` caches. Raw `reqwest` would require
+reimplementing cache layout, etag validation, and concurrent-access
+locking — all of which `hf-hub` already handles.
+
+**Published:** 2023-07-19 (v1.0.0 released 2026-07-10). 15.8M total
+downloads, 515 dependents. Satisfies the 7-day rule.
+
+**Partial download cleanup:** `hf-hub` uses retry logic (not resumable
+downloads) and on-disk locking, which is more robust than Python's
+`huggingface_hub`. However, the same cache layout means `.incomplete`
+files and empty `refs/main` files can accumulate from interrupted
+downloads or concurrent Python `huggingface_hub` usage in the same
+cache directory. CogZ implements a defensive `clean_broken_cache()`
+in `src/embed/download.rs` that runs before model loading:
+- Removes `.incomplete` files older than 1 hour (preserves active
+  downloads — 1 hour is conservative; a 400 MB model downloads in
+  minutes on any reasonable connection)
+- Removes empty `refs/main` files (0 bytes — blocks model loading)
+This mirrors the Mnemos fix (`_clean_broken_cache` in `embed.py`)
+adapted to Rust.
 
 ---
 
@@ -355,8 +377,8 @@ slug = "0.1"
 rusqlite = { version = "0.40", features = ["bundled"] }
 sqlite-vec = "0.1"
 
-# HTTP (model download — deferred to Phase 12)
-# reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+# HuggingFace Hub client (model download — deferred to Phase 12)
+# hf-hub = { version = "1.0", features = ["blocking"] }
 
 # Code parsing (Phase 8)
 tree-sitter = "0.25"
@@ -420,10 +442,10 @@ debug = true
 | MCP server | rmcp, tokio, schemars | 3 |
 | File system/Git | git2, walkdir, slug | 3 |
 | Utilities | uuid, sha2, chrono, anyhow, thiserror, tracing, tracing-subscriber, zerocopy | 8 |
-| HTTP | _(deferred to Phase 12)_ | 0 |
+| HF Hub | _(deferred to Phase 12)_ | 0 |
 | Dev | tempfile, pretty_assertions, rmcp (client feature) | 3 |
 | **Total** | | **32** |
 
-32 direct dependencies (Phase 8 scope). `reqwest` will be added in
+32 direct dependencies (Phase 8 scope). `hf-hub` will be added in
 Phase 12 (model download). Transitive count will be higher but
 manageable. The binary will be ~15-25 MB with static linking.

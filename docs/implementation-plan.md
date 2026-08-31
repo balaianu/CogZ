@@ -119,13 +119,16 @@ population (FTS works but vec0 is empty).
 - `src/embed/onnx.rs` — ONNX Runtime implementation (CodeRankEmbed,
   bge-base)
 - `src/embed/cache.rs` — content-hash-based embedding cache
-- Model download on first use (HuggingFace, cached at
-  `~/.local/share/cogz/models/`)
+- Model download on first use (HuggingFace via `hf-hub`, cached at
+  `~/.local/share/cogz/models/`). Auto-download unless
+  `[embedding].auto_download = false` or `--no-download` flag.
+  See Phase 12 for `src/embed/download.rs` (download + cleanup).
 - Integration with file sync: after syncing a file, embed its content
   and store in vec0
 
 **Verification:**
-- Model downloads on first `cogz index` (if not cached)
+- Model downloads on first `cogz index` (if not cached and auto_download enabled)
+- `cogz index --no-download` succeeds in FTS-only mode
 - Embedding produces correct-dimension vectors
 - Cache prevents re-embedding unchanged content
 - If model unavailable: `cogz index` succeeds, entities stored
@@ -312,6 +315,8 @@ merge — built on top of the basic dedup from Phase 7.
 - `src/consolidate/merge.rs` — duplicate merging, edge redirection
 - `src/embed/model.rs` — `NliModel` trait + ONNX implementation
 - `cogz consolidate` — trigger background consolidation manually
+- `consolidate` MCP tool — 12th MCP tool, runs promotion + merge
+  (brings total from 11 to 12 tools; `capture_event` remains Phase 11)
 - Full dedup module (`src/consolidate/dedup.rs`) promoted from Phase 7
   basic check: now includes consolidation-driven merge decisions
 - Integration with insert path: every insert triggers dedup (Phase 7)
@@ -344,6 +349,12 @@ merge — built on top of the basic dedup from Phase 7.
 - `code_changed` domain event
 - `cogz reindex` uses `reindex_code()` — incremental, only re-parses
   changed files; falls back to full scan when no git baseline exists
+- `src/index/code_graph/incremental.rs` — incremental structural edge
+  sync: deletes only edges from changed-file entities, rebuilds from
+  changed files, preserves edges from unchanged files. Builds name-to-UUID
+  map from all DB entities for cross-file target resolution.
+- `src/storage/edges.rs` — `delete_structural_edges_by_sources` for
+  scoped edge deletion (only changed source entities' outgoing edges)
 - Baseline commit SHA stored in meta table as `last_indexed_commit`
 
 **Verification:**
@@ -354,6 +365,8 @@ merge — built on top of the basic dedup from Phase 7.
 - `cogz status` reports stale entity count
 - Deleted source file → code entities stale + referenced knowledge stale
 - Non-git repo → falls back to full scan
+- Incremental reindex preserves structural edges from unchanged files
+  (regression: full index → modify one file → reindex → edge count unchanged)
 
 **What's NOT built yet:** Hooks. Everything else is done.
 
@@ -385,6 +398,18 @@ merge — built on top of the basic dedup from Phase 7.
 **Goal:** Production-ready binary, documentation, install script.
 
 **What's built:**
+- `src/embed/download.rs` — model download via `hf-hub`:
+  - `download_model(model_id)` — fetch model.onnx + tokenizer.json
+  - `clean_broken_cache()` — remove `.incomplete` files >1h old,
+    remove empty `refs/main` files. Runs before every model load.
+    Prevents the disk-filling retry loop that affected Mnemos.
+  - `auto_download` config option (default: true)
+  - `--no-download` CLI flag on `cogz index`
+- `cogz models` — model management:
+  - `cogz models download` — download all configured models
+  - `cogz models download --code|--knowledge|--nli` — download specific model
+  - `cogz models list` — show configured models and download status
+  - `cogz models clean` — run `clean_broken_cache()` manually
 - `cogz update` — self-update from GitHub releases
 - `cogz doctor` — health check with policy violation detection:
   - DB integrity, model availability, file sync consistency
@@ -408,6 +433,16 @@ merge — built on top of the basic dedup from Phase 7.
 - Performance profiling and optimization (memory, speed)
 
 **Verification:**
+- `cogz models download` fetches all models to `~/.local/share/cogz/models/`
+- `cogz models list` shows download status for each model
+- `cogz index` auto-downloads models when `auto_download = true`
+- `cogz index --no-download` skips download, operates in FTS-only mode
+- `[embedding].auto_download = false` disables auto-download
+- `clean_broken_cache()` removes `.incomplete` files older than 1 hour
+- `clean_broken_cache()` removes empty `refs/main` files
+- `clean_broken_cache()` preserves `.incomplete` files younger than 1 hour
+- Interrupted download + retry does not fill disk (cleanup runs before retry)
+- `cogz models clean` manually runs cleanup and reports what was removed
 - `cogz doctor` reports all healthy on a freshly indexed repo
 - `cogz doctor` detects and reports policy violations (edited
   observation, illegal status transition, orphaned supersede)
@@ -466,7 +501,7 @@ Not time estimates — relative complexity per phase:
 | 9. Consolidation | High | NLI integration, promotion logic, merge with edge redirection |
 | 10. Git Diff | Medium | Diff parsing, stale flagging, incremental reindex |
 | 11. Hooks | Low | CLI commands that call existing context assembly |
-| 12. Polish | Medium | Self-update, doctor, install script, CI, profiling |
+| 12. Polish | Medium | Model download (hf-hub), cleanup, self-update, doctor, install script, CI, profiling |
 
 The highest-complexity phases (8, 9) come after MVP. If we need to
 ship something usable before the full build, MVP (phases 1-7) is a
