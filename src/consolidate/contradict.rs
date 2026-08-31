@@ -128,7 +128,7 @@ pub fn record_contradictions(
 
     // 1. Update the file frontmatter with contradicts field (file-first).
     let mut entity_file = read_entity_file(file_path).map_err(|e| {
-        crate::storage::StorageError::EntityNotFound(format!(
+        crate::storage::StorageError::File(format!(
             "failed to read entity file {}: {}",
             file_path.display(),
             e
@@ -139,7 +139,7 @@ pub fn record_contradictions(
         .insert("contradicts", FmValue::Array(contradicts_ids.to_vec()));
     entity_file.updated_at = chrono::Utc::now().to_rfc3339();
     write_entity_file(file_path, &entity_file).map_err(|e| {
-        crate::storage::StorageError::EntityNotFound(format!(
+        crate::storage::StorageError::File(format!(
             "failed to write entity file {}: {}",
             file_path.display(),
             e

@@ -149,7 +149,7 @@ fn promote_one(
     // Write the file first (file-first invariant).
     let file_path = rule_file.file_path(cogz_dir);
     write_entity_file(&file_path, &rule_file)
-        .map_err(|e| StorageError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+        .map_err(|e| StorageError::File(format!("{}: {}", file_path.display(), e)))?;
 
     let rule_id = rule_file.id.clone();
     let now = chrono::Utc::now().to_rfc3339();

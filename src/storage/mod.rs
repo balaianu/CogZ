@@ -37,6 +37,8 @@ pub enum StorageError {
     InvalidEntityType(String),
     #[error("schema version mismatch: db has {db}, binary expects {expected}")]
     SchemaVersionMismatch { db: u32, expected: u32 },
+    #[error("file operation failed: {0}")]
+    File(String),
 }
 
 /// Ensures sqlite-vec extension is registered exactly once before any

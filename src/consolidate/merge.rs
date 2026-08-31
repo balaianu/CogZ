@@ -30,16 +30,6 @@ pub enum MergeError {
     Io(#[from] std::io::Error),
 }
 
-impl From<MergeError> for StorageError {
-    fn from(e: MergeError) -> Self {
-        match e {
-            MergeError::Storage(s) => s,
-            MergeError::Frontmatter(f) => StorageError::EntityNotFound(f.to_string()),
-            MergeError::Io(i) => StorageError::EntityNotFound(i.to_string()),
-        }
-    }
-}
-
 /// Result of a single merge decision.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MergeResult {
