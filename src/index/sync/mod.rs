@@ -24,6 +24,12 @@ use crate::index::tree_sitter::Language;
 use crate::storage;
 use crate::storage::crud::{Entity, EntityType};
 
+/// Parsed source file: (relative_path, source_code, language).
+pub type SourceFile = (std::path::PathBuf, String, Language);
+
+/// Parsed entity ready for DB sync: (id, entity).
+type ParsedEntity = (String, Entity);
+
 /// UUID v5 namespace for CogZ code entities. Deterministic across
 /// rebuilds — the same source file + entity name always maps to the
 /// same UUID.
@@ -72,12 +78,62 @@ fn content_hash(content: &str) -> String {
 pub fn sync_code_entities(
     storage: &storage::Storage,
     repo_root: &Path,
-    source_files: &[(std::path::PathBuf, String, Language)],
+    source_files: &[SourceFile],
 ) -> CodeSyncResult {
     let mut result = CodeSyncResult::default();
 
     // Phase 1: parse all source files (no lock held).
-    let mut all_entities: Vec<(String, Entity)> = Vec::new();
+    let (all_entities, file_to_entity_ids) = parse_source_files(repo_root, source_files);
+
+    // Phase 2: DB operations (lock held).
+    let conn = storage.conn();
+
+    sync_entities_to_db(&conn, &all_entities, &mut result);
+
+    // Mark stale: code entities whose file_path is not in the current
+    // source file set. We query all code entities and check.
+    result.marked_stale = mark_stale_code_entities(&conn, &file_to_entity_ids);
+
+    // Record last code index timestamp.
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = storage::set_meta(&conn, "last_code_index", &now) {
+        tracing::warn!("failed to record last_code_index: {}", e);
+    }
+
+    result
+}
+
+/// Incremental sync — same as `sync_code_entities` but skips the
+/// full stale-marking sweep. Used by `reindex_code` when git diff
+/// provides the exact set of changed files. Deleted files are
+/// handled separately by the caller via `mark_stale_for_deleted_files`.
+pub fn sync_code_entities_incremental(
+    storage: &storage::Storage,
+    repo_root: &Path,
+    source_files: &[SourceFile],
+) -> CodeSyncResult {
+    let mut result = CodeSyncResult::default();
+
+    let (all_entities, _) = parse_source_files(repo_root, source_files);
+
+    let conn = storage.conn();
+    sync_entities_to_db(&conn, &all_entities, &mut result);
+
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = storage::set_meta(&conn, "last_code_index", &now) {
+        tracing::warn!("failed to record last_code_index: {}", e);
+    }
+
+    result
+}
+
+/// Parse source files into entities + file-to-entity-ID map.
+/// No lock held — pure CPU work.
+fn parse_source_files(
+    repo_root: &Path,
+    source_files: &[SourceFile],
+) -> (Vec<ParsedEntity>, HashMap<String, Vec<String>>) {
+    let mut all_entities: Vec<ParsedEntity> = Vec::new();
     let mut file_to_entity_ids: HashMap<String, Vec<String>> = HashMap::new();
 
     for (rel_path, source, language) in source_files {
@@ -127,19 +183,64 @@ pub fn sync_code_entities(
         }
     }
 
-    // Phase 2: DB operations (lock held).
-    let conn = storage.conn();
+    (all_entities, file_to_entity_ids)
+}
 
-    // Sync each entity: insert or update.
-    for (id, entity) in &all_entities {
-        match storage::crud::get_entity(&conn, id) {
+/// Mark code entities as stale for a set of deleted file paths.
+/// Returns the count of entities marked stale.
+pub fn mark_stale_for_deleted_files(
+    storage: &storage::Storage,
+    deleted_paths: &[std::path::PathBuf],
+) -> usize {
+    let conn = storage.conn();
+    let deleted_set: std::collections::HashSet<String> = deleted_paths
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+
+    let code_types = ["function", "class", "file", "module"];
+    let mut stale_count = 0;
+
+    for entity_type in &code_types {
+        let entities =
+            match storage::query::get_entities_by_type(&conn, entity_type, Some("active"), 100_000)
+            {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+
+        for entity in entities {
+            if let Some(ref fp) = entity.file_path
+                && deleted_set.contains(fp)
+            {
+                let mut updated = entity.clone();
+                updated.status = "stale".to_string();
+                updated.updated_at = chrono::Utc::now().to_rfc3339();
+                if storage::crud::update_entity(&conn, &updated).is_ok() {
+                    stale_count += 1;
+                }
+            }
+        }
+    }
+
+    stale_count
+}
+
+/// Core DB sync — insert or update each entity, tracking results.
+fn sync_entities_to_db(
+    conn: &rusqlite::Connection,
+    all_entities: &[ParsedEntity],
+    result: &mut CodeSyncResult,
+) {
+    for (id, entity) in all_entities {
+        match storage::crud::get_entity(conn, id) {
             Ok(existing) => {
                 if existing.status == "stale" {
                     // Reactivate stale entity even if content is unchanged.
                     let mut updated = entity.clone();
                     updated.status = "active".to_string();
                     updated.created_at = existing.created_at.clone();
-                    if let Err(e) = storage::crud::update_entity(&conn, &updated) {
+                    if let Err(e) = storage::crud::update_entity(conn, &updated) {
                         tracing::warn!("failed to reactivate code entity {}: {}", id, e);
                         continue;
                     }
@@ -155,7 +256,7 @@ pub fn sync_code_entities(
                 let mut updated = entity.clone();
                 updated.status = existing.status.clone();
                 updated.created_at = existing.created_at.clone();
-                if let Err(e) = storage::crud::update_entity(&conn, &updated) {
+                if let Err(e) = storage::crud::update_entity(conn, &updated) {
                     tracing::warn!("failed to update code entity {}: {}", id, e);
                     continue;
                 }
@@ -163,7 +264,7 @@ pub fn sync_code_entities(
                 result.synced_entity_ids.push(id.clone());
             }
             Err(storage::StorageError::EntityNotFound(_)) => {
-                if let Err(e) = storage::crud::insert_entity(&conn, entity) {
+                if let Err(e) = storage::crud::insert_entity(conn, entity) {
                     tracing::warn!("failed to insert code entity {}: {}", id, e);
                     continue;
                 }
@@ -175,18 +276,6 @@ pub fn sync_code_entities(
             }
         }
     }
-
-    // Mark stale: code entities whose file_path is not in the current
-    // source file set. We query all code entities and check.
-    result.marked_stale = mark_stale_code_entities(&conn, &file_to_entity_ids);
-
-    // Record last code index timestamp.
-    let now = chrono::Utc::now().to_rfc3339();
-    if let Err(e) = storage::set_meta(&conn, "last_code_index", &now) {
-        tracing::warn!("failed to record last_code_index: {}", e);
-    }
-
-    result
 }
 
 /// Mark code entities as stale if their source file is no longer present.

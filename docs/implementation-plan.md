@@ -327,7 +327,7 @@ merge — built on top of the basic dedup from Phase 7.
 - NLI model unavailable: contradiction check skipped (graceful
   degradation), dedup still works (embedding-based)
 
-**What's NOT built yet:** Git diff stale flagging, hooks.
+**What's NOT built yet:** Hooks.
 
 ---
 
@@ -337,12 +337,14 @@ merge — built on top of the basic dedup from Phase 7.
 
 **What's built:**
 - `src/index/git_diff.rs` — detect modified/deleted code entities
-  via git diff
-- Stale flagging: observations/rules referencing modified code →
-  `status = 'stale'`
+  via git diff (baseline tree → working directory, includes uncommitted)
+- `src/index/stale_flagging.rs` — mark observations/rules/knowledge
+  referencing changed code as `status = 'stale'` (file-first: updates
+  frontmatter on disk before DB)
 - `code_changed` domain event
-- Integration with `cogz reindex` — incremental, only re-parses
-  changed files
+- `cogz reindex` uses `reindex_code()` — incremental, only re-parses
+  changed files; falls back to full scan when no git baseline exists
+- Baseline commit SHA stored in meta table as `last_indexed_commit`
 
 **Verification:**
 - Modify a source file → `cogz reindex` → code entity updated
@@ -350,6 +352,8 @@ merge — built on top of the basic dedup from Phase 7.
 - `code_changed` event recorded
 - Unchanged files are not re-parsed (incremental, fast)
 - `cogz status` reports stale entity count
+- Deleted source file → code entities stale + referenced knowledge stale
+- Non-git repo → falls back to full scan
 
 **What's NOT built yet:** Hooks. Everything else is done.
 

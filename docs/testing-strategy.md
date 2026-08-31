@@ -51,7 +51,7 @@ functions and structs in isolation.
 | `index/code_graph/mod.rs` | Edge construction — calls, imports, extends (Rust) | 8 |
 | `index/code_graph/python.rs` | Edge construction — calls, imports, extends (Python) | 8 |
 | `index/sync/mod.rs` | UUID v5 generation, content hash, stale marking, entity sync | 8 |
-| `index/git_diff.rs` | Diff parsing, changed file detection | 10 (planned) |
+| `index/git_diff.rs` | Diff parsing, changed file detection | 10 |
 | `embed/cache.rs` | Cache hit/miss, content-hash-based lookup | 4 |
 | `search/rrf.rs` | RRF fusion correctness, score computation | 5 |
 | `search/expand.rs` | Graph expansion, path recording | 5 |
@@ -78,7 +78,7 @@ Live in `tests/` directory. Test multiple modules working together.
 | `tests/test_code_index.rs` | Tree-sitter indexing: index a test repo, verify code entities and structural edges | 8 |
 | `tests/test_consolidation.rs` | Consolidation pipeline: insert duplicates, verify dedup + `duplicate_warning`; insert same-title knowledge, verify title match; insert contradictions, verify flagging; insert supporting observations, verify promotion; verify `superseded_by` and `derived_from` edges | 9 (planned) |
 | `tests/test_update_policy.rs` | Update policy enforcement: `update_knowledge` edits knowledge in-place; no `update_observation` or `edit_rule` tool exists; status state machine rejects illegal transitions; observation content edit detected by sync, event logged | 7 (planned) |
-| `tests/test_git_diff.rs` | Change detection: index, modify source file, reindex, verify stale flagging on referenced knowledge | 10 (planned) |
+| `tests/test_git_diff.rs` | Change detection: index, modify source file, reindex, verify stale flagging on referenced knowledge | 10 |
 
 ### End-to-End Tests
 

@@ -78,7 +78,9 @@ cogz/
 
     index/
       mod.rs             — orchestration: scan → parse → sync → edges
+      git_diff.rs        — git diff-based change detection for incremental reindex
       gitignore.rs       — gitignore-aware source file scanner
+      stale_flagging.rs  — mark observations/rules stale when referenced code changes
       tree_sitter.rs     — shared types, Rust entity extraction
       tree_sitter/
         python.rs        — Python entity extraction

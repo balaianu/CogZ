@@ -154,6 +154,13 @@ pub fn run_index(repo: &Path) -> anyhow::Result<()> {
     let total = cogz::storage::crud::count_all(&conn)?;
     println!("\n  Total entities: {}", total);
 
+    // Store baseline commit for incremental reindex.
+    if let Some(sha) = cogz::index::git_diff::head_sha(repo)
+        && let Err(e) = cogz::storage::set_meta(&conn, "last_indexed_commit", &sha)
+    {
+        tracing::warn!("failed to record last_indexed_commit: {}", e);
+    }
+
     Ok(())
 }
 
@@ -193,7 +200,13 @@ pub fn run_reindex(repo: &Path) -> anyhow::Result<()> {
     }
 
     println!("\nReindexing source code...");
-    let code_result = cogz::index::index_code(&storage, repo, &config);
+    let code_result = cogz::index::reindex_code(&storage, repo, &config);
+
+    if code_result.incremental {
+        println!("  (incremental — git diff)");
+    } else {
+        println!("  (full scan — no git baseline)");
+    }
     println!(
         "  Code entities: {} created, {} updated, {} stale, {} skipped",
         code_result.created, code_result.updated, code_result.marked_stale, code_result.skipped
@@ -203,6 +216,17 @@ pub fn run_reindex(repo: &Path) -> anyhow::Result<()> {
         let embedded = cli::embed_synced(&storage, &config, &code_result.synced_entity_ids);
         if embedded > 0 {
             println!("  Code embedded: {}", embedded);
+        }
+    }
+
+    // Flag stale knowledge: observations/rules referencing changed code.
+    let mut all_changed = code_result.changed_code_ids;
+    all_changed.extend(code_result.deleted_code_ids.iter().cloned());
+    if !all_changed.is_empty() {
+        let flagged =
+            cogz::index::stale_flagging::flag_stale_knowledge(&storage, &cogz_dir, &all_changed);
+        if flagged > 0 {
+            println!("  Stale knowledge flagged: {}", flagged);
         }
     }
 
