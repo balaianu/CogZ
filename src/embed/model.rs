@@ -118,6 +118,30 @@ impl NliLabel {
     }
 }
 
+/// NLI classification probabilities for a premise-hypothesis pair.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NliProbabilities {
+    /// P(contradiction) after softmax.
+    pub contradiction: f32,
+    /// P(entailment) after softmax.
+    pub entailment: f32,
+    /// P(neutral) after softmax.
+    pub neutral: f32,
+}
+
+impl NliProbabilities {
+    /// The label with the highest probability.
+    pub fn label(&self) -> NliLabel {
+        if self.contradiction >= self.entailment && self.contradiction >= self.neutral {
+            NliLabel::Contradiction
+        } else if self.entailment >= self.neutral {
+            NliLabel::Entailment
+        } else {
+            NliLabel::Neutral
+        }
+    }
+}
+
 /// Trait for natural language inference (NLI) models.
 ///
 /// Used by consolidation to detect contradictions between observations
@@ -125,8 +149,9 @@ impl NliLabel {
 /// (`OnnxNliModel`) and a deterministic mock (`MockNliModel`) for
 /// testing.
 pub trait NliModel: Send + Sync {
-    /// Classify the relationship between a premise and a hypothesis.
-    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliLabel>;
+    /// Classify the relationship between a premise and a hypothesis,
+    /// returning softmax probabilities for each label.
+    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliProbabilities>;
 
     /// Model identifier for logging.
     fn model_name(&self) -> &str;
@@ -145,22 +170,34 @@ pub trait NliModel: Send + Sync {
 pub struct MockNliModel;
 
 impl NliModel for MockNliModel {
-    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliLabel> {
+    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliProbabilities> {
         let p_lower = premise.to_lowercase();
         let h_lower = hypothesis.to_lowercase();
 
         if p_lower == h_lower {
-            return Ok(NliLabel::Entailment);
+            return Ok(NliProbabilities {
+                contradiction: 0.01,
+                entailment: 0.98,
+                neutral: 0.01,
+            });
         }
 
         let p_neg = has_negation(&p_lower);
         let h_neg = has_negation(&h_lower);
 
         if p_neg != h_neg {
-            return Ok(NliLabel::Contradiction);
+            return Ok(NliProbabilities {
+                contradiction: 0.95,
+                entailment: 0.02,
+                neutral: 0.03,
+            });
         }
 
-        Ok(NliLabel::Neutral)
+        Ok(NliProbabilities {
+            contradiction: 0.05,
+            entailment: 0.10,
+            neutral: 0.85,
+        })
     }
 
     fn model_name(&self) -> &str {
@@ -228,28 +265,28 @@ mod tests {
     #[test]
     fn mock_nli_entailment_for_identical_text() {
         let model = MockNliModel;
-        let label = model
+        let probs = model
             .classify("The bug is in search", "The bug is in search")
             .unwrap();
-        assert_eq!(label, NliLabel::Entailment);
+        assert_eq!(probs.label(), NliLabel::Entailment);
     }
 
     #[test]
     fn mock_nli_contradiction_for_negated_hypothesis() {
         let model = MockNliModel;
-        let label = model
+        let probs = model
             .classify("The bug is in search", "The bug is not in search")
             .unwrap();
-        assert_eq!(label, NliLabel::Contradiction);
+        assert_eq!(probs.label(), NliLabel::Contradiction);
     }
 
     #[test]
     fn mock_nli_neutral_for_unrelated() {
         let model = MockNliModel;
-        let label = model
+        let probs = model
             .classify("The bug is in search", "The config file is missing")
             .unwrap();
-        assert_eq!(label, NliLabel::Neutral);
+        assert_eq!(probs.label(), NliLabel::Neutral);
     }
 
     #[test]

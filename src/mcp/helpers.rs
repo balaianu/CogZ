@@ -209,7 +209,13 @@ pub fn write_and_sync(
         };
 
         // NLI classification outside the lock.
-        let contradicts_ids = classify_candidates(candidates, &entity.body, nli_model);
+        let contradicts_ids = classify_candidates(
+            candidates,
+            &entity.body,
+            nli_model,
+            embed_model.map(|m| m as &dyn crate::embed::EmbeddingModel),
+            &config.consolidation,
+        );
 
         if !contradicts_ids.is_empty() {
             let conn = storage.conn();

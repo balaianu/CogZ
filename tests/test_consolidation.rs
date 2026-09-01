@@ -30,6 +30,9 @@ fn config() -> ConsolidationConfig {
         title_match_threshold: 0.85,
         contradiction_check: true,
         promotion_threshold: 3,
+        contradiction_threshold: 0.70,
+        contradiction_cosine_threshold: 0.85,
+        contradiction_length_ratio: 5.0,
     }
 }
 
@@ -131,6 +134,7 @@ fn contradiction_detected_with_mock_nli() {
         "The bug is not in search",
         "observation",
         Some(&MockNliModel),
+        None,
         &config(),
     );
     assert!(result.contradiction_flagged);
@@ -152,6 +156,7 @@ fn contradiction_skipped_when_nli_unavailable() {
         "u2",
         "The bug is not in search",
         "observation",
+        None,
         None,
         &config(),
     );

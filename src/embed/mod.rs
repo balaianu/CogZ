@@ -19,6 +19,7 @@ pub use download::{
 };
 pub use model::{
     EmbeddingModel, EmbeddingResult, MockEmbeddingModel, MockNliModel, NliLabel, NliModel,
+    NliProbabilities,
 };
 pub use nli::OnnxNliModel;
 pub use onnx::{ModelType, OnnxEmbeddingModel};

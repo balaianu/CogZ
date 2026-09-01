@@ -64,6 +64,31 @@ pub struct ConsolidationConfig {
     pub title_match_threshold: f64,
     pub contradiction_check: bool,
     pub promotion_threshold: u32,
+    /// Minimum P(contradiction) to flag a pair as contradicting.
+    /// Calibrated against XNLI dev set in CogZ-py. Below this, the
+    /// pair may be related-but-not-contradictory.
+    #[serde(default = "default_contradiction_threshold")]
+    pub contradiction_threshold: f64,
+    /// Minimum embedding cosine similarity for a contradiction pair.
+    /// Genuine contradictions share the same topic with opposing
+    /// claims, so their embeddings should be very similar.
+    #[serde(default = "default_contradiction_cosine_threshold")]
+    pub contradiction_cosine_threshold: f64,
+    /// Maximum text length ratio for a contradiction pair. Texts
+    /// differing by more than this ratio are likely different content
+    /// types, not a genuine contradiction.
+    #[serde(default = "default_contradiction_length_ratio")]
+    pub contradiction_length_ratio: f64,
+}
+
+fn default_contradiction_threshold() -> f64 {
+    0.70
+}
+fn default_contradiction_cosine_threshold() -> f64 {
+    0.85
+}
+fn default_contradiction_length_ratio() -> f64 {
+    5.0
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -141,6 +166,9 @@ impl Config {
                 title_match_threshold: 0.85,
                 contradiction_check: true,
                 promotion_threshold: 3,
+                contradiction_threshold: 0.70,
+                contradiction_cosine_threshold: 0.85,
+                contradiction_length_ratio: 5.0,
             },
             index: IndexConfig { allow: vec![] },
             retention: RetentionConfig {

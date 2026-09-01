@@ -7,7 +7,7 @@
 use rusqlite::Connection;
 
 use crate::config::ConsolidationConfig;
-use crate::embed::{NliLabel, NliModel};
+use crate::embed::{EmbeddingModel, NliModel};
 use crate::storage::crud::Entity;
 use crate::storage::query::get_entities_by_type;
 
@@ -33,10 +33,17 @@ impl ContradictionResult {
 /// type. Returns an empty result if the NLI model is unavailable or
 /// contradiction checking is disabled in config.
 ///
-/// The new entity's content is the premise; each existing entity's
-/// content is the hypothesis. If the NLI label is `Contradiction`,
-/// the existing entity ID is recorded and `contradiction_flagged` is
-/// set. The caller is responsible for recording `contradicts` edges
+/// Uses bidirectional NLI scoring (both premise→hypothesis and
+/// hypothesis→premise), taking the max P(contradiction) across
+/// directions. Real contradictions can score asymmetrically.
+///
+/// Pre-filters reduce false positives:
+/// - Length ratio: texts differing by >5:1 are different content types.
+/// - Cosine similarity (when an embedding model is provided): genuine
+///   contradictions share the same topic, so embeddings should be
+///   highly similar (≥ 0.85).
+///
+/// The caller is responsible for recording `contradicts` edges
 /// and the `contradiction_found` event.
 pub fn check_contradiction(
     conn: &Connection,
@@ -44,10 +51,11 @@ pub fn check_contradiction(
     new_content: &str,
     entity_type: &str,
     model: Option<&dyn NliModel>,
+    embed_model: Option<&dyn EmbeddingModel>,
     config: &ConsolidationConfig,
 ) -> ContradictionResult {
     let candidates = fetch_contradiction_candidates(conn, new_id, new_content, entity_type, config);
-    let contradicts_ids = classify_candidates(candidates, new_content, model);
+    let contradicts_ids = classify_candidates(candidates, new_content, model, embed_model, config);
     let contradiction_flagged = !contradicts_ids.is_empty();
     ContradictionResult {
         contradiction_flagged,
@@ -81,34 +89,111 @@ pub fn fetch_contradiction_candidates(
 /// model. Returns the IDs of entities that contradict the new content.
 /// This is the I/O portion — it must NOT be called while holding the
 /// storage lock, since ONNX inference is blocking.
+///
+/// Uses bidirectional scoring: runs NLI in both directions (new→existing
+/// and existing→new), takes the max P(contradiction). Real contradictions
+/// can score asymmetrically (benched 0.44 one direction, 0.99 the other).
+///
+/// Pre-filters reduce false positives before NLI inference:
+/// - Identical text fast-path: skip NLI entirely.
+/// - Length ratio: texts differing by > `contradiction_length_ratio`
+///   are different content types, not contradictions.
+/// - Cosine similarity (when an embedding model is provided): genuine
+///   contradictions share the same topic, so embeddings should be
+///   highly similar (≥ `contradiction_cosine_threshold`).
+///
+/// A pair is flagged as contradicting only when:
+/// 1. Texts are not identical.
+/// 2. Length ratio is within bounds.
+/// 3. Cosine similarity ≥ threshold (when embedding model is available).
+/// 4. Max-direction P(contradiction) ≥ `contradiction_threshold`.
 pub fn classify_candidates(
     candidates: Vec<Entity>,
     new_content: &str,
     model: Option<&dyn NliModel>,
+    embed_model: Option<&dyn EmbeddingModel>,
+    config: &ConsolidationConfig,
 ) -> Vec<String> {
     let Some(model) = model else {
         return Vec::new();
     };
 
-    // Don't gate on is_available() — OnnxNliModel loads lazily via
-    // try_load() inside classify(). is_available() returns false until
-    // the first classify() call, so gating here would skip all checks.
+    let new_lower = new_content.to_lowercase();
+    let new_len = new_content.len();
+
+    // Pre-compute the new content's embedding if an embedding model is
+    // available, for cosine similarity pre-filtering.
+    let new_embedding = if let Some(em) = embed_model {
+        em.embed(&[new_content])
+            .ok()
+            .and_then(|v| v.into_iter().next())
+    } else {
+        None
+    };
+
     let mut contradicts_ids = Vec::new();
     for entity in &candidates {
-        match model.classify(new_content, &entity.content) {
-            Ok(NliLabel::Contradiction) => contradicts_ids.push(entity.id.clone()),
-            Ok(_) => {}
-            Err(e) => {
+        // Fast-path: identical texts are entailment, not contradiction.
+        if new_lower == entity.content.to_lowercase() {
+            continue;
+        }
+
+        // Length ratio pre-filter.
+        let entity_len = entity.content.len();
+        if new_len > 0 && entity_len > 0 {
+            let ratio = (new_len.max(entity_len) as f64) / (new_len.min(entity_len) as f64);
+            if ratio > config.contradiction_length_ratio {
+                continue;
+            }
+        }
+
+        // Cosine similarity pre-filter (when embedding model is available).
+        if let (Some(new_emb), Some(em)) = (&new_embedding, embed_model)
+            && let Ok(entity_embs) = em.embed(&[entity.content.as_str()])
+            && let Some(entity_emb) = entity_embs.into_iter().next()
+        {
+            let cos = cosine_similarity(new_emb, &entity_emb);
+            if cos < config.contradiction_cosine_threshold {
+                continue;
+            }
+        }
+
+        // Bidirectional NLI scoring: max P(contradiction) across both
+        // directions. Real contradictions can score asymmetrically.
+        let forward = model.classify(new_content, &entity.content);
+        let reverse = model.classify(&entity.content, new_content);
+
+        let max_contra = match (forward, reverse) {
+            (Ok(f), Ok(r)) => f.contradiction.max(r.contradiction),
+            (Ok(f), Err(_)) => f.contradiction,
+            (Err(_), Ok(r)) => r.contradiction,
+            (Err(e), _) => {
                 tracing::warn!(
                     "NLI classification failed for {} vs {}: {}",
                     new_content,
                     entity.id,
                     e
                 );
+                continue;
             }
+        };
+
+        if max_contra >= config.contradiction_threshold as f32 {
+            contradicts_ids.push(entity.id.clone());
         }
     }
     contradicts_ids
+}
+
+/// Cosine similarity between two vectors.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    (dot / (norm_a * norm_b)) as f64
 }
 
 /// Record `contradicts` edges from the new entity to each
@@ -190,6 +275,9 @@ mod tests {
             title_match_threshold: 0.85,
             contradiction_check: check,
             promotion_threshold: 3,
+            contradiction_threshold: 0.70,
+            contradiction_cosine_threshold: 0.85,
+            contradiction_length_ratio: 5.0,
         }
     }
 
@@ -203,6 +291,7 @@ mod tests {
             "no",
             "observation",
             Some(&MockNliModel),
+            None,
             &config(false),
         );
         assert!(!result.contradiction_flagged);
@@ -213,7 +302,8 @@ mod tests {
     fn no_model_returns_empty() {
         let conn = setup();
         insert_entity(&conn, &Entity::new("u1", "observation", "A", "yes")).unwrap();
-        let result = check_contradiction(&conn, "u2", "no", "observation", None, &config(true));
+        let result =
+            check_contradiction(&conn, "u2", "no", "observation", None, None, &config(true));
         assert!(!result.contradiction_flagged);
     }
 
@@ -232,6 +322,7 @@ mod tests {
             "The bug is not in search",
             "observation",
             Some(&MockNliModel),
+            None,
             &config(true),
         );
         assert!(result.contradiction_flagged);
@@ -253,6 +344,7 @@ mod tests {
             "The bug is in search",
             "observation",
             Some(&MockNliModel),
+            None,
             &config(true),
         );
         assert!(!result.contradiction_flagged);
@@ -273,6 +365,73 @@ mod tests {
             "The bug is in search",
             "observation",
             Some(&MockNliModel),
+            None,
+            &config(true),
+        );
+        assert!(!result.contradiction_flagged);
+    }
+
+    #[test]
+    fn length_ratio_filter_skips_uneven_pairs() {
+        let conn = setup();
+        let long_text = "This is a very long observation that goes on and on \
+                         about many different topics in great detail, covering \
+                         architecture, design patterns, testing strategies, and \
+                         deployment considerations for the project.";
+        insert_entity(&conn, &Entity::new("u1", "observation", "A", long_text)).unwrap();
+
+        // "not" in a 4-word text vs a 50+ word text — length ratio > 5:1.
+        let result = check_contradiction(
+            &conn,
+            "u2",
+            "This is not relevant",
+            "observation",
+            Some(&MockNliModel),
+            None,
+            &config(true),
+        );
+        assert!(!result.contradiction_flagged);
+    }
+
+    #[test]
+    fn identical_text_fast_path_skips_nli() {
+        let conn = setup();
+        insert_entity(
+            &conn,
+            &Entity::new("u1", "observation", "A", "The bug is in search"),
+        )
+        .unwrap();
+
+        // Same text — should be entailment, not contradiction.
+        let result = check_contradiction(
+            &conn,
+            "u2",
+            "The bug is in search",
+            "observation",
+            Some(&MockNliModel),
+            None,
+            &config(true),
+        );
+        assert!(!result.contradiction_flagged);
+    }
+
+    #[test]
+    fn low_contradiction_probability_not_flagged() {
+        let conn = setup();
+        // Two unrelated texts — mock returns neutral (0.85 neutral, 0.05 contra).
+        insert_entity(
+            &conn,
+            &Entity::new("u1", "observation", "A", "The config file is missing"),
+        )
+        .unwrap();
+
+        let result = check_contradiction(
+            &conn,
+            "u2",
+            "The bug is in search",
+            "observation",
+            Some(&MockNliModel),
+            None,
             &config(true),
         );
         assert!(!result.contradiction_flagged);

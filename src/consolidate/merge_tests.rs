@@ -16,6 +16,9 @@ fn config() -> ConsolidationConfig {
         title_match_threshold: 0.85,
         contradiction_check: true,
         promotion_threshold: 3,
+        contradiction_threshold: 0.70,
+        contradiction_cosine_threshold: 0.85,
+        contradiction_length_ratio: 5.0,
     }
 }
 

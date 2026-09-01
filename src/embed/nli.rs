@@ -11,7 +11,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use tracing::warn;
 
-use super::model::{EmbeddingError, EmbeddingResult, NliLabel, NliModel};
+use super::model::{EmbeddingError, EmbeddingResult, NliModel, NliProbabilities};
 use super::registry;
 
 /// Default NLI model ID.
@@ -149,7 +149,7 @@ impl OnnxNliModel {
 }
 
 impl NliModel for OnnxNliModel {
-    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliLabel> {
+    fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliProbabilities> {
         self.try_load()?;
 
         let mut session_guard = self.session.lock().unwrap();
@@ -157,8 +157,6 @@ impl NliModel for OnnxNliModel {
         let session: &mut Session = session_guard.as_mut().unwrap();
         let tokenizer = tokenizer_guard.as_ref().unwrap();
 
-        // NLI models take a premise-hypothesis pair. The tokenizer
-        // handles the pairing via EncodeInput::Dual (separator tokens).
         let encoded = tokenizer
             .encode((premise, hypothesis), true)
             .map_err(|e| EmbeddingError::InferenceFailed(format!("NLI tokenization: {}", e)))?;
@@ -188,8 +186,9 @@ impl NliModel for OnnxNliModel {
             .try_extract_tensor::<f32>()
             .map_err(|e| EmbeddingError::InferenceFailed(format!("NLI extract: {}", e)))?;
 
-        // Output shape: [1, 3] — logits for entailment, neutral, contradiction.
-        // NLI label mapping for cross-encoder/nli-deberta-v3-xsmall: 0=contradiction, 1=entailment, 2=neutral.
+        // Output shape: [1, 3] — logits.
+        // Label mapping for cross-encoder/nli-deberta-v3-xsmall:
+        // 0=contradiction, 1=entailment, 2=neutral.
         if data.len() < 3 {
             return Err(EmbeddingError::InferenceFailed(format!(
                 "NLI output has {} values, expected 3",
@@ -197,19 +196,21 @@ impl NliModel for OnnxNliModel {
             )));
         }
 
-        let label = match (0..3)
-            .map(|i| (i, data[i]))
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i)
-            .unwrap_or(0)
-        {
-            0 => NliLabel::Contradiction,
-            1 => NliLabel::Entailment,
-            2 => NliLabel::Neutral,
-            _ => NliLabel::Neutral,
+        // Softmax: exp(x - max) / sum(exp(x - max)) for numerical stability.
+        let max_logit = data[0..3].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exps: [f32; 3] = [
+            (data[0] - max_logit).exp(),
+            (data[1] - max_logit).exp(),
+            (data[2] - max_logit).exp(),
+        ];
+        let sum: f32 = exps.iter().sum();
+        let probs = NliProbabilities {
+            contradiction: exps[0] / sum,
+            entailment: exps[1] / sum,
+            neutral: exps[2] / sum,
         };
 
-        Ok(label)
+        Ok(probs)
     }
 
     fn model_name(&self) -> &str {
