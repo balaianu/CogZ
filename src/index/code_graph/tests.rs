@@ -250,3 +250,51 @@ fn reindex_preserves_references_edges() {
         "references edges must be preserved across code reindex"
     );
 }
+
+#[test]
+fn contains_edges_link_files_to_functions_and_classes() {
+    let storage = Storage::open_memory().unwrap();
+    let code = r#"
+fn helper() -> u32 { 42 }
+
+struct Point { x: f64, y: f64 }
+
+impl Point {
+    fn new(x: f64, y: f64) -> Self { Point { x, y } }
+}
+"#;
+    let files = vec![(
+        std::path::PathBuf::from("geometry.rs"),
+        code.to_string(),
+        Language::Rust,
+    )];
+
+    sync_code_entities(&storage, Path::new("."), &files);
+    sync_code_edges(&storage, Path::new("."), &files);
+
+    let conn = storage.conn();
+    let contains_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges WHERE edge_type = 'contains'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    // helper function, Point struct (class), Point::new method (function)
+    assert!(
+        contains_count >= 2,
+        "expected at least 2 contains edges, got {contains_count}"
+    );
+
+    // All contains edges should originate from a file entity
+    let non_file_sources: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM edges e
+             JOIN entities src ON e.source_id = src.id
+             WHERE e.edge_type = 'contains' AND src.type != 'file'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(non_file_sources, 0, "contains edges must come from files");
+}

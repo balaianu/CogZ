@@ -4,6 +4,7 @@
 //! Phase 8: extract functions, classes, files, and modules from
 //! source code into the entity graph with structural edges.
 
+pub mod auto_link;
 pub mod code_graph;
 pub mod git_diff;
 pub mod gitignore;
@@ -60,6 +61,12 @@ pub fn index_code(storage: &storage::Storage, repo_root: &Path, config: &Config)
 
     // Phase 4: sync structural edges (lock held).
     code_graph::sync_code_edges(storage, repo_root, &source_files);
+
+    // Phase 5: auto-link knowledge entities to code entities.
+    let link_count = auto_link::sync_auto_links(storage);
+    if link_count > 0 {
+        tracing::info!("auto-linked {} knowledge→code edges", link_count);
+    }
 
     result
 }

@@ -142,15 +142,22 @@ fn parse_source_files(
         let entities = crate::index::tree_sitter::extract_entities(&abs_path, source, *language);
 
         for ce in entities {
-            let qualified_name = ce
-                .properties
-                .get("qualified_name")
-                .and_then(|v| v.as_str())
-                .or_else(|| ce.properties.get("module_path").and_then(|v| v.as_str()))
-                .unwrap_or(&ce.title)
-                .to_string();
-
             let file_path_str = rel_path.to_string_lossy().to_string();
+
+            // File entities use the full path as qualified_name so that
+            // code_graph can compute the same UUID from the path alone.
+            // Other entity types use qualified_name/module_path/title.
+            let qualified_name = if ce.entity_type == "file" {
+                file_path_str.clone()
+            } else {
+                ce.properties
+                    .get("qualified_name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| ce.properties.get("module_path").and_then(|v| v.as_str()))
+                    .unwrap_or(&ce.title)
+                    .to_string()
+            };
+
             let id = code_entity_uuid(&file_path_str, ce.entity_type, &qualified_name);
 
             // Multiple impl blocks for the same type produce the same

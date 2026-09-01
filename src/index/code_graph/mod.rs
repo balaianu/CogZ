@@ -47,6 +47,8 @@ pub fn sync_code_edges(
     // Key: (file_path, entity_type, qualified_name)
     // We also build a global name → UUID map for cross-file calls.
     let mut name_to_uuid: HashMap<String, String> = HashMap::new();
+    // Build file → children UUIDs for `contains` edges.
+    let mut file_to_children: HashMap<String, Vec<String>> = HashMap::new();
 
     for (rel_path, source, language) in source_files {
         let abs_path = repo_root.join(rel_path);
@@ -54,13 +56,18 @@ pub fn sync_code_edges(
 
         let file_path_str = rel_path.to_string_lossy().to_string();
         for ce in entities {
-            let qualified_name = ce
-                .properties
-                .get("qualified_name")
-                .and_then(|v| v.as_str())
-                .or_else(|| ce.properties.get("module_path").and_then(|v| v.as_str()))
-                .unwrap_or(&ce.title)
-                .to_string();
+            // File entities use the full path as qualified_name (same
+            // as sync_code_entities) so UUIDs match across phases.
+            let qualified_name = if ce.entity_type == "file" {
+                file_path_str.clone()
+            } else {
+                ce.properties
+                    .get("qualified_name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| ce.properties.get("module_path").and_then(|v| v.as_str()))
+                    .unwrap_or(&ce.title)
+                    .to_string()
+            };
 
             let id = code_entity_uuid(&file_path_str, ce.entity_type, &qualified_name);
 
@@ -71,6 +78,14 @@ pub fn sync_code_edges(
                 name_to_uuid
                     .entry(simple.to_string())
                     .or_insert_with(|| id.clone());
+            }
+
+            // Track file → function/class for `contains` edges.
+            if ce.entity_type == "function" || ce.entity_type == "class" {
+                file_to_children
+                    .entry(file_path_str.clone())
+                    .or_default()
+                    .push(id);
             }
         }
     }
@@ -110,13 +125,28 @@ pub fn sync_code_edges(
         }
     }
 
+    // Phase 2b: build `contains` edges from file entities to their
+    // functions and classes.
+    for (file_path, children) in &file_to_children {
+        let file_uuid = code_entity_uuid(file_path, "file", file_path);
+        for child_id in children {
+            edges.push(CodeEdge {
+                source_id: file_uuid.clone(),
+                target_id: child_id.clone(),
+                edge_type: "contains",
+            });
+        }
+    }
+
     // Phase 3: sync edges to DB.
     let conn = storage.conn();
 
     // Clear existing structural edges before re-inserting. Edges are
     // fully derived from source code, so a delete+rebuild is correct
     // and prevents stale edges from accumulating when code changes.
-    if let Err(e) = storage::edges::delete_edges_by_type(&conn, &["calls", "imports", "extends"]) {
+    if let Err(e) =
+        storage::edges::delete_edges_by_type(&conn, &["calls", "imports", "extends", "contains"])
+    {
         tracing::warn!("failed to clear structural edges: {}", e);
     }
 

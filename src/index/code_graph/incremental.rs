@@ -50,7 +50,9 @@ pub fn sync_code_edges_incremental(
     drop(conn);
 
     // Collect changed entity IDs for targeted edge deletion.
+    // Also build file → children for `contains` edges.
     let mut changed_entity_ids: Vec<String> = Vec::new();
+    let mut file_to_children: HashMap<String, Vec<String>> = HashMap::new();
     for (rel_path, source, language) in source_files {
         let abs_path = repo_root.join(rel_path);
         let entities = crate::index::tree_sitter::extract_entities(&abs_path, source, *language);
@@ -66,7 +68,14 @@ pub fn sync_code_edges_incremental(
                 .to_string();
 
             let id = code_entity_uuid(&file_path_str, ce.entity_type, &qualified_name);
-            changed_entity_ids.push(id);
+            changed_entity_ids.push(id.clone());
+
+            if ce.entity_type == "function" || ce.entity_type == "class" {
+                file_to_children
+                    .entry(file_path_str.clone())
+                    .or_default()
+                    .push(id);
+            }
         }
     }
 
@@ -101,6 +110,18 @@ pub fn sync_code_edges_incremental(
                 &name_to_uuid,
                 &mut edges,
             ),
+        }
+    }
+
+    // Build `contains` edges from file entities to their functions/classes.
+    for (file_path, children) in &file_to_children {
+        let file_uuid = code_entity_uuid(file_path, "file", file_path);
+        for child_id in children {
+            edges.push(CodeEdge {
+                source_id: file_uuid.clone(),
+                target_id: child_id.clone(),
+                edge_type: "contains",
+            });
         }
     }
 

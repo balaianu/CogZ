@@ -93,9 +93,9 @@ pub fn delete_edges_by_type(conn: &Connection, edge_types: &[&str]) -> Result<()
     Ok(())
 }
 
-/// Delete structural edges (calls, imports, extends) where the source
-/// entity is in the given set. Used by incremental reindex to clear
-/// only edges from changed files before re-inserting.
+/// Delete structural edges (calls, imports, extends, contains) where
+/// the source entity is in the given set. Used by incremental reindex
+/// to clear only edges from changed files before re-inserting.
 pub fn delete_structural_edges_by_sources(
     conn: &Connection,
     source_ids: &[String],
@@ -103,7 +103,7 @@ pub fn delete_structural_edges_by_sources(
     if source_ids.is_empty() {
         return Ok(());
     }
-    let edge_types = ["calls", "imports", "extends"];
+    let edge_types = ["calls", "imports", "extends", "contains"];
     let id_placeholders = (0..source_ids.len())
         .map(|_| "?")
         .collect::<Vec<_>>()
