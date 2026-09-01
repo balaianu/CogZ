@@ -168,6 +168,13 @@ pub fn search(
         results.extend(expanded_results);
     }
 
+    // Track access counts for returned entities (derived state for
+    // composite scoring). Only direct results, not graph expansions.
+    let accessed_ids: Vec<String> = results.iter().map(|r| r.entity.id.clone()).collect();
+    if !accessed_ids.is_empty() {
+        let _ = crate::storage::access::increment_access_batch(conn, &accessed_ids);
+    }
+
     Ok(SearchResults {
         results,
         search_mode,

@@ -53,12 +53,14 @@ fn cold_start_produces_compact_pack() {
     let pack = assemble_context(&conn, &params, &config).unwrap();
 
     assert_eq!(pack.mode, ContextMode::ColdStart);
-    // Identity + 2 rules + 1 observation = 4 sections
-    assert_eq!(pack.sections.len(), 4);
+    // Identity + 2 rules + 1 knowledge (top scored) + knowledge index
     assert!(pack.sections.iter().any(|s| s.source == "identity"));
     assert!(pack.sections.iter().any(|s| s.source == "rule"));
-    assert!(pack.sections.iter().any(|s| s.source == "observation"));
-    assert!(!pack.sections.iter().any(|s| s.source == "knowledge"));
+    // Cold start now includes scored knowledge, not raw observations
+    assert!(pack.sections.iter().any(|s| s.source == "knowledge"));
+    // Observations are intentionally excluded from cold start — they're
+    // often noisy and unvalidated
+    assert!(!pack.sections.iter().any(|s| s.source == "observation"));
     assert_eq!(pack.query, "");
 }
 
@@ -256,14 +258,10 @@ fn cold_start_respects_config_limits() {
 fn include_stale_includes_stale_entities() {
     let storage = Storage::open_memory().unwrap();
     let conn = storage.conn();
-    let mut e1 = Entity::new("o1", "observation", "Stale obs", "content");
+    let mut e1 = Entity::new("r1", "rule", "Stale rule", "content");
     e1.status = "stale".to_string();
     insert_entity(&conn, &e1).unwrap();
-    insert_entity(
-        &conn,
-        &Entity::new("o2", "observation", "Active obs", "content"),
-    )
-    .unwrap();
+    insert_entity(&conn, &Entity::new("r2", "rule", "Active rule", "content")).unwrap();
 
     let config = default_config();
 
@@ -272,7 +270,7 @@ fn include_stale_includes_stale_entities() {
         ..Default::default()
     };
     let pack = assemble_context(&conn, &params, &config).unwrap();
-    assert!(!pack.sections.iter().any(|s| s.entity_id == "o1"));
+    assert!(!pack.sections.iter().any(|s| s.entity_id == "r1"));
 
     let params = AssembleParams {
         mode: ContextMode::ColdStart,
@@ -280,7 +278,7 @@ fn include_stale_includes_stale_entities() {
         ..Default::default()
     };
     let pack = assemble_context(&conn, &params, &config).unwrap();
-    assert!(pack.sections.iter().any(|s| s.entity_id == "o1"));
+    assert!(pack.sections.iter().any(|s| s.entity_id == "r1"));
 }
 
 #[test]

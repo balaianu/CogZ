@@ -6,7 +6,7 @@ use super::StorageError;
 
 /// Current schema version. Increment when migrations are added.
 /// Stored in `PRAGMA user_version`.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Run all migrations to bring the database up to `SCHEMA_VERSION`.
 ///
@@ -32,6 +32,10 @@ pub fn run_migrations(conn: &Connection, embedding_dim: usize) -> Result<(), Sto
 
     if current < 3 {
         migrate_v3(conn, embedding_dim)?;
+    }
+
+    if current < 4 {
+        migrate_v4(conn)?;
     }
 
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -158,6 +162,17 @@ fn migrate_v1(conn: &Connection, embedding_dim: usize) -> Result<(), StorageErro
         "#,
     )?;
 
+    // --- Entity access tracking (derived, not in canonical files) ---
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS entity_access (
+            entity_id    TEXT PRIMARY KEY REFERENCES entities(id),
+            access_count INTEGER DEFAULT 0,
+            last_accessed TEXT
+        );
+        "#,
+    )?;
+
     Ok(())
 }
 
@@ -246,6 +261,21 @@ fn migrate_v3(conn: &Connection, embedding_dim: usize) -> Result<(), StorageErro
         conn.execute_batch("DROP TABLE IF EXISTS entity_embeddings")?;
     }
 
+    Ok(())
+}
+
+/// Migration v4: entity_access table for tracking retrieval frequency.
+/// Derived state — not in canonical files. Reset to 0 on DB rebuild.
+fn migrate_v4(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS entity_access (
+            entity_id    TEXT PRIMARY KEY REFERENCES entities(id),
+            access_count INTEGER DEFAULT 0,
+            last_accessed TEXT
+        );
+        "#,
+    )?;
     Ok(())
 }
 

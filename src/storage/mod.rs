@@ -4,6 +4,7 @@
 //! Single `Connection` behind `std::sync::Mutex`. DB calls from async
 //! MCP handlers go through `tokio::task::spawn_blocking` (Phase 7).
 
+pub mod access;
 pub mod crud;
 pub mod edges;
 pub mod embeddings;
