@@ -91,6 +91,16 @@ fn find_promotion_candidates(
     for obs in &observations {
         let conn = storage.conn();
         let edges = get_edges_to(&conn, &obs.id)?;
+
+        // Skip if already promoted — a derived_from edge from a rule
+        // means this observation was already promoted.
+        let already_promoted = edges
+            .iter()
+            .any(|e| e.edge_type == "derived_from" && e.source_id != obs.id);
+        if already_promoted {
+            continue;
+        }
+
         let supporting_ids: Vec<String> = edges
             .iter()
             .filter(|e| e.edge_type == "supports")
@@ -352,5 +362,45 @@ mod tests {
 
         let results = run_promotion(&storage, &cogz_dir, &config(3), false).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn no_duplicate_promotion_after_first() {
+        let storage = setup();
+        let dir = tempfile::tempdir().unwrap();
+        let cogz_dir = dir.path().join(".cogz");
+        std::fs::create_dir_all(cogz_dir.join("rules")).unwrap();
+
+        {
+            let conn = storage.conn();
+            insert_entity(
+                &conn,
+                &Entity::new("obs-1", "observation", "Obs 1", "content"),
+            )
+            .unwrap();
+            for i in 2..=4 {
+                insert_entity(
+                    &conn,
+                    &Entity::new(&format!("sup-{i}"), "observation", &format!("Sup {i}"), "c"),
+                )
+                .unwrap();
+                add_supports_edge(&conn, &format!("sup-{i}"), "obs-1");
+            }
+        }
+
+        // First promotion should succeed.
+        let results = run_promotion(&storage, &cogz_dir, &config(3), false).unwrap();
+        assert_eq!(results.len(), 1);
+
+        // Second promotion should not re-promote the same observation.
+        let results2 = run_promotion(&storage, &cogz_dir, &config(3), false).unwrap();
+        assert!(
+            results2.is_empty(),
+            "observation should not be promoted twice"
+        );
+
+        let conn = storage.conn();
+        let rule_count = crate::storage::crud::count_by_type(&conn, "rule").unwrap();
+        assert_eq!(rule_count, 1);
     }
 }
