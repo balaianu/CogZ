@@ -56,10 +56,10 @@ impl ModelKind {
 /// Default model IDs — the values written into `config.toml` by
 /// `cogz init`. These are the logical names users see. The registry
 /// maps them to actual download sources.
-pub const DEFAULT_CODE_MODEL: &str = "BAAI/bge-small-en-v1.5";
-pub const DEFAULT_KNOWLEDGE_MODEL: &str = "BAAI/bge-small-en-v1.5";
+pub const DEFAULT_CODE_MODEL: &str = "nomic-ai/CodeRankEmbed-int8";
+pub const DEFAULT_KNOWLEDGE_MODEL: &str = "BAAI/bge-base-en-v1.5";
 pub const DEFAULT_NLI_MODEL: &str = "cross-encoder/nli-deberta-v3-xsmall";
-pub const DEFAULT_DIMENSION: usize = 384;
+pub const DEFAULT_DIMENSION: usize = 768;
 
 /// Look up a model ID in the registry. Returns the actual HF source
 /// repo and ONNX file layout.
@@ -166,17 +166,17 @@ mod tests {
     #[test]
     fn registry_maps_default_code_model() {
         let entry = lookup(DEFAULT_CODE_MODEL).unwrap();
-        assert_eq!(entry.hf_source, "Qdrant/bge-small-en-v1.5-onnx-Q");
-        assert_eq!(entry.onnx_layout, OnnxLayout::RootOptimized);
-        assert_eq!(entry.dim, 384);
+        assert_eq!(entry.hf_source, "mrsladoje/CodeRankEmbed-onnx-int8");
+        assert_eq!(entry.onnx_layout, OnnxLayout::OnnxSubdir);
+        assert_eq!(entry.dim, 768);
     }
 
     #[test]
     fn registry_maps_default_knowledge_model() {
         let entry = lookup(DEFAULT_KNOWLEDGE_MODEL).unwrap();
-        assert_eq!(entry.hf_source, "Qdrant/bge-small-en-v1.5-onnx-Q");
+        assert_eq!(entry.hf_source, "Qdrant/bge-base-en-v1.5-onnx-Q");
         assert_eq!(entry.onnx_layout, OnnxLayout::RootOptimized);
-        assert_eq!(entry.dim, 384);
+        assert_eq!(entry.dim, 768);
     }
 
     #[test]
