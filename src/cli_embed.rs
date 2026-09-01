@@ -203,11 +203,13 @@ pub fn embed_query(config: &Config, query: &str) -> Option<Vec<f32>> {
     use cogz::embed::{EmbeddingModel, ModelType, OnnxEmbeddingModel};
 
     let models_dir = models_dir();
-    let model = OnnxEmbeddingModel::with_model_id(
+    let model = OnnxEmbeddingModel::with_resource_config(
         ModelType::Knowledge,
         &models_dir,
         config.embedding.dimension,
         &config.embedding.knowledge_model,
+        config.embedding.model_idle_ttl,
+        config.embedding.model_min_free_mb,
     );
 
     if !model.model_files_exist() {

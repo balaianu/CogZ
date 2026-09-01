@@ -44,6 +44,16 @@ pub struct EmbeddingConfig {
     /// Auto-download models from HuggingFace on first use (default: true).
     #[serde(default = "default_true")]
     pub auto_download: bool,
+    /// Seconds of idle time before unloading ONNX models from memory.
+    /// 0 = never unload (keep resident for process lifetime).
+    /// On a 7GB RAM system, unloading idle models frees ~300-500MB.
+    #[serde(default)]
+    pub model_idle_ttl: u64,
+    /// Minimum free memory (MB) required to load a model. If available
+    /// RAM drops below this, model loading fails gracefully and the
+    /// system degrades to FTS-only. 0 = no check.
+    #[serde(default)]
+    pub model_min_free_mb: u64,
 }
 
 fn default_true() -> bool {
@@ -154,6 +164,8 @@ impl Config {
                 dimension: crate::embed::registry::DEFAULT_DIMENSION,
                 nli_model: crate::embed::registry::DEFAULT_NLI_MODEL.to_string(),
                 auto_download: true,
+                model_idle_ttl: 0,
+                model_min_free_mb: 0,
             },
             search: SearchConfig {
                 fts_weight: 0.4,

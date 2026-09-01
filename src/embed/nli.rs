@@ -31,13 +31,24 @@ pub struct OnnxNliModel {
     session: Mutex<Option<Session>>,
     tokenizer: Mutex<Option<tokenizers::Tokenizer>>,
     available: Mutex<bool>,
+    idle_tracker: super::resources::IdleTracker,
+    min_free_mb: u64,
 }
 
 impl OnnxNliModel {
     /// Create a new NLI model. `model_id` selects the model directory
-    /// under `models_base`. Empty string uses the default
-    /// (`Xenova/nli-deberta-v3-xsmall`).
+    /// under `models_base`. Empty string uses the default.
     pub fn new(models_base: &std::path::Path, model_id: &str) -> Self {
+        Self::with_resource_config(models_base, model_id, 0, 0)
+    }
+
+    /// Create with resource-aware settings.
+    pub fn with_resource_config(
+        models_base: &std::path::Path,
+        model_id: &str,
+        idle_ttl_secs: u64,
+        min_free_mb: u64,
+    ) -> Self {
         let id = if model_id.is_empty() {
             DEFAULT_NLI_MODEL
         } else {
@@ -48,7 +59,16 @@ impl OnnxNliModel {
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
             available: Mutex::new(false),
+            idle_tracker: super::resources::IdleTracker::new(idle_ttl_secs),
+            min_free_mb,
         }
+    }
+
+    /// Drop the loaded model and tokenizer, freeing memory.
+    pub fn unload(&self) {
+        self.session.lock().unwrap().take();
+        self.tokenizer.lock().unwrap().take();
+        *self.available.lock().unwrap() = false;
     }
 
     /// Find the ONNX model file, trying all known layouts.
@@ -64,8 +84,20 @@ impl OnnxNliModel {
     }
 
     fn try_load(&self) -> EmbeddingResult<()> {
+        if self.idle_tracker.is_idle() {
+            self.unload();
+        }
+
         if self.session.lock().unwrap().is_some() {
+            self.idle_tracker.touch();
             return Ok(());
+        }
+
+        if !super::resources::has_enough_memory(self.min_free_mb) {
+            return Err(EmbeddingError::ModelUnavailable(format!(
+                "insufficient free memory (need >= {} MB)",
+                self.min_free_mb
+            )));
         }
 
         // Ensure the ONNX Runtime library is available.
@@ -131,6 +163,7 @@ impl OnnxNliModel {
         *self.session.lock().unwrap() = Some(session);
         *self.tokenizer.lock().unwrap() = Some(tokenizer);
         *self.available.lock().unwrap() = true;
+        self.idle_tracker.touch();
         Ok(())
     }
 

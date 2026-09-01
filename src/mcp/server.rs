@@ -36,13 +36,20 @@ impl CogzServer {
         cogz_dir: PathBuf,
         models_dir: &std::path::Path,
     ) -> Self {
-        let query_model = Arc::new(OnnxEmbeddingModel::with_model_id(
+        let query_model = Arc::new(OnnxEmbeddingModel::with_resource_config(
             ModelType::Knowledge,
             models_dir,
             config.embedding.dimension,
             &config.embedding.knowledge_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
         ));
-        let nli_model = Arc::new(OnnxNliModel::new(models_dir, &config.embedding.nli_model));
+        let nli_model = Arc::new(OnnxNliModel::with_resource_config(
+            models_dir,
+            &config.embedding.nli_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
+        ));
         Self {
             storage,
             config,

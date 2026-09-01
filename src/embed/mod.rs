@@ -11,6 +11,7 @@ pub mod nli;
 pub mod onnx;
 pub mod pooling;
 pub mod registry;
+pub mod resources;
 pub mod runtime;
 
 pub use cache::EmbeddingCache;

@@ -60,10 +60,9 @@ pub struct OnnxEmbeddingModel {
     session: Mutex<Option<Session>>,
     tokenizer: Mutex<Option<tokenizers::Tokenizer>>,
     available: Mutex<bool>,
-    /// Whether the model's graph declares `token_type_ids` as an input.
-    /// CodeRankEmbed does not; BERT-based models do. Checked at load
-    /// time to avoid passing extra inputs the model rejects.
     has_token_type_ids: Mutex<bool>,
+    idle_tracker: super::resources::IdleTracker,
+    min_free_mb: u64,
 }
 
 impl OnnxEmbeddingModel {
@@ -83,6 +82,8 @@ impl OnnxEmbeddingModel {
             tokenizer: Mutex::new(None),
             available: Mutex::new(false),
             has_token_type_ids: Mutex::new(true),
+            idle_tracker: super::resources::IdleTracker::new(0),
+            min_free_mb: 0,
         }
     }
 
@@ -97,6 +98,18 @@ impl OnnxEmbeddingModel {
         models_base: &std::path::Path,
         dimension: usize,
         model_id: &str,
+    ) -> Self {
+        Self::with_resource_config(model_type, models_base, dimension, model_id, 0, 0)
+    }
+
+    /// Create with resource-aware settings (idle TTL + memory floor).
+    pub fn with_resource_config(
+        model_type: ModelType,
+        models_base: &std::path::Path,
+        dimension: usize,
+        model_id: &str,
+        idle_ttl_secs: u64,
+        min_free_mb: u64,
     ) -> Self {
         let (model_dir, resolved_id) = if model_id.is_empty() {
             (
@@ -115,13 +128,28 @@ impl OnnxEmbeddingModel {
             tokenizer: Mutex::new(None),
             available: Mutex::new(false),
             has_token_type_ids: Mutex::new(true),
+            idle_tracker: super::resources::IdleTracker::new(idle_ttl_secs),
+            min_free_mb,
         }
     }
 
     /// Try to load the model and tokenizer.
     fn try_load(&self) -> EmbeddingResult<()> {
+        // Unload idle model to free memory before reloading.
+        if self.idle_tracker.is_idle() {
+            self.unload();
+        }
+
         if self.session.lock().unwrap().is_some() {
+            self.idle_tracker.touch();
             return Ok(());
+        }
+
+        if !super::resources::has_enough_memory(self.min_free_mb) {
+            return Err(EmbeddingError::ModelUnavailable(format!(
+                "insufficient free memory (need >= {} MB)",
+                self.min_free_mb
+            )));
         }
 
         // Ensure the ONNX Runtime library is available and initialized.
@@ -220,7 +248,15 @@ impl OnnxEmbeddingModel {
         *self.session.lock().unwrap() = Some(session);
         *self.tokenizer.lock().unwrap() = Some(tokenizer);
         *self.available.lock().unwrap() = true;
+        self.idle_tracker.touch();
         Ok(())
+    }
+
+    /// Drop the loaded model and tokenizer, freeing memory.
+    pub fn unload(&self) {
+        self.session.lock().unwrap().take();
+        self.tokenizer.lock().unwrap().take();
+        *self.available.lock().unwrap() = false;
     }
 
     /// Find the ONNX model file in the model directory, trying all
