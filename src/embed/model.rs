@@ -22,8 +22,17 @@ pub type EmbeddingResult<T> = std::result::Result<T, EmbeddingError>;
 /// Implementations include the ONNX Runtime model (`OnnxEmbeddingModel`)
 /// and a deterministic mock (`MockEmbeddingModel`) for testing.
 pub trait EmbeddingModel: Send + Sync {
-    /// Embed a batch of texts, returning one vector per input.
+    /// Embed a batch of documents, returning one vector per input.
     fn embed(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>>;
+
+    /// Embed a batch of search queries. Instruction-aware models like
+    /// CodeRankEmbed require a query prefix (e.g. "Represent this query
+    /// for searching relevant code: ") that is NOT applied to documents.
+    /// Default implementation delegates to `embed()` for models without
+    /// a query prefix.
+    fn embed_query(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
+        self.embed(texts)
+    }
 
     /// Embedding dimension (e.g. 768 for nomic-embed and bge-base).
     fn dimension(&self) -> usize;

@@ -269,7 +269,7 @@ pub fn embed_query_for_search(
     if !model.model_files_exist() {
         return None;
     }
-    match model.embed(&[query]) {
+    match model.embed_query(&[query]) {
         Ok(embeddings) => embeddings.into_iter().next(),
         Err(e) => {
             tracing::warn!("query embedding failed: {}", e);

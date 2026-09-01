@@ -55,6 +55,7 @@ impl ModelType {
 pub struct OnnxEmbeddingModel {
     model_type: ModelType,
     model_dir: PathBuf,
+    model_id: String,
     dimension: usize,
     session: Mutex<Option<Session>>,
     tokenizer: Mutex<Option<tokenizers::Tokenizer>>,
@@ -72,9 +73,11 @@ impl OnnxEmbeddingModel {
     /// Uses the hardcoded model ID for `model_type` to locate the
     /// model directory under `models_base`.
     pub fn new(model_type: ModelType, models_base: &std::path::Path, dimension: usize) -> Self {
+        let model_id = model_type.default_model_id().to_string();
         Self {
             model_type,
             model_dir: model_type.model_dir(models_base),
+            model_id,
             dimension,
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
@@ -95,14 +98,18 @@ impl OnnxEmbeddingModel {
         dimension: usize,
         model_id: &str,
     ) -> Self {
-        let model_dir = if model_id.is_empty() {
-            model_type.model_dir(models_base)
+        let (model_dir, resolved_id) = if model_id.is_empty() {
+            (
+                model_type.model_dir(models_base),
+                model_type.default_model_id().to_string(),
+            )
         } else {
-            models_base.join(model_id)
+            (models_base.join(model_id), model_id.to_string())
         };
         Self {
             model_type,
             model_dir,
+            model_id: resolved_id,
             dimension,
             session: Mutex::new(None),
             tokenizer: Mutex::new(None),
@@ -234,6 +241,18 @@ impl OnnxEmbeddingModel {
     pub fn model_files_exist(&self) -> bool {
         self.find_onnx_file().is_some() && self.model_dir.join("tokenizer.json").exists()
     }
+
+    /// The query prefix for instruction-aware models. CodeRankEmbed
+    /// requires "Represent this query for searching relevant code: "
+    /// prepended to search queries (not documents). Other models
+    /// return an empty string.
+    fn query_prefix(&self) -> &str {
+        if self.model_id.contains("CodeRankEmbed") {
+            "Represent this query for searching relevant code: "
+        } else {
+            ""
+        }
+    }
 }
 
 impl EmbeddingModel for OnnxEmbeddingModel {
@@ -269,6 +288,16 @@ impl EmbeddingModel for OnnxEmbeddingModel {
 
     fn is_available(&self) -> bool {
         *self.available.lock().unwrap()
+    }
+
+    fn embed_query(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
+        let prefix = self.query_prefix();
+        if prefix.is_empty() {
+            return self.embed(texts);
+        }
+        let prefixed: Vec<String> = texts.iter().map(|t| format!("{}{}", prefix, t)).collect();
+        let refs: Vec<&str> = prefixed.iter().map(|s| s.as_str()).collect();
+        self.embed(&refs)
     }
 }
 
@@ -390,5 +419,48 @@ impl OnnxEmbeddingModel {
         }
 
         Ok(results)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coderankembed_query_prefix_detected() {
+        let model = OnnxEmbeddingModel::with_model_id(
+            ModelType::Code,
+            std::path::Path::new("/tmp"),
+            768,
+            "nomic-ai/CodeRankEmbed-int8",
+        );
+        assert_eq!(
+            model.query_prefix(),
+            "Represent this query for searching relevant code: "
+        );
+    }
+
+    #[test]
+    fn bge_base_no_query_prefix() {
+        let model = OnnxEmbeddingModel::with_model_id(
+            ModelType::Knowledge,
+            std::path::Path::new("/tmp"),
+            768,
+            "BAAI/bge-base-en-v1.5",
+        );
+        assert_eq!(model.query_prefix(), "");
+    }
+
+    #[test]
+    fn default_code_model_has_prefix() {
+        let model = OnnxEmbeddingModel::new(ModelType::Code, std::path::Path::new("/tmp"), 768);
+        assert!(!model.query_prefix().is_empty());
+    }
+
+    #[test]
+    fn default_knowledge_model_no_prefix() {
+        let model =
+            OnnxEmbeddingModel::new(ModelType::Knowledge, std::path::Path::new("/tmp"), 768);
+        assert!(model.query_prefix().is_empty());
     }
 }

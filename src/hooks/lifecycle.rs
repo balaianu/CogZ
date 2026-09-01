@@ -252,7 +252,7 @@ fn assemble_pack(
         use crate::embed::EmbeddingModel;
         if query_model.is_available() {
             query_model
-                .embed(&[q])
+                .embed_query(&[q])
                 .ok()
                 .and_then(|v| v.into_iter().next())
         } else {
