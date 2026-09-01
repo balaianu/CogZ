@@ -17,6 +17,45 @@ use super::registry;
 /// Default NLI model ID.
 const DEFAULT_NLI_MODEL: &str = registry::DEFAULT_NLI_MODEL;
 
+/// Label index mapping for NLI models. Most DeBERTa-v3 NLI models use
+/// 0=contradiction, 1=entailment, 2=neutral, but some use different
+/// orderings. This is detected from config.json at load time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LabelMap {
+    contradiction: usize,
+    entailment: usize,
+    neutral: usize,
+}
+
+impl LabelMap {
+    /// Standard DeBERTa-v3 NLI mapping: 0=contradiction, 1=entailment, 2=neutral.
+    const DEFAULT: Self = Self {
+        contradiction: 0,
+        entailment: 1,
+        neutral: 2,
+    };
+
+    /// Parse id2label from a config.json JSON object.
+    /// Expects {"id2label": {"0": "contradiction", "1": "entailment", ...}}.
+    fn from_config_json(json: &str) -> Option<Self> {
+        let val: serde_json::Value = serde_json::from_str(json).ok()?;
+        let id2label = val.get("id2label")?;
+        let mut map = Self::DEFAULT;
+        for (idx_str, label_val) in id2label.as_object()?.iter() {
+            let idx: usize = idx_str.parse().ok()?;
+            let label = label_val.as_str()?.to_lowercase();
+            if label.contains("contradiction") || label == "contradiction" {
+                map.contradiction = idx;
+            } else if label.contains("entailment") || label == "entailment" {
+                map.entailment = idx;
+            } else if label.contains("neutral") || label == "neutral" {
+                map.neutral = idx;
+            }
+        }
+        Some(map)
+    }
+}
+
 /// ONNX Runtime NLI model for contradiction detection.
 ///
 /// Loads the model and tokenizer lazily on first use. If the ONNX
@@ -33,6 +72,7 @@ pub struct OnnxNliModel {
     available: Mutex<bool>,
     idle_tracker: super::resources::IdleTracker,
     min_free_mb: u64,
+    label_map: Mutex<LabelMap>,
 }
 
 impl OnnxNliModel {
@@ -61,6 +101,7 @@ impl OnnxNliModel {
             available: Mutex::new(false),
             idle_tracker: super::resources::IdleTracker::new(idle_ttl_secs),
             min_free_mb,
+            label_map: Mutex::new(LabelMap::DEFAULT),
         }
     }
 
@@ -123,6 +164,16 @@ impl OnnxNliModel {
                 "NLI tokenizer file not found: {}",
                 tokenizer_path.display()
             )));
+        }
+
+        // Detect label mapping from config.json. Falls back to the
+        // standard DeBERTa-v3 order (0=contradiction, 1=entailment,
+        // 2=neutral) when config.json is missing or unparseable.
+        let config_path = self.model_dir.join("config.json");
+        if let Ok(config_json) = std::fs::read_to_string(&config_path)
+            && let Some(map) = LabelMap::from_config_json(&config_json)
+        {
+            *self.label_map.lock().unwrap() = map;
         }
 
         let session = {
@@ -219,15 +270,16 @@ impl NliModel for OnnxNliModel {
             .try_extract_tensor::<f32>()
             .map_err(|e| EmbeddingError::InferenceFailed(format!("NLI extract: {}", e)))?;
 
-        // Output shape: [1, 3] — logits.
-        // Label mapping for cross-encoder/nli-deberta-v3-xsmall:
-        // 0=contradiction, 1=entailment, 2=neutral.
+        // Output shape: [1, 3] — logits. The index-to-label mapping
+        // is detected from config.json at load time (LabelMap).
         if data.len() < 3 {
             return Err(EmbeddingError::InferenceFailed(format!(
                 "NLI output has {} values, expected 3",
                 data.len()
             )));
         }
+
+        let map = *self.label_map.lock().unwrap();
 
         // Softmax: exp(x - max) / sum(exp(x - max)) for numerical stability.
         let max_logit = data[0..3].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -238,9 +290,9 @@ impl NliModel for OnnxNliModel {
         ];
         let sum: f32 = exps.iter().sum();
         let probs = NliProbabilities {
-            contradiction: exps[0] / sum,
-            entailment: exps[1] / sum,
-            neutral: exps[2] / sum,
+            contradiction: exps[map.contradiction] / sum,
+            entailment: exps[map.entailment] / sum,
+            neutral: exps[map.neutral] / sum,
         };
 
         Ok(probs)
@@ -252,5 +304,54 @@ impl NliModel for OnnxNliModel {
 
     fn is_available(&self) -> bool {
         *self.available.lock().unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn label_map_default_is_deberta_order() {
+        let map = LabelMap::DEFAULT;
+        assert_eq!(map.contradiction, 0);
+        assert_eq!(map.entailment, 1);
+        assert_eq!(map.neutral, 2);
+    }
+
+    #[test]
+    fn label_map_parses_standard_config() {
+        let json = r#"{"id2label": {"0": "contradiction", "1": "entailment", "2": "neutral"}}"#;
+        let map = LabelMap::from_config_json(json).unwrap();
+        assert_eq!(map.contradiction, 0);
+        assert_eq!(map.entailment, 1);
+        assert_eq!(map.neutral, 2);
+    }
+
+    #[test]
+    fn label_map_parses_alternate_order() {
+        let json = r#"{"id2label": {"0": "entailment", "1": "neutral", "2": "contradiction"}}"#;
+        let map = LabelMap::from_config_json(json).unwrap();
+        assert_eq!(map.contradiction, 2);
+        assert_eq!(map.entailment, 0);
+        assert_eq!(map.neutral, 1);
+    }
+
+    #[test]
+    fn label_map_parses_label_prefixed_names() {
+        let json = r#"{"id2label": {"0": "LABEL_0", "1": "LABEL_1", "2": "LABEL_2"}}"#;
+        // Generic labels don't match — falls back to default.
+        let map = LabelMap::from_config_json(json).unwrap();
+        assert_eq!(map, LabelMap::DEFAULT);
+    }
+
+    #[test]
+    fn label_map_returns_none_for_invalid_json() {
+        assert!(LabelMap::from_config_json("not json").is_none());
+    }
+
+    #[test]
+    fn label_map_returns_none_without_id2label() {
+        assert!(LabelMap::from_config_json(r#"{"architectures": []}"#).is_none());
     }
 }

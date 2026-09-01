@@ -77,6 +77,12 @@ pub fn download_model(model_id: &str, cache_dir: &Path) -> Result<DownloadedMode
     // tokenizer.json is always at the root.
     let _tokenizer_path = repo.download_file().filename("tokenizer.json").send()?;
 
+    // config.json contains the id2label mapping for NLI models.
+    // Download it if available; non-NLI models also have it but we
+    // only use it for NLI label detection. Ignore errors — not all
+    // repos have config.json, and the loader falls back to defaults.
+    let _ = repo.download_file().filename("config.json").send();
+
     // The snapshot root is the parent of tokenizer.json.
     // For OnnxSubdir layouts, the model is at snapshot/onnx/model.onnx,
     // so we need the grandparent. For Root layouts, the model is at
