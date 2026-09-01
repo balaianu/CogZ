@@ -250,14 +250,10 @@ fn assemble_pack(
 ) -> Result<ContextPack, LifecycleError> {
     let query_embedding = query.and_then(|q| {
         use crate::embed::EmbeddingModel;
-        if query_model.is_available() {
-            query_model
-                .embed_query(&[q])
-                .ok()
-                .and_then(|v| v.into_iter().next())
-        } else {
-            None
-        }
+        query_model
+            .embed_query(&[q])
+            .ok()
+            .and_then(|v| v.into_iter().next())
     });
 
     let pack = {
