@@ -21,15 +21,17 @@ pub fn section_tokens(section: &ContextSection) -> usize {
 /// Priority rank for a section type. Lower = higher priority.
 /// Identity is highest (it's compact and sets context), then rules
 /// (validated conventions), then observations (raw findings), then
-/// knowledge (context), then code entities (structural detail).
+/// knowledge and code (context), then observations (supporting detail).
 fn source_priority(source: &str) -> u8 {
     match source {
         "identity" => 0,
         "rule" => 1,
-        "observation" => 2,
-        "knowledge" => 3,
-        // Code entities
-        _ => 4,
+        "knowledge" => 2,
+        // Code entities from direct search or graph expansion
+        "function" | "class" | "file" | "module" => 3,
+        "observation" => 4,
+        // Derived sections (code map, knowledge index)
+        _ => 5,
     }
 }
 
@@ -136,7 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn sort_prioritizes_rules_then_observations() {
+    fn sort_prioritizes_rules_then_knowledge_then_code() {
         let mut sections = vec![
             section("knowledge", "K", "c", 0.9),
             section("observation", "O", "c", 0.5),
@@ -145,9 +147,9 @@ mod tests {
         ];
         sort_by_priority(&mut sections);
         assert_eq!(sections[0].source, "rule");
-        assert_eq!(sections[1].source, "observation");
-        assert_eq!(sections[2].source, "knowledge");
-        assert_eq!(sections[3].source, "function");
+        assert_eq!(sections[1].source, "knowledge");
+        assert_eq!(sections[2].source, "function");
+        assert_eq!(sections[3].source, "observation");
     }
 
     #[test]
