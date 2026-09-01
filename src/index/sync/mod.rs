@@ -135,6 +135,7 @@ fn parse_source_files(
 ) -> (Vec<ParsedEntity>, HashMap<String, Vec<String>>) {
     let mut all_entities: Vec<ParsedEntity> = Vec::new();
     let mut file_to_entity_ids: HashMap<String, Vec<String>> = HashMap::new();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (rel_path, source, language) in source_files {
         let abs_path = repo_root.join(rel_path);
@@ -151,6 +152,14 @@ fn parse_source_files(
 
             let file_path_str = rel_path.to_string_lossy().to_string();
             let id = code_entity_uuid(&file_path_str, ce.entity_type, &qualified_name);
+
+            // Multiple impl blocks for the same type produce the same
+            // UUID. Keep the first; methods from all blocks are still
+            // extracted as separate function entities.
+            if !seen_ids.insert(id.clone()) {
+                continue;
+            }
+
             let hash = content_hash(&ce.content);
 
             let entity_type = match ce.entity_type {

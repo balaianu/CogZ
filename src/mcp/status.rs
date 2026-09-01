@@ -11,7 +11,7 @@ use crate::storage::{Storage, crud, events};
 /// `embedding_code`, `embedding_knowledge`, and `nli` — each with
 /// `{available, name}`.
 pub fn model_availability(config: &Config) -> serde_json::Value {
-    use crate::embed::{ModelType, OnnxEmbeddingModel};
+    use crate::embed::{ModelType, OnnxEmbeddingModel, OnnxNliModel};
 
     let models_dir = crate::embed::models_dir();
     let knowledge = OnnxEmbeddingModel::with_model_id(
@@ -27,6 +27,13 @@ pub fn model_availability(config: &Config) -> serde_json::Value {
         &config.embedding.code_model,
     );
 
+    let nli_available = if config.embedding.nli_model.is_empty() {
+        false
+    } else {
+        let nli = OnnxNliModel::new(&models_dir, &config.embedding.nli_model);
+        nli.model_files_exist()
+    };
+
     json!({
         "embedding_code": {
             "available": code.model_files_exist(),
@@ -37,8 +44,12 @@ pub fn model_availability(config: &Config) -> serde_json::Value {
             "name": &config.embedding.knowledge_model,
         },
         "nli": {
-            "available": false,
-            "name": null,
+            "available": nli_available,
+            "name": if config.embedding.nli_model.is_empty() {
+                serde_json::Value::Null
+            } else {
+                json!(config.embedding.nli_model)
+            },
         },
     })
 }

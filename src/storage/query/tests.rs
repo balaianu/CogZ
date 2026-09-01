@@ -103,6 +103,38 @@ fn fts_search_with_hyphenated_query() {
 }
 
 #[test]
+fn fts_search_multi_word_query() {
+    let conn = setup();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "u1",
+            "knowledge",
+            "Search System Architecture",
+            "The search system uses hybrid FTS5 and vector search",
+        ),
+    )
+    .unwrap();
+
+    // Multi-word query should match all terms in any position (implicit AND),
+    // not require them to be adjacent (phrase matching).
+    let results = fts_search(&conn, "search architecture", None, Some("active"), 20).unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].id, "u1");
+
+    // Three-word query
+    let results = fts_search(
+        &conn,
+        "search system architecture",
+        None,
+        Some("active"),
+        20,
+    )
+    .unwrap();
+    assert_eq!(results.len(), 1);
+}
+
+#[test]
 fn count_stale_entities() {
     let conn = setup();
     let mut e1 = Entity::new("u1", "observation", "A", "c");

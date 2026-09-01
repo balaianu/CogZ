@@ -137,7 +137,12 @@ impl OnnxNliModel {
     /// Check if the model files exist on disk (without loading them).
     pub fn model_files_exist(&self) -> bool {
         let has_model = self.model_dir.join("model.onnx").exists()
-            || self.model_dir.join("onnx").join("model.onnx").exists();
+            || self.model_dir.join("onnx").join("model.onnx").exists()
+            || self
+                .model_dir
+                .join("onnx")
+                .join("model_quint8_avx2.onnx")
+                .exists();
         let has_tokenizer = self.model_dir.join("tokenizer.json").exists();
         has_model && has_tokenizer
     }
@@ -164,7 +169,6 @@ impl NliModel for OnnxNliModel {
             .iter()
             .map(|&v| v as i64)
             .collect();
-        let token_type_ids: Vec<i64> = encoded.get_type_ids().iter().map(|&v| v as i64).collect();
 
         let seq_len = input_ids.len() as i64;
         let batch = 1i64;
@@ -174,15 +178,10 @@ impl NliModel for OnnxNliModel {
         let attention_mask_tensor =
             Tensor::from_array((vec![batch, seq_len], attention_mask.clone()))
                 .map_err(|e| EmbeddingError::InferenceFailed(format!("NLI mask tensor: {}", e)))?;
-        let token_type_ids_tensor = Tensor::from_array((vec![batch, seq_len], token_type_ids))
-            .map_err(|e| EmbeddingError::InferenceFailed(format!("NLI type tensor: {}", e)))?;
-
+        // DeBERTa-v3 cross-encoders accept 2 inputs only (no token_type_ids).
+        // The quantized model declares it in the graph but rejects it at runtime.
         let outputs = session
-            .run(ort::inputs![
-                input_ids_tensor,
-                attention_mask_tensor,
-                token_type_ids_tensor
-            ])
+            .run(ort::inputs![input_ids_tensor, attention_mask_tensor])
             .map_err(|e| EmbeddingError::InferenceFailed(format!("NLI inference: {}", e)))?;
 
         let (_shape, data) = outputs[0]
@@ -190,7 +189,7 @@ impl NliModel for OnnxNliModel {
             .map_err(|e| EmbeddingError::InferenceFailed(format!("NLI extract: {}", e)))?;
 
         // Output shape: [1, 3] — logits for entailment, neutral, contradiction.
-        // Standard NLI label mapping: 0=entailment, 1=neutral, 2=contradiction.
+        // NLI label mapping for cross-encoder/nli-deberta-v3-xsmall: 0=contradiction, 1=entailment, 2=neutral.
         if data.len() < 3 {
             return Err(EmbeddingError::InferenceFailed(format!(
                 "NLI output has {} values, expected 3",
@@ -204,9 +203,9 @@ impl NliModel for OnnxNliModel {
             .map(|(i, _)| i)
             .unwrap_or(0)
         {
-            0 => NliLabel::Entailment,
-            1 => NliLabel::Neutral,
-            2 => NliLabel::Contradiction,
+            0 => NliLabel::Contradiction,
+            1 => NliLabel::Entailment,
+            2 => NliLabel::Neutral,
             _ => NliLabel::Neutral,
         };
 

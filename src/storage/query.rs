@@ -176,11 +176,18 @@ pub fn fts_search(
     status_filter: Option<&str>,
     limit: i64,
 ) -> Result<Vec<Entity>, StorageError> {
-    // Escape FTS5 special characters by wrapping the query in double
-    // quotes for phrase matching. FTS5 treats -, *, :, (, ), etc. as
-    // operators. Without escaping, queries like "tree-sitter" or
-    // "error-handling" fail with SQL errors or produce wrong results.
-    let escaped_query = format!("\"{}\"", query.replace('"', "\"\""));
+    // Escape FTS5 special characters by wrapping each term in double
+    // quotes. FTS5 treats -, *, :, (, ), etc. as operators. Without
+    // escaping, queries like "tree-sitter" or "error-handling" fail
+    // with SQL errors or produce wrong results. Wrapping each term
+    // individually (rather than the whole query) preserves implicit
+    // AND semantics — multi-word queries match documents containing
+    // all terms in any position, not just adjacent phrases.
+    let escaped_query = query
+        .split_whitespace()
+        .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // Mirrors ENTITY_COLUMNS with `e.` prefix for the JOIN.
     let mut sql = "SELECT e.id, e.type, e.title, e.content, e.properties, e.file_path, e.status, e.content_hash, e.created_at, e.updated_at

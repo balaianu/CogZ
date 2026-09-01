@@ -89,10 +89,10 @@ pub fn classify_candidates(
     let Some(model) = model else {
         return Vec::new();
     };
-    if !model.is_available() {
-        return Vec::new();
-    }
 
+    // Don't gate on is_available() — OnnxNliModel loads lazily via
+    // try_load() inside classify(). is_available() returns false until
+    // the first classify() call, so gating here would skip all checks.
     let mut contradicts_ids = Vec::new();
     for entity in &candidates {
         match model.classify(new_content, &entity.content) {

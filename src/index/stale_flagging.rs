@@ -211,9 +211,10 @@ mod tests {
         entity
     }
 
-    fn make_db_observation(id: &str, title: &str, content: &str, file_path: &str) -> Entity {
+    fn make_db_observation(id: &str, title: &str, content: &str) -> Entity {
+        let year_month = chrono::Utc::now().format("%Y-%m").to_string();
         let mut entity = Entity::new(id, "observation", title, content);
-        entity.file_path = Some(file_path.to_string());
+        entity.file_path = Some(format!("observations/{year_month}/{id}.md"));
         entity
     }
 
@@ -229,12 +230,7 @@ mod tests {
 
         // Insert an observation that references the code entity.
         let obs = make_observation(&cogz_dir, "obs-uuid-1", "Bug in my_func", "Found a bug");
-        let obs_entity = make_db_observation(
-            "obs-uuid-1",
-            "Bug in my_func",
-            "Found a bug",
-            "observations/2026-08/obs-uuid-1.md",
-        );
+        let obs_entity = make_db_observation("obs-uuid-1", "Bug in my_func", "Found a bug");
         insert_entity(&conn, &obs_entity).unwrap();
         insert_edge(
             &conn,
@@ -283,12 +279,7 @@ mod tests {
         let path = obs.file_path(&cogz_dir);
         write_entity_file(&path, &obs).unwrap();
 
-        let obs_entity = make_db_observation(
-            "obs-uuid-2",
-            "Note about func2",
-            "Some note",
-            "observations/2026-08/obs-uuid-2.md",
-        );
+        let obs_entity = make_db_observation("obs-uuid-2", "Note about func2", "Some note");
         let mut db_entity = obs_entity.clone();
         db_entity.status = "stale".to_string();
         insert_entity(&conn, &db_entity).unwrap();
@@ -325,12 +316,7 @@ mod tests {
             "Unrelated note",
             "Nothing about func3",
         );
-        let obs_entity = make_db_observation(
-            "obs-uuid-3",
-            "Unrelated note",
-            "Nothing about func3",
-            "observations/2026-08/obs-uuid-3.md",
-        );
+        let obs_entity = make_db_observation("obs-uuid-3", "Unrelated note", "Nothing about func3");
         insert_entity(&conn, &obs_entity).unwrap();
         drop(conn);
 
@@ -365,12 +351,7 @@ mod tests {
         for i in 0..2 {
             let id = format!("obs-multi-{i}");
             make_observation(&cogz_dir, &id, &format!("Note {i}"), "content");
-            let entity = make_db_observation(
-                &id,
-                &format!("Note {i}"),
-                "content",
-                &format!("observations/2026-08/{id}.md"),
-            );
+            let entity = make_db_observation(&id, &format!("Note {i}"), "content");
             insert_entity(&conn, &entity).unwrap();
             insert_edge(
                 &conn,
