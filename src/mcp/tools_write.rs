@@ -35,6 +35,14 @@ pub async fn record_observation(
             entity.references = refs.to_vec();
         }
 
+        if let Some(supporting) = params.supporting_ids.as_deref()
+            && !supporting.is_empty()
+        {
+            entity
+                .frontmatter
+                .insert("supporting_ids", FmValue::Array(supporting.to_vec()));
+        }
+
         let source = params.source.unwrap_or_else(|| "agent".to_string());
         entity.frontmatter.insert("source", FmValue::String(source));
         entity.frontmatter.insert("confidence", FmValue::Float(0.5));

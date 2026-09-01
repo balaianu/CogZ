@@ -13,6 +13,10 @@ pub struct RecordObservationParams {
     pub title: Option<String>,
     #[serde(default)]
     pub references: Option<Vec<String>>,
+    /// UUIDs of observations that this observation supports. Creates
+    /// `supports` edges for promotion consolidation.
+    #[serde(default)]
+    pub supporting_ids: Option<Vec<String>>,
     /// Who or what produced this observation. Default: "agent".
     #[serde(default)]
     pub source: Option<String>,

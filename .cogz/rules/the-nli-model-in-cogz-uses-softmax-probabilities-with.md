@@ -1,10 +1,10 @@
 ---
-id: 6c0e6f50-7e5a-49f7-a042-e0e5e2beaf00
+id: 5f63d0c4-fadd-4425-87b2-a4e0fda9b1f5
 title: The NLI model in CogZ uses softmax probabilities with bidirectional scoring. ...
 type: rule
 status: active
-created_at: "2026-09-01T12:29:36.482418499+00:00"
-updated_at: "2026-09-01T12:29:36.482418499+00:00"
+created_at: "2026-09-01T12:34:35.613905571+00:00"
+updated_at: "2026-09-01T12:34:35.613905571+00:00"
 references: []
 confidence: 0.7
 validation_count: 0
