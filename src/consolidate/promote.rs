@@ -232,6 +232,7 @@ mod tests {
             contradiction_threshold: 0.70,
             contradiction_cosine_threshold: 0.85,
             contradiction_length_ratio: 5.0,
+            dedup_nli_threshold: 0.85,
         }
     }
 

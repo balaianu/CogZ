@@ -89,6 +89,11 @@ pub struct ConsolidationConfig {
     /// types, not a genuine contradiction.
     #[serde(default = "default_contradiction_length_ratio")]
     pub contradiction_length_ratio: f64,
+    /// Minimum bidirectional P(entailment) to confirm a duplicate pair.
+    /// Both A entails B AND B entails A must score above this. True
+    /// duplicates entail mutually; a subset-fact does not.
+    #[serde(default = "default_dedup_nli_threshold")]
+    pub dedup_nli_threshold: f64,
 }
 
 fn default_contradiction_threshold() -> f64 {
@@ -99,6 +104,9 @@ fn default_contradiction_cosine_threshold() -> f64 {
 }
 fn default_contradiction_length_ratio() -> f64 {
     5.0
+}
+fn default_dedup_nli_threshold() -> f64 {
+    0.85
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -181,6 +189,7 @@ impl Config {
                 contradiction_threshold: 0.70,
                 contradiction_cosine_threshold: 0.85,
                 contradiction_length_ratio: 5.0,
+                dedup_nli_threshold: 0.85,
             },
             index: IndexConfig { allow: vec![] },
             retention: RetentionConfig {

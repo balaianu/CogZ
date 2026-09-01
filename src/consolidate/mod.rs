@@ -10,4 +10,4 @@ pub mod dedup;
 pub mod merge;
 pub mod promote;
 
-pub use dedup::{DedupResult, DuplicateWarning, check_duplicate};
+pub use dedup::{DedupResult, DuplicateWarning, check_duplicate, confirm_duplicate_nli};

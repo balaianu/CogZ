@@ -14,6 +14,7 @@
 use rusqlite::Connection;
 
 use crate::config::ConsolidationConfig;
+use crate::embed::NliModel;
 use crate::storage::crud::Entity;
 use crate::storage::embeddings::knn_search;
 use crate::storage::query::get_entities_by_type;
@@ -197,6 +198,36 @@ fn check_embedding_similarity(
     }
 }
 
+/// Confirm a potential duplicate pair using NLI bidirectional entailment.
+/// True duplicates entail mutually: both A entails B and B entails A
+/// must score above the threshold. A subset-fact (A entails B but not
+/// vice versa) is not a duplicate.
+///
+/// Returns true if the pair is confirmed as duplicates, false otherwise.
+/// Returns false if the NLI model is unavailable.
+pub fn confirm_duplicate_nli(
+    model: Option<&dyn NliModel>,
+    text_a: &str,
+    text_b: &str,
+    threshold: f64,
+) -> bool {
+    let Some(model) = model else {
+        return false;
+    };
+
+    let forward = model.classify(text_a, text_b);
+    let reverse = model.classify(text_b, text_a);
+
+    let min_entailment = match (forward, reverse) {
+        (Ok(f), Ok(r)) => f.entailment.min(r.entailment),
+        (Ok(f), Err(_)) => f.entailment,
+        (Err(_), Ok(r)) => r.entailment,
+        (Err(_), _) => return false,
+    };
+
+    min_entailment >= threshold as f32
+}
+
 /// Normalize a title for fuzzy comparison: lowercase, remove
 /// punctuation, collapse whitespace.
 fn normalize_title(title: &str) -> String {
@@ -233,6 +264,7 @@ mod tests {
             contradiction_threshold: 0.70,
             contradiction_cosine_threshold: 0.85,
             contradiction_length_ratio: 5.0,
+            dedup_nli_threshold: 0.85,
         }
     }
 
@@ -382,5 +414,43 @@ mod tests {
         );
         assert_eq!(normalize_title("FTS5: Ranking Bug"), "fts5 ranking bug");
         assert_eq!(normalize_title("  multiple   spaces  "), "multiple spaces");
+    }
+
+    #[test]
+    fn nli_confirms_identical_texts_as_duplicate() {
+        use crate::embed::MockNliModel;
+        assert!(confirm_duplicate_nli(
+            Some(&MockNliModel),
+            "The bug is in search",
+            "The bug is in search",
+            0.85,
+        ));
+    }
+
+    #[test]
+    fn nli_rejects_unrelated_texts_as_duplicate() {
+        use crate::embed::MockNliModel;
+        assert!(!confirm_duplicate_nli(
+            Some(&MockNliModel),
+            "The bug is in search",
+            "The config file is missing",
+            0.85,
+        ));
+    }
+
+    #[test]
+    fn nli_rejects_contradiction_as_duplicate() {
+        use crate::embed::MockNliModel;
+        assert!(!confirm_duplicate_nli(
+            Some(&MockNliModel),
+            "The bug is in search",
+            "The bug is not in search",
+            0.85,
+        ));
+    }
+
+    #[test]
+    fn nli_dedup_without_model_returns_false() {
+        assert!(!confirm_duplicate_nli(None, "same text", "same text", 0.85,));
     }
 }
