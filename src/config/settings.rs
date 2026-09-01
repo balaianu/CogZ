@@ -64,8 +64,16 @@ fn default_true() -> bool {
 pub struct SearchConfig {
     pub fts_weight: f64,
     pub vec_weight: f64,
+    /// Weight for code vector search results in RRF fusion. Used when
+    /// a code query embedding is available. Defaults to 0.3.
+    #[serde(default = "default_code_vec_weight")]
+    pub code_vec_weight: f64,
     pub rrf_k: u32,
     pub max_results: u32,
+}
+
+fn default_code_vec_weight() -> f64 {
+    0.3
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -176,8 +184,9 @@ impl Config {
                 model_min_free_mb: 0,
             },
             search: SearchConfig {
-                fts_weight: 0.4,
-                vec_weight: 0.6,
+                fts_weight: 0.3,
+                vec_weight: 0.4,
+                code_vec_weight: 0.3,
                 rrf_k: 60,
                 max_results: 20,
             },

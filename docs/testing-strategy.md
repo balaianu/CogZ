@@ -243,7 +243,7 @@ fn insert_test_entity(conn: &Connection, r#type: &str, content: &str) -> String 
     let entity = Entity::new(&id, r#type, "Test", content);
     insert_entity(conn, &entity).unwrap();
     let embedding = MockEmbeddingModel.embed(&[content]).unwrap().pop().unwrap();
-    insert_embedding(conn, &id, &embedding).unwrap();
+    insert_embedding(conn, &id, r#type, &embedding).unwrap();
     id
 }
 ```

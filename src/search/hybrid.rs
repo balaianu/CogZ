@@ -1,9 +1,9 @@
-//! Hybrid search — FTS5 + vector search fused via RRF, with optional
-//! graph expansion.
+//! Hybrid search — FTS5 + dual-model vector search fused via RRF,
+//! with optional graph expansion.
 //!
-//! The search function is model-agnostic: it takes an optional query
-//! embedding and falls back to FTS-only when none is provided. Model
-//! loading and query embedding happen at the CLI boundary.
+//! Knowledge and code entities live in separate embedding spaces.
+//! The search function runs KNN per space (when the corresponding
+//! query embedding is available) and fuses all ranked lists via RRF.
 
 use std::collections::HashSet;
 
@@ -11,9 +11,10 @@ use rusqlite::Connection;
 
 use crate::config::SearchConfig;
 use crate::storage::crud::{Entity, get_entities_batch};
-use crate::storage::embeddings::knn_search;
+use crate::storage::embeddings::{EmbeddingSpace, knn_search};
 use crate::storage::query::fts_search;
 
+use super::QueryEmbeddings;
 use super::SearchError;
 use super::describe::build_path_descriptions_batch;
 use super::expand::expand_with_paths;
@@ -22,15 +23,14 @@ use super::{SearchMode, SearchParams, SearchResult, SearchResults};
 
 /// Run a hybrid search.
 ///
-/// If `query_embedding` is provided, runs both FTS5 and vector search
-/// and fuses results via RRF. If not, runs FTS5 only (graceful
-/// degradation). When `params.expand` is true, follows graph edges
-/// from the top results to find related entities, recording the path
-/// to each.
+/// Runs FTS5 always. Runs knowledge KNN when `embeddings.knowledge` is
+/// provided, code KNN when `embeddings.code` is provided. Fuses all
+/// available ranked lists via RRF. When `params.expand` is true,
+/// follows graph edges from the top results to find related entities.
 pub fn search(
     conn: &Connection,
     query: &str,
-    query_embedding: Option<&[f32]>,
+    embeddings: QueryEmbeddings<'_>,
     params: &SearchParams,
     config: &SearchConfig,
 ) -> Result<SearchResults, SearchError> {
@@ -48,52 +48,45 @@ pub fn search(
         .map(|e| (e.id.clone(), e))
         .collect();
 
-    // 2. Vector search (if embedding available)
-    let (vec_ids, search_mode) = if let Some(embedding) = query_embedding {
-        // Over-fetch to compensate for post-KNN status/type filtering
-        let knn_limit = limit * 3;
-        let knn_results = knn_search(conn, embedding, knn_limit)?;
-
-        // Batch-fetch entities not already in the cache from FTS results.
-        // This avoids N individual get_entity calls for KNN results.
-        let uncached_ids: Vec<String> = knn_results
-            .iter()
-            .map(|(id, _)| id.clone())
-            .filter(|id| !entity_map.contains_key(id))
-            .collect();
-        let fetched = get_entities_batch(conn, &uncached_ids)?;
-        for entity in fetched {
-            entity_map.insert(entity.id.clone(), entity);
-        }
-
-        let mut filtered = Vec::new();
-        for (id, _) in knn_results {
-            // Use cached entity (from FTS or batch fetch above)
-            let Some(entity) = entity_map.get(&id) else {
-                continue;
-            };
-            if type_filter.is_none_or(|t| entity.r#type == t)
-                && status_filter.is_none_or(|s| entity.status == s)
-            {
-                filtered.push(id);
-                if filtered.len() >= limit as usize {
-                    break;
-                }
-            }
-        }
-        (filtered, SearchMode::Hybrid)
+    // 2. Knowledge vector search
+    let knowledge_ids = if let Some(k_emb) = embeddings.knowledge {
+        knn_channel(
+            conn,
+            k_emb,
+            EmbeddingSpace::Knowledge,
+            &mut entity_map,
+            type_filter,
+            status_filter,
+            limit,
+        )?
     } else {
-        (Vec::new(), SearchMode::FtsOnly)
+        Vec::new()
     };
 
-    // 3. RRF fusion
-    let fused = if search_mode == SearchMode::Hybrid {
-        fuse(
-            &[(&fts_ids, config.fts_weight), (&vec_ids, config.vec_weight)],
-            config.rrf_k,
-        )
+    // 3. Code vector search
+    let code_ids = if let Some(c_emb) = embeddings.code {
+        knn_channel(
+            conn,
+            c_emb,
+            EmbeddingSpace::Code,
+            &mut entity_map,
+            type_filter,
+            status_filter,
+            limit,
+        )?
     } else {
-        // FTS-only: use FTS ranking directly, with fts_weight as the score
+        Vec::new()
+    };
+
+    // 4. Determine search mode and run RRF fusion
+    let search_mode = match (embeddings.knowledge.is_some(), embeddings.code.is_some()) {
+        (true, true) => SearchMode::Hybrid,
+        (true, false) => SearchMode::KnowledgeHybrid,
+        (false, true) => SearchMode::CodeHybrid,
+        (false, false) => SearchMode::FtsOnly,
+    };
+
+    let fused = if search_mode == SearchMode::FtsOnly {
         fts_ids
             .iter()
             .enumerate()
@@ -102,12 +95,21 @@ pub fn search(
                 (id.clone(), score)
             })
             .collect::<Vec<_>>()
+    } else {
+        let mut lists: Vec<(&[String], f64)> = vec![(&fts_ids, config.fts_weight)];
+        if !knowledge_ids.is_empty() {
+            lists.push((&knowledge_ids, config.vec_weight));
+        }
+        if !code_ids.is_empty() {
+            lists.push((&code_ids, config.code_vec_weight));
+        }
+        fuse(&lists, config.rrf_k)
     };
 
-    // 4. Select top results
+    // 5. Select top results
     let top_n: Vec<(String, f64)> = fused.into_iter().take(params.limit as usize).collect();
 
-    // 5. Build direct search results (entities already in entity_map)
+    // 6. Build direct search results (entities already in entity_map)
     let mut results: Vec<SearchResult> = top_n
         .iter()
         .filter_map(|(id, score)| {
@@ -120,7 +122,7 @@ pub fn search(
         })
         .collect();
 
-    // 6. Graph expansion
+    // 7. Graph expansion
     if params.expand && params.max_hops > 0 && !results.is_empty() {
         let seed_ids: Vec<String> = results.iter().map(|r| r.entity.id.clone()).collect();
         let exclude_ids: HashSet<String> = results.iter().map(|r| r.entity.id.clone()).collect();
@@ -133,9 +135,6 @@ pub fn search(
             status_filter,
         )?;
 
-        // Batch-fetch expanded entities not already in the cache, then
-        // batch-build all path descriptions. Two queries total for N
-        // expansions instead of N+1.
         let uncached_expansion_ids: Vec<String> = expansions
             .iter()
             .map(|e| e.entity_id.clone())
@@ -154,8 +153,6 @@ pub fn search(
         let mut expanded_results: Vec<SearchResult> = Vec::new();
         let mut seen_expanded: HashSet<String> = HashSet::new();
         for (exp, desc) in expansions.into_iter().zip(descriptions) {
-            // Deduplicate across seeds: keep the first (shortest path)
-            // occurrence of each entity, drop subsequent discoveries.
             if !seen_expanded.insert(exp.entity_id.clone()) {
                 continue;
             }
@@ -175,6 +172,47 @@ pub fn search(
         results,
         search_mode,
     })
+}
+
+/// Run a single KNN channel: KNN search, batch-fetch entities, filter
+/// by type/status, return filtered ID list.
+fn knn_channel(
+    conn: &Connection,
+    query: &[f32],
+    space: EmbeddingSpace,
+    entity_map: &mut std::collections::HashMap<String, Entity>,
+    type_filter: Option<&str>,
+    status_filter: Option<&str>,
+    limit: i64,
+) -> Result<Vec<String>, SearchError> {
+    let knn_limit = limit * 3;
+    let knn_results = knn_search(conn, space, query, knn_limit)?;
+
+    let uncached_ids: Vec<String> = knn_results
+        .iter()
+        .map(|(id, _)| id.clone())
+        .filter(|id| !entity_map.contains_key(id))
+        .collect();
+    let fetched = get_entities_batch(conn, &uncached_ids)?;
+    for entity in fetched {
+        entity_map.insert(entity.id.clone(), entity);
+    }
+
+    let mut filtered = Vec::new();
+    for (id, _) in knn_results {
+        let Some(entity) = entity_map.get(&id) else {
+            continue;
+        };
+        if type_filter.is_none_or(|t| entity.r#type == t)
+            && status_filter.is_none_or(|s| entity.status == s)
+        {
+            filtered.push(id);
+            if filtered.len() >= limit as usize {
+                break;
+            }
+        }
+    }
+    Ok(filtered)
 }
 
 /// Resolve the status filter: None and "active" → Some("active"),
@@ -205,8 +243,9 @@ mod tests {
 
     fn default_config() -> SearchConfig {
         SearchConfig {
-            fts_weight: 0.4,
-            vec_weight: 0.6,
+            fts_weight: 0.3,
+            vec_weight: 0.4,
+            code_vec_weight: 0.3,
             rrf_k: 60,
             max_results: 20,
         }
@@ -245,7 +284,14 @@ mod tests {
             expand: false,
             ..Default::default()
         };
-        let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+        let results = search(
+            &conn,
+            "ranking",
+            QueryEmbeddings::none(),
+            &params,
+            &default_config(),
+        )
+        .unwrap();
 
         assert_eq!(results.search_mode, SearchMode::FtsOnly);
         assert_eq!(results.results.len(), 1);
@@ -258,11 +304,11 @@ mod tests {
         let conn = setup();
         let e1 = Entity::new("u1", "observation", "FTS5 ranking", "ranking content");
         insert_entity(&conn, &e1).unwrap();
-        insert_embedding(&conn, "u1", &vec![0.1_f32; 768]).unwrap();
+        insert_embedding(&conn, "u1", "observation", &vec![0.1_f32; 768]).unwrap();
 
         let e2 = Entity::new("u2", "observation", "Other", "different content");
         insert_entity(&conn, &e2).unwrap();
-        insert_embedding(&conn, "u2", &vec![0.9_f32; 768]).unwrap();
+        insert_embedding(&conn, "u2", "observation", &vec![0.9_f32; 768]).unwrap();
 
         let params = SearchParams {
             expand: false,
@@ -272,13 +318,13 @@ mod tests {
         let results = search(
             &conn,
             "ranking",
-            Some(&query_vec),
+            QueryEmbeddings::knowledge(&query_vec),
             &params,
             &default_config(),
         )
         .unwrap();
 
-        assert_eq!(results.search_mode, SearchMode::Hybrid);
+        assert_eq!(results.search_mode, SearchMode::KnowledgeHybrid);
         // u1 matches both FTS and vec, should be first
         assert_eq!(results.results[0].entity.id, "u1");
     }
@@ -302,7 +348,14 @@ mod tests {
             expand: false,
             ..Default::default()
         };
-        let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+        let results = search(
+            &conn,
+            "ranking",
+            QueryEmbeddings::none(),
+            &params,
+            &default_config(),
+        )
+        .unwrap();
 
         assert_eq!(results.results.len(), 1);
         assert_eq!(results.results[0].entity.r#type, "observation");
@@ -329,7 +382,14 @@ mod tests {
             max_hops: 2,
             ..Default::default()
         };
-        let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+        let results = search(
+            &conn,
+            "ranking",
+            QueryEmbeddings::none(),
+            &params,
+            &default_config(),
+        )
+        .unwrap();
 
         // Direct result: obs1
         assert!(results.results.iter().any(|r| r.entity.id == "obs1"));
@@ -350,7 +410,14 @@ mod tests {
             expand: false,
             ..Default::default()
         };
-        let results = search(&conn, "nonexistent", None, &params, &default_config()).unwrap();
+        let results = search(
+            &conn,
+            "nonexistent",
+            QueryEmbeddings::none(),
+            &params,
+            &default_config(),
+        )
+        .unwrap();
         assert!(results.results.is_empty());
     }
 
@@ -366,7 +433,14 @@ mod tests {
             expand: false,
             ..Default::default()
         };
-        let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+        let results = search(
+            &conn,
+            "ranking",
+            QueryEmbeddings::none(),
+            &params,
+            &default_config(),
+        )
+        .unwrap();
         assert!(results.results.is_empty());
 
         // Status "all" — includes stale
@@ -375,7 +449,14 @@ mod tests {
             expand: false,
             ..Default::default()
         };
-        let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+        let results = search(
+            &conn,
+            "ranking",
+            QueryEmbeddings::none(),
+            &params,
+            &default_config(),
+        )
+        .unwrap();
         assert_eq!(results.results.len(), 1);
     }
 }

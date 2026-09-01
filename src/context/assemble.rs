@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 
 use crate::config::{Config, SearchConfig};
-use crate::search::{self, SearchMode, SearchParams, SearchResult};
+use crate::search::{self, QueryEmbeddings, SearchMode, SearchParams, SearchResult};
 use crate::storage::query::get_entities_by_type;
 
 use super::compress::{fit_budget, section_tokens, sort_by_priority};
@@ -28,8 +28,10 @@ pub struct AssembleParams<'a> {
     pub mode: ContextMode,
     /// The query for task/escalation modes. Ignored for cold_start.
     pub query: Option<&'a str>,
-    /// Optional query embedding for hybrid search. If None, FTS-only.
-    pub query_embedding: Option<&'a [f32]>,
+    /// Optional knowledge-model query embedding for hybrid search.
+    pub knowledge_embedding: Option<&'a [f32]>,
+    /// Optional code-model query embedding for code-aware search.
+    pub code_embedding: Option<&'a [f32]>,
     /// Override the token budget from config. If None, use config default.
     pub max_tokens: Option<usize>,
     /// Include stale entities in results.
@@ -41,7 +43,8 @@ impl Default for AssembleParams<'_> {
         Self {
             mode: ContextMode::Task,
             query: None,
-            query_embedding: None,
+            knowledge_embedding: None,
+            code_embedding: None,
             max_tokens: None,
             include_stale: false,
         }
@@ -93,7 +96,8 @@ pub fn assemble_context(
             query_sections(
                 conn,
                 query,
-                params.query_embedding,
+                params.knowledge_embedding,
+                params.code_embedding,
                 max_results,
                 max_hops,
                 search_status,
@@ -184,10 +188,12 @@ fn cold_start_sections(
 }
 
 /// Build sections from search results (task and escalation modes).
+#[allow(clippy::too_many_arguments)]
 fn query_sections(
     conn: &Connection,
     query: &str,
-    query_embedding: Option<&[f32]>,
+    knowledge_embedding: Option<&[f32]>,
+    code_embedding: Option<&[f32]>,
     max_results: u32,
     max_hops: usize,
     status: Option<&str>,
@@ -201,7 +207,11 @@ fn query_sections(
         max_hops,
     };
 
-    let results = search::search(conn, query, query_embedding, &params, search_config)?;
+    let embeddings = QueryEmbeddings {
+        knowledge: knowledge_embedding,
+        code: code_embedding,
+    };
+    let results = search::search(conn, query, embeddings, &params, search_config)?;
     let search_mode = results.search_mode;
 
     let sections = results

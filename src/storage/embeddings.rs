@@ -1,72 +1,128 @@
 //! Embedding operations — vec0 vector storage for semantic search.
+//!
+//! Code and knowledge entities use different embedding models with
+//! incompatible vector spaces. Each space has its own vec0 table so
+//! KNN only compares vectors within the same model space.
 
 use rusqlite::{Connection, params};
 use zerocopy::IntoBytes;
 
 use super::StorageError;
+use super::crud::EntityType;
 
-/// Insert an embedding for an entity. The embedding dimension must
-/// match the vec0 table definition (768).
+/// Which embedding table to operate on — determined by entity type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmbeddingSpace {
+    Code,
+    Knowledge,
+}
+
+impl EmbeddingSpace {
+    pub fn table(&self) -> &'static str {
+        match self {
+            Self::Code => "code_embeddings",
+            Self::Knowledge => "knowledge_embeddings",
+        }
+    }
+
+    /// Determine the embedding space from an entity type string.
+    /// Returns `None` for invalid types (caller should skip).
+    pub fn from_entity_type(entity_type: &str) -> Option<Self> {
+        EntityType::parse(entity_type).ok().map(|t| {
+            if t.is_code() {
+                Self::Code
+            } else {
+                Self::Knowledge
+            }
+        })
+    }
+}
+
+/// Insert an embedding for an entity into the appropriate table.
+/// The embedding dimension must match the vec0 table definition.
+/// The table is selected based on the entity's type.
 pub fn insert_embedding(
     conn: &Connection,
     entity_id: &str,
+    entity_type: &str,
     embedding: &[f32],
 ) -> Result<(), StorageError> {
-    conn.execute(
-        "INSERT INTO entity_embeddings(entity_id, embedding) VALUES (?1, ?2)",
-        params![entity_id, embedding.as_bytes()],
-    )?;
+    let space = EmbeddingSpace::from_entity_type(entity_type)
+        .ok_or_else(|| StorageError::InvalidEntityType(entity_type.to_string()))?;
+    let sql = format!(
+        "INSERT INTO {}(entity_id, embedding) VALUES (?1, ?2)",
+        space.table()
+    );
+    conn.execute(&sql, params![entity_id, embedding.as_bytes()])?;
     Ok(())
 }
 
-/// Delete all embeddings for an entity.
+/// Delete an embedding from both tables (the entity's type may have
+/// changed, so we check both). This is safe — only one table will
+/// have the row.
 pub fn delete_embedding(conn: &Connection, entity_id: &str) -> Result<(), StorageError> {
     conn.execute(
-        "DELETE FROM entity_embeddings WHERE entity_id = ?1",
+        "DELETE FROM code_embeddings WHERE entity_id = ?1",
+        params![entity_id],
+    )?;
+    conn.execute(
+        "DELETE FROM knowledge_embeddings WHERE entity_id = ?1",
         params![entity_id],
     )?;
     Ok(())
 }
 
-/// Get the embedding for a single entity. Returns `None` if no
-/// embedding is stored for the entity.
+/// Get the embedding for a single entity. Checks both tables.
+/// Returns `None` if no embedding is stored for the entity.
 pub fn get_embedding(conn: &Connection, entity_id: &str) -> Result<Option<Vec<f32>>, StorageError> {
-    let mut stmt = conn.prepare("SELECT embedding FROM entity_embeddings WHERE entity_id = ?1")?;
-    let result = stmt.query_row(params![entity_id], |r| {
-        let blob: Vec<u8> = r.get(0)?;
-        let floats: Vec<f32> = blob
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|chunk| f32::from_le_bytes(*chunk))
-            .collect();
-        Ok(floats)
-    });
-    match result {
-        Ok(embedding) => Ok(Some(embedding)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
+    // Try knowledge first (more common in query paths), then code.
+    for table in ["knowledge_embeddings", "code_embeddings"] {
+        let sql = format!("SELECT embedding FROM {} WHERE entity_id = ?1", table);
+        let mut stmt = conn.prepare(&sql)?;
+        let result = stmt.query_row(params![entity_id], |r| {
+            let blob: Vec<u8> = r.get(0)?;
+            let floats: Vec<f32> = blob
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| f32::from_le_bytes(*chunk))
+                .collect();
+            Ok(floats)
+        });
+        match result {
+            Ok(embedding) => return Ok(Some(embedding)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => continue,
+            Err(e) => return Err(e.into()),
+        }
     }
+    Ok(None)
 }
 
-/// Count total embeddings stored.
+/// Count total embeddings across both tables.
 pub fn count_embeddings(conn: &Connection) -> Result<i64, StorageError> {
-    Ok(conn.query_row("SELECT COUNT(*) FROM entity_embeddings", [], |r| r.get(0))?)
+    let code: i64 = conn.query_row("SELECT COUNT(*) FROM code_embeddings", [], |r| r.get(0))?;
+    let knowledge: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge_embeddings", [], |r| {
+        r.get(0)
+    })?;
+    Ok(code + knowledge)
 }
 
-/// K-nearest-neighbor search. Returns (entity_id, distance) pairs
-/// sorted by ascending distance.
+/// K-nearest-neighbor search within a specific embedding space.
+/// Returns (entity_id, distance) pairs sorted by ascending distance.
 pub fn knn_search(
     conn: &Connection,
+    space: EmbeddingSpace,
     query: &[f32],
     k: i64,
 ) -> Result<Vec<(String, f32)>, StorageError> {
-    let mut stmt = conn.prepare(
+    let sql = format!(
         "SELECT entity_id, distance
-         FROM entity_embeddings
+         FROM {}
          WHERE embedding MATCH ?1 AND k = ?2
          ORDER BY distance",
-    )?;
+        space.table()
+    );
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![query.as_bytes(), k], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?))
     })?;
@@ -93,17 +149,62 @@ mod tests {
     }
 
     #[test]
-    fn insert_and_knn_search() {
+    fn insert_and_knn_search_knowledge() {
         let conn = setup();
         insert_entity(&conn, &Entity::new("u1", "observation", "Test", "content")).unwrap();
 
         let embedding = vec![0.1_f32; 768];
-        insert_embedding(&conn, "u1", &embedding).unwrap();
+        insert_embedding(&conn, "u1", "observation", &embedding).unwrap();
 
-        let results = knn_search(&conn, &embedding, 1).unwrap();
+        let results = knn_search(&conn, EmbeddingSpace::Knowledge, &embedding, 1).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "u1");
-        assert!(results[0].1 < 0.001); // distance to self ~0
+        assert!(results[0].1 < 0.001);
+    }
+
+    #[test]
+    fn insert_and_knn_search_code() {
+        let conn = setup();
+        insert_entity(
+            &conn,
+            &Entity::new("f1", "function", "my_func", "fn my_func() {}"),
+        )
+        .unwrap();
+
+        let embedding = vec![0.2_f32; 768];
+        insert_embedding(&conn, "f1", "function", &embedding).unwrap();
+
+        let results = knn_search(&conn, EmbeddingSpace::Code, &embedding, 1).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "f1");
+    }
+
+    #[test]
+    fn knn_search_isolated_per_space() {
+        let conn = setup();
+        // Code entity with embedding close to query
+        insert_entity(
+            &conn,
+            &Entity::new("f1", "function", "func", "fn func() {}"),
+        )
+        .unwrap();
+        insert_embedding(&conn, "f1", "function", &vec![0.1_f32; 768]).unwrap();
+
+        // Knowledge entity with embedding far from query
+        insert_entity(&conn, &Entity::new("o1", "observation", "obs", "content")).unwrap();
+        insert_embedding(&conn, "o1", "observation", &vec![0.9_f32; 768]).unwrap();
+
+        let query = vec![0.1_f32; 768];
+
+        // Code KNN should only find the function
+        let code_results = knn_search(&conn, EmbeddingSpace::Code, &query, 10).unwrap();
+        assert_eq!(code_results.len(), 1);
+        assert_eq!(code_results[0].0, "f1");
+
+        // Knowledge KNN should only find the observation
+        let knowledge_results = knn_search(&conn, EmbeddingSpace::Knowledge, &query, 10).unwrap();
+        assert_eq!(knowledge_results.len(), 1);
+        assert_eq!(knowledge_results[0].0, "o1");
     }
 
     #[test]
@@ -112,14 +213,13 @@ mod tests {
         insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
         insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
 
-        // u1 is close to [0.1, ...], u2 is far
-        insert_embedding(&conn, "u1", &vec![0.1_f32; 768]).unwrap();
-        insert_embedding(&conn, "u2", &vec![0.9_f32; 768]).unwrap();
+        insert_embedding(&conn, "u1", "observation", &vec![0.1_f32; 768]).unwrap();
+        insert_embedding(&conn, "u2", "observation", &vec![0.9_f32; 768]).unwrap();
 
         let query = vec![0.1_f32; 768];
-        let results = knn_search(&conn, &query, 2).unwrap();
+        let results = knn_search(&conn, EmbeddingSpace::Knowledge, &query, 2).unwrap();
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].0, "u1"); // nearest first
+        assert_eq!(results[0].0, "u1");
         assert!(results[0].1 < results[1].1);
     }
 
@@ -127,11 +227,42 @@ mod tests {
     fn delete_entity_embedding() {
         let conn = setup();
         insert_entity(&conn, &Entity::new("u1", "observation", "T", "c")).unwrap();
-        insert_embedding(&conn, "u1", &vec![0.1_f32; 768]).unwrap();
+        insert_embedding(&conn, "u1", "observation", &vec![0.1_f32; 768]).unwrap();
 
         delete_embedding(&conn, "u1").unwrap();
 
-        let results = knn_search(&conn, &vec![0.1_f32; 768], 1).unwrap();
+        let results = knn_search(&conn, EmbeddingSpace::Knowledge, &vec![0.1_f32; 768], 1).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn get_embedding_checks_both_tables() {
+        let conn = setup();
+        insert_entity(
+            &conn,
+            &Entity::new("f1", "function", "func", "fn func() {}"),
+        )
+        .unwrap();
+        insert_embedding(&conn, "f1", "function", &vec![0.5_f32; 768]).unwrap();
+
+        let emb = get_embedding(&conn, "f1").unwrap();
+        assert!(emb.is_some());
+        assert_eq!(emb.unwrap().len(), 768);
+    }
+
+    #[test]
+    fn count_embeddings_across_both_tables() {
+        let conn = setup();
+        insert_entity(
+            &conn,
+            &Entity::new("f1", "function", "func", "fn func() {}"),
+        )
+        .unwrap();
+        insert_entity(&conn, &Entity::new("o1", "observation", "obs", "content")).unwrap();
+
+        insert_embedding(&conn, "f1", "function", &vec![0.1_f32; 768]).unwrap();
+        insert_embedding(&conn, "o1", "observation", &vec![0.2_f32; 768]).unwrap();
+
+        assert_eq!(count_embeddings(&conn).unwrap(), 2);
     }
 }

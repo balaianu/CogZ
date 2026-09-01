@@ -113,7 +113,10 @@ pub fn update_knowledge_file(
     {
         let mut conn = storage.conn();
         if let Some(ref emb) = embedding {
-            store_embeddings(&mut conn, &[(entity_file.id.clone(), emb.clone())]);
+            store_embeddings(
+                &mut conn,
+                &[(entity_file.id.clone(), "knowledge".to_string(), emb.clone())],
+            );
         }
         let payload = json!({"updated_fields": updated_fields});
         let _ = events::record_event(

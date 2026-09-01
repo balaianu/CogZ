@@ -10,8 +10,10 @@ use crate::embed::{EmbeddingCache, EmbeddingModel};
 use crate::storage::{self, crud::Entity};
 
 /// Compute embeddings for a list of entities. Pure computation —
-/// no DB access. Returns `(entity_id, embedding)` pairs for entities
-/// that were successfully embedded.
+/// no DB access. Returns `(entity_id, entity_type, embedding)` triples
+/// for entities that were successfully embedded. The entity type is
+/// carried through so `store_embeddings` can route to the correct
+/// vec0 table without a per-entity DB lookup.
 ///
 /// If the model is unavailable, `embed()` returns
 /// `EmbeddingError::ModelUnavailable` on the first call, which is
@@ -21,8 +23,7 @@ pub fn embed_entities(
     model: &dyn EmbeddingModel,
     cache: &EmbeddingCache,
     entities: &[Entity],
-) -> Vec<(String, Vec<f32>)> {
-    // Build texts and track which entity each corresponds to.
+) -> Vec<(String, String, Vec<f32>)> {
     let texts: Vec<String> = entities
         .iter()
         .map(|e| match &e.title {
@@ -36,7 +37,7 @@ pub fn embed_entities(
         Ok(embeddings) => entities
             .iter()
             .zip(embeddings)
-            .map(|(entity, embedding)| (entity.id.clone(), embedding))
+            .map(|(entity, embedding)| (entity.id.clone(), entity.r#type.clone(), embedding))
             .collect(),
         Err(e) => {
             tracing::warn!("batch embedding failed: {}", e);
@@ -45,11 +46,12 @@ pub fn embed_entities(
     }
 }
 
-/// Store embeddings in the vec0 table. Replaces any existing
+/// Store embeddings in the vec0 tables. Replaces any existing
 /// embedding for each entity. Requires a DB connection — caller
 /// is responsible for lock acquisition. All writes are wrapped
 /// in a single transaction for atomicity and performance.
-pub fn store_embeddings(conn: &mut Connection, embeddings: &[(String, Vec<f32>)]) -> usize {
+/// Each triple is (entity_id, entity_type, embedding).
+pub fn store_embeddings(conn: &mut Connection, embeddings: &[(String, String, Vec<f32>)]) -> usize {
     if embeddings.is_empty() {
         return 0;
     }
@@ -61,9 +63,11 @@ pub fn store_embeddings(conn: &mut Connection, embeddings: &[(String, Vec<f32>)]
             return 0;
         }
     };
-    for (entity_id, embedding) in embeddings {
+    for (entity_id, entity_type, embedding) in embeddings {
         let _ = storage::embeddings::delete_embedding(&tx, entity_id);
-        if let Err(e) = storage::embeddings::insert_embedding(&tx, entity_id, embedding) {
+        if let Err(e) =
+            storage::embeddings::insert_embedding(&tx, entity_id, entity_type, embedding)
+        {
             tracing::warn!("failed to store embedding for {}: {}", entity_id, e);
         } else {
             stored += 1;

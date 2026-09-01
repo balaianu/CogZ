@@ -304,7 +304,7 @@ fn cogz_dir_not_indexed_as_source() {
 #[test]
 fn search_finds_code_entities() {
     use cogz::embed::{EmbeddingModel, MockEmbeddingModel};
-    use cogz::search::{SearchParams, search};
+    use cogz::search::{QueryEmbeddings, SearchParams, search};
 
     let storage = Storage::open_memory().unwrap();
     let code = r#"
@@ -332,7 +332,7 @@ fn build_sql_query(table: &str) -> String {
             func.content
         );
         let embeddings = model.embed(&[&text]).unwrap();
-        storage::embeddings::insert_embedding(&conn, &func.id, &embeddings[0]).unwrap();
+        storage::embeddings::insert_embedding(&conn, &func.id, "function", &embeddings[0]).unwrap();
     }
 
     // Search for "sql query" (FTS-only, no query embedding)
@@ -344,12 +344,20 @@ fn build_sql_query(table: &str) -> String {
         max_hops: 0,
     };
     let config = cogz::config::SearchConfig {
-        fts_weight: 0.4,
-        vec_weight: 0.6,
+        fts_weight: 0.3,
+        vec_weight: 0.4,
+        code_vec_weight: 0.3,
         rrf_k: 60,
         max_results: 20,
     };
-    let results = search(&conn, "sql query", None, &params, &config).unwrap();
+    let results = search(
+        &conn,
+        "sql query",
+        QueryEmbeddings::none(),
+        &params,
+        &config,
+    )
+    .unwrap();
 
     // Should find the build_sql_query function via FTS
     assert!(

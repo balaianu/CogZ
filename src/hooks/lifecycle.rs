@@ -248,7 +248,7 @@ fn assemble_pack(
     mode: ContextMode,
     query: Option<&str>,
 ) -> Result<ContextPack, LifecycleError> {
-    let query_embedding = query.and_then(|q| {
+    let knowledge_embedding = query.and_then(|q| {
         use crate::embed::EmbeddingModel;
         query_model
             .embed_query(&[q])
@@ -263,7 +263,8 @@ fn assemble_pack(
             &AssembleParams {
                 mode,
                 query,
-                query_embedding: query_embedding.as_deref(),
+                knowledge_embedding: knowledge_embedding.as_deref(),
+                code_embedding: None,
                 max_tokens: None,
                 include_stale: false,
             },
@@ -319,7 +320,14 @@ fn record_tool_observation(
             && let Some(emb) = embeddings.into_iter().next()
         {
             let mut conn = storage.conn();
-            store_embeddings(&mut conn, &[(entity.id.clone(), emb)]);
+            store_embeddings(
+                &mut conn,
+                &[(
+                    entity.id.clone(),
+                    entity.entity_type.as_str().to_string(),
+                    emb,
+                )],
+            );
         }
     }
 

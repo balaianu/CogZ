@@ -93,7 +93,7 @@ fn find_merge_candidates(
     storage: &crate::storage::Storage,
     config: &ConsolidationConfig,
 ) -> Result<Vec<MergeCandidate>, StorageError> {
-    use crate::storage::embeddings::knn_search;
+    use crate::storage::embeddings::{EmbeddingSpace, knn_search};
 
     let observations = {
         let conn = storage.conn();
@@ -115,7 +115,7 @@ fn find_merge_candidates(
             None => continue,
         };
 
-        let neighbors = match knn_search(&conn, &own_embedding, 5) {
+        let neighbors = match knn_search(&conn, EmbeddingSpace::Knowledge, &own_embedding, 5) {
             Ok(n) => n,
             Err(_) => continue,
         };

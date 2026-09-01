@@ -178,7 +178,10 @@ pub fn write_and_sync(
     let dedup = {
         let mut conn = storage.conn();
         if let Some(ref emb) = embedding {
-            store_embeddings(&mut conn, &[(entity.id.clone(), emb.clone())]);
+            store_embeddings(
+                &mut conn,
+                &[(entity.id.clone(), entity_type.to_string(), emb.clone())],
+            );
         }
         check_duplicate(
             &conn,

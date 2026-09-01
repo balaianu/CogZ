@@ -89,7 +89,7 @@ fn dedup_embedding_similarity_flagged() {
     insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
 
     let embedding = vec![0.1_f32; 768];
-    insert_embedding(&conn, "u1", &embedding).unwrap();
+    insert_embedding(&conn, "u1", "observation", &embedding).unwrap();
 
     let result = check_duplicate(&conn, "u2", "B", "observation", Some(&embedding), &config());
     assert!(result.dedup_flagged);
@@ -332,13 +332,13 @@ fn merge_supersedes_duplicate_and_redirects_edges() {
         // Relative path as stored by sync.rs (relative to .cogz).
         e1.file_path = Some("observations/2026-01/obs-1.md".to_string());
         insert_entity(&conn, &e1).unwrap();
-        insert_embedding(&conn, "obs-1", &embedding).unwrap();
+        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
 
         let mut e2 = Entity::new("obs-2", "observation", "B", "content");
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
         e2.file_path = Some("observations/2026-01/obs-2.md".to_string());
         insert_entity(&conn, &e2).unwrap();
-        insert_embedding(&conn, "obs-2", &embedding).unwrap();
+        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
 
         insert_entity(&conn, &Entity::new("kn-1", "knowledge", "K", "c")).unwrap();
         insert_edge(
@@ -387,12 +387,12 @@ fn merge_dry_run_makes_no_changes() {
         let mut e1 = Entity::new("obs-1", "observation", "A", "content");
         e1.created_at = "2026-01-01T00:00:00Z".to_string();
         insert_entity(&conn, &e1).unwrap();
-        insert_embedding(&conn, "obs-1", &embedding).unwrap();
+        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
 
         let mut e2 = Entity::new("obs-2", "observation", "B", "content");
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
         insert_entity(&conn, &e2).unwrap();
-        insert_embedding(&conn, "obs-2", &embedding).unwrap();
+        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
     }
 
     let results = run_merge(&storage, &cogz_dir, &config(), true).unwrap();

@@ -16,7 +16,7 @@ use rusqlite::Connection;
 use crate::config::ConsolidationConfig;
 use crate::embed::NliModel;
 use crate::storage::crud::Entity;
-use crate::storage::embeddings::knn_search;
+use crate::storage::embeddings::{EmbeddingSpace, knn_search};
 use crate::storage::query::get_entities_by_type;
 
 /// Result of a dedup check on a newly inserted entity.
@@ -158,7 +158,7 @@ fn check_embedding_similarity(
     new_id: &str,
     dedup_threshold: f64,
 ) -> Option<(bool, Option<DuplicateWarning>)> {
-    let neighbors = knn_search(conn, new_embedding, 5).ok()?;
+    let neighbors = knn_search(conn, EmbeddingSpace::Knowledge, new_embedding, 5).ok()?;
 
     let mut dedup_flagged = false;
     let mut best_warning: Option<DuplicateWarning> = None;
@@ -382,7 +382,8 @@ mod tests {
 
         // Identical embeddings → distance ~0 → similarity ~1.0
         let embedding = vec![0.1_f32; 768];
-        crate::storage::embeddings::insert_embedding(&conn, "u1", &embedding).unwrap();
+        crate::storage::embeddings::insert_embedding(&conn, "u1", "observation", &embedding)
+            .unwrap();
 
         let result = check_duplicate(&conn, "u2", "B", "observation", Some(&embedding), &config());
         assert!(result.dedup_flagged);

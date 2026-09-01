@@ -117,7 +117,7 @@ fn store_embeddings_replaces_existing() {
     storage::crud::insert_entity(&conn, &entity).unwrap();
 
     let dummy = vec![0.5_f32; 768];
-    storage::embeddings::insert_embedding(&conn, "entity-1", &dummy).unwrap();
+    storage::embeddings::insert_embedding(&conn, "entity-1", "knowledge", &dummy).unwrap();
     assert_eq!(storage::embeddings::count_embeddings(&conn).unwrap(), 1);
 
     let model = MockEmbeddingModel::new();
@@ -128,7 +128,13 @@ fn store_embeddings_replaces_existing() {
     assert_eq!(stored, 1);
     assert_eq!(storage::embeddings::count_embeddings(&conn).unwrap(), 1);
 
-    let results = storage::embeddings::knn_search(&conn, &dummy, 1).unwrap();
+    let results = storage::embeddings::knn_search(
+        &conn,
+        storage::embeddings::EmbeddingSpace::Knowledge,
+        &dummy,
+        1,
+    )
+    .unwrap();
     assert!(!results.is_empty());
     assert!(results[0].1 > 0.01);
 }
@@ -168,7 +174,13 @@ fn full_sync_with_mock_embedding() {
     let query = model
         .embed(&["This is a test observation about Rust."])
         .unwrap();
-    let results = storage::embeddings::knn_search(&conn, &query[0], 1).unwrap();
+    let results = storage::embeddings::knn_search(
+        &conn,
+        storage::embeddings::EmbeddingSpace::Knowledge,
+        &query[0],
+        1,
+    )
+    .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].0, *entity_id);
 }

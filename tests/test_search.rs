@@ -6,7 +6,7 @@
 
 use cogz::config::SearchConfig;
 use cogz::embed::{EmbeddingCache, EmbeddingModel, MockEmbeddingModel};
-use cogz::search::{SearchMode, SearchParams, search};
+use cogz::search::{QueryEmbeddings, SearchMode, SearchParams, search};
 use cogz::storage::{self, Storage, crud::Entity};
 
 fn setup_storage() -> Storage {
@@ -15,8 +15,9 @@ fn setup_storage() -> Storage {
 
 fn default_config() -> SearchConfig {
     SearchConfig {
-        fts_weight: 0.4,
-        vec_weight: 0.6,
+        fts_weight: 0.3,
+        vec_weight: 0.4,
+        code_vec_weight: 0.3,
         rrf_k: 60,
         max_results: 20,
     }
@@ -35,7 +36,7 @@ fn insert_with_embedding(
 
     let text = format!("{title}\n\n{content}");
     let embeddings = model.embed(&[&text]).unwrap();
-    storage::embeddings::insert_embedding(conn, id, &embeddings[0]).unwrap();
+    storage::embeddings::insert_embedding(conn, id, etype, &embeddings[0]).unwrap();
 }
 
 fn insert_edge(conn: &rusqlite::Connection, source: &str, target: &str, edge_type: &str) {
@@ -84,7 +85,14 @@ fn fts_only_search_finds_relevant_entities() {
         expand: false,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
 
     assert_eq!(results.search_mode, SearchMode::FtsOnly);
     assert!(!results.results.is_empty());
@@ -128,13 +136,13 @@ fn hybrid_search_fuses_fts_and_vector() {
     let results = search(
         &conn,
         "ranking",
-        Some(&query_vec[0]),
+        QueryEmbeddings::knowledge(&query_vec[0]),
         &params,
         &default_config(),
     )
     .unwrap();
 
-    assert_eq!(results.search_mode, SearchMode::Hybrid);
+    assert_eq!(results.search_mode, SearchMode::KnowledgeHybrid);
     assert_eq!(results.results.len(), 2);
     // u1 should rank first (exact vec match + FTS match)
     assert_eq!(results.results[0].entity.id, "u1");
@@ -179,7 +187,14 @@ fn graph_expansion_follows_edges() {
         max_hops: 2,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
 
     // Direct match: obs1
     assert!(results.results.iter().any(|r| r.entity.id == "obs1"));
@@ -226,7 +241,14 @@ fn graph_expansion_disabled() {
         expand: false,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
 
     // Only direct match, no expansion
     assert_eq!(results.results.len(), 1);
@@ -261,7 +283,14 @@ fn search_filters_by_entity_type() {
         expand: false,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
 
     assert_eq!(results.results.len(), 1);
     assert_eq!(results.results[0].entity.r#type, "rule");
@@ -277,13 +306,20 @@ fn search_excludes_stale_by_default() {
     stale.status = "stale".to_string();
     storage::crud::insert_entity(&conn, &stale).unwrap();
     let embeddings = model.embed(&["ranking\n\nranking content"]).unwrap();
-    storage::embeddings::insert_embedding(&conn, "u1", &embeddings[0]).unwrap();
+    storage::embeddings::insert_embedding(&conn, "u1", "observation", &embeddings[0]).unwrap();
 
     let params = SearchParams {
         expand: false,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
     assert!(results.results.is_empty());
 }
 
@@ -297,14 +333,21 @@ fn search_includes_stale_with_status_all() {
     stale.status = "stale".to_string();
     storage::crud::insert_entity(&conn, &stale).unwrap();
     let embeddings = model.embed(&["ranking\n\nranking content"]).unwrap();
-    storage::embeddings::insert_embedding(&conn, "u1", &embeddings[0]).unwrap();
+    storage::embeddings::insert_embedding(&conn, "u1", "observation", &embeddings[0]).unwrap();
 
     let params = SearchParams {
         status: Some("all".to_string()),
         expand: false,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
     assert_eq!(results.results.len(), 1);
 }
 
@@ -327,7 +370,14 @@ fn search_no_results_for_nonexistent_query() {
         expand: false,
         ..Default::default()
     };
-    let results = search(&conn, "nonexistent", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "nonexistent",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
     assert!(results.results.is_empty());
 }
 
@@ -380,7 +430,14 @@ fn search_with_mock_embedding_end_to_end() {
 
     let results = {
         let conn = storage.conn();
-        search(&conn, "ranking", None, &params, &config.search).unwrap()
+        search(
+            &conn,
+            "ranking",
+            QueryEmbeddings::none(),
+            &params,
+            &config.search,
+        )
+        .unwrap()
     };
 
     // Should find the observation
@@ -446,13 +503,13 @@ fn rrf_fusion_produces_sensible_ordering() {
     let results = search(
         &conn,
         "ranking",
-        Some(&query_vec[0]),
+        QueryEmbeddings::knowledge(&query_vec[0]),
         &params,
         &default_config(),
     )
     .unwrap();
 
-    assert_eq!(results.search_mode, SearchMode::Hybrid);
+    assert_eq!(results.search_mode, SearchMode::KnowledgeHybrid);
     assert_eq!(results.results.len(), 3);
 
     // u3 should rank first: it's rank 1 in vec (exact match) and rank 3 in FTS.
@@ -483,7 +540,14 @@ fn search_limit_truncates_results() {
         expand: false,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
 
     assert_eq!(results.results.len(), 3);
 }
@@ -552,7 +616,14 @@ fn search_expansion_deduplicates_across_seeds() {
         max_hops: 2,
         ..Default::default()
     };
-    let results = search(&conn, "ranking", None, &params, &default_config()).unwrap();
+    let results = search(
+        &conn,
+        "ranking",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
 
     // shared_target should appear exactly once, not twice
     let shared_count = results

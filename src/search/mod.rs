@@ -35,9 +35,13 @@ pub struct SearchResult {
 /// How the search was executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
-    /// FTS5 + vector search fused via RRF.
+    /// FTS5 + knowledge vector + code vector, fused via RRF.
     Hybrid,
-    /// FTS5 only (no embedding model available).
+    /// FTS5 + knowledge vector only (code model unavailable).
+    KnowledgeHybrid,
+    /// FTS5 + code vector only (knowledge model unavailable).
+    CodeHybrid,
+    /// FTS5 only (no embedding models available).
     FtsOnly,
 }
 
@@ -45,7 +49,39 @@ impl SearchMode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Hybrid => "hybrid",
+            Self::KnowledgeHybrid => "knowledge_hybrid",
+            Self::CodeHybrid => "code_hybrid",
             Self::FtsOnly => "fts_only",
+        }
+    }
+}
+
+/// Query embeddings for dual-model search. Each is optional — when
+/// absent, that vector channel is skipped (graceful degradation).
+#[derive(Debug, Clone, Default)]
+pub struct QueryEmbeddings<'a> {
+    /// Knowledge-model query embedding (bge-base). Searches knowledge_embeddings.
+    pub knowledge: Option<&'a [f32]>,
+    /// Code-model query embedding (CodeRankEmbed). Searches code_embeddings.
+    pub code: Option<&'a [f32]>,
+}
+
+impl<'a> QueryEmbeddings<'a> {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    pub fn knowledge(emb: &'a [f32]) -> Self {
+        Self {
+            knowledge: Some(emb),
+            code: None,
+        }
+    }
+
+    pub fn both(knowledge: &'a [f32], code: &'a [f32]) -> Self {
+        Self {
+            knowledge: Some(knowledge),
+            code: Some(code),
         }
     }
 }

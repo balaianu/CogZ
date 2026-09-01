@@ -40,7 +40,20 @@ pub fn run_search(
 
     let storage = Storage::open(&db_path, config.embedding.dimension)?;
 
-    let query_embedding = embed_query_with_model(&config, query, code);
+    // Embed the query with both models for dual-channel search.
+    // When --code is set, only the code model is used.
+    // When --code is not set, both models are used (knowledge + code).
+    let knowledge_emb = if code {
+        None
+    } else {
+        embed_query_with_model(&config, query, false)
+    };
+    let code_emb = embed_query_with_model(&config, query, true);
+
+    let embeddings = cogz::search::QueryEmbeddings {
+        knowledge: knowledge_emb.as_deref(),
+        code: code_emb.as_deref(),
+    };
 
     let params = cogz::search::SearchParams {
         entity_type,
@@ -56,13 +69,7 @@ pub fn run_search(
 
     let results = {
         let conn = storage.conn();
-        cogz::search::search(
-            &conn,
-            query,
-            query_embedding.as_deref(),
-            &params,
-            &config.search,
-        )?
+        cogz::search::search(&conn, query, embeddings, &params, &config.search)?
     };
 
     println!("Search mode: {}", results.search_mode.as_str());
@@ -141,12 +148,14 @@ pub fn run_context(
 
     let storage = Storage::open(&db_path, config.embedding.dimension)?;
 
-    let query_embedding = query.and_then(|q| embed_query(&config, q));
+    let knowledge_embedding = query.and_then(|q| embed_query(&config, q));
+    let code_embedding = query.and_then(|q| embed_query_with_model(&config, q, true));
 
     let params = cogz::context::AssembleParams {
         mode,
         query,
-        query_embedding: query_embedding.as_deref(),
+        knowledge_embedding: knowledge_embedding.as_deref(),
+        code_embedding: code_embedding.as_deref(),
         max_tokens,
         include_stale,
     };

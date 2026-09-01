@@ -1,6 +1,6 @@
 //! Search and context tools — search, get_context.
 //!
-//! Both tools embed the query (when the model is available) and
+//! Both tools embed the query with both models (when available) and
 //! delegate to the search/context layers. The embedding happens
 //! inside spawn_blocking to avoid holding the DB mutex during ONNX
 //! inference.
@@ -12,7 +12,7 @@ use crate::mcp::helpers::{embed_query_for_search, mcp_internal_error, parse_cont
 use crate::mcp::params::*;
 use crate::mcp::responses::{context_response, search_response, tool_success};
 use crate::mcp::server::CogzServer;
-use crate::search::{SearchParams, search as search_entities};
+use crate::search::{QueryEmbeddings, SearchParams, search as search_entities};
 
 pub async fn search(
     server: &CogzServer,
@@ -27,8 +27,16 @@ pub async fn search(
     let use_code = params.code_search.unwrap_or(false);
 
     let results = tokio::task::spawn_blocking(move || {
-        let model = if use_code { &code_model } else { &query_model };
-        let query_embedding = embed_query_for_search(model, &params.query);
+        let knowledge_emb = if use_code {
+            None
+        } else {
+            embed_query_for_search(&query_model, &params.query)
+        };
+        let code_emb = embed_query_for_search(&code_model, &params.query);
+        let embeddings = QueryEmbeddings {
+            knowledge: knowledge_emb.as_deref(),
+            code: code_emb.as_deref(),
+        };
         let conn = storage.conn();
         let expand = params.expand.unwrap_or(true);
         let search_params = SearchParams {
@@ -41,7 +49,7 @@ pub async fn search(
         search_entities(
             &conn,
             &params.query,
-            query_embedding.as_deref(),
+            embeddings,
             &search_params,
             &search_config,
         )
@@ -63,19 +71,25 @@ pub async fn get_context(
     let storage = server.storage.clone();
     let config = server.config.clone();
     let query_model = server.query_model.clone();
+    let code_model = server.code_model.clone();
 
     let pack = tokio::task::spawn_blocking(move || {
-        let query_embedding = params
+        let knowledge_embedding = params
             .query
             .as_deref()
             .and_then(|q| embed_query_for_search(&query_model, q));
+        let code_embedding = params
+            .query
+            .as_deref()
+            .and_then(|q| embed_query_for_search(&code_model, q));
         let conn = storage.conn();
         assemble_context(
             &conn,
             &AssembleParams {
                 mode,
                 query: query_str.as_deref(),
-                query_embedding: query_embedding.as_deref(),
+                knowledge_embedding: knowledge_embedding.as_deref(),
+                code_embedding: code_embedding.as_deref(),
                 max_tokens: params.max_tokens,
                 include_stale: params.include_stale.unwrap_or(false),
             },
