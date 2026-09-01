@@ -86,6 +86,11 @@ enum Commands {
         /// Disable graph expansion.
         #[arg(long)]
         no_expand: bool,
+
+        /// Use the code model (CodeRankEmbed) for query embedding instead of
+        /// the knowledge model. Applies the CodeRankEmbed query prefix.
+        #[arg(long)]
+        code: bool,
     },
 
     /// Assemble a context pack for agent consumption.
@@ -269,7 +274,8 @@ fn main() -> anyhow::Result<()> {
             status,
             limit,
             no_expand,
-        } => cli::run_search(&query, &repo, entity_type, status, limit, no_expand),
+            code,
+        } => cli::run_search(&query, &repo, entity_type, status, limit, no_expand, code),
         Commands::Context {
             mode,
             query,

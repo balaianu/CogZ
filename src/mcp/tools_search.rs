@@ -23,9 +23,12 @@ pub async fn search(
     let default_limit = server.config.search.max_results;
     let task_max_hops = server.config.context.task_max_hops;
     let query_model = server.query_model.clone();
+    let code_model = server.code_model.clone();
+    let use_code = params.code_search.unwrap_or(false);
 
     let results = tokio::task::spawn_blocking(move || {
-        let query_embedding = embed_query_for_search(&query_model, &params.query);
+        let model = if use_code { &code_model } else { &query_model };
+        let query_embedding = embed_query_for_search(model, &params.query);
         let conn = storage.conn();
         let expand = params.expand.unwrap_or(true);
         let search_params = SearchParams {

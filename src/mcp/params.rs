@@ -101,6 +101,10 @@ pub struct SearchToolParams {
     pub limit: Option<u32>,
     #[serde(default)]
     pub expand: Option<bool>,
+    /// Use the code model (CodeRankEmbed) for query embedding. Applies
+    /// the CodeRankEmbed query prefix for code-focused search.
+    #[serde(default)]
+    pub code_search: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]

@@ -200,14 +200,32 @@ pub fn models_dir() -> std::path::PathBuf {
 /// Returns None if the model is unavailable (graceful degradation
 /// to FTS-only search).
 pub fn embed_query(config: &Config, query: &str) -> Option<Vec<f32>> {
+    embed_query_with_model(config, query, false)
+}
+
+/// Embed a search query. When `code` is true, uses the code model
+/// (CodeRankEmbed with its query prefix). Otherwise uses the knowledge
+/// model (bge-base).
+pub fn embed_query_with_model(config: &Config, query: &str, code: bool) -> Option<Vec<f32>> {
     use cogz::embed::{EmbeddingModel, ModelType, OnnxEmbeddingModel};
+
+    let model_type = if code {
+        ModelType::Code
+    } else {
+        ModelType::Knowledge
+    };
+    let model_id = if code {
+        &config.embedding.code_model
+    } else {
+        &config.embedding.knowledge_model
+    };
 
     let models_dir = models_dir();
     let model = OnnxEmbeddingModel::with_resource_config(
-        ModelType::Knowledge,
+        model_type,
         &models_dir,
         config.embedding.dimension,
-        &config.embedding.knowledge_model,
+        model_id,
         config.embedding.model_idle_ttl,
         config.embedding.model_min_free_mb,
     );

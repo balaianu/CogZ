@@ -5,7 +5,7 @@
 
 use cogz::storage::Storage;
 
-pub use crate::cli_embed::{embed_query, embed_synced, models_dir};
+pub use crate::cli_embed::{embed_query, embed_query_with_model, embed_synced, models_dir};
 
 /// Run the `cogz search` command.
 #[allow(clippy::too_many_arguments)]
@@ -16,6 +16,7 @@ pub fn run_search(
     status: Option<String>,
     limit: Option<u32>,
     no_expand: bool,
+    code: bool,
 ) -> anyhow::Result<()> {
     let cogz_dir = repo.join(".cogz");
     let config_path = cogz_dir.join("config.toml");
@@ -39,7 +40,7 @@ pub fn run_search(
 
     let storage = Storage::open(&db_path, config.embedding.dimension)?;
 
-    let query_embedding = embed_query(&config, query);
+    let query_embedding = embed_query_with_model(&config, query, code);
 
     let params = cogz::search::SearchParams {
         entity_type,
