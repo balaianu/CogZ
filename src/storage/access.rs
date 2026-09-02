@@ -7,9 +7,10 @@ use rusqlite::Connection;
 
 use super::StorageError;
 
-/// Increment access counts for a batch of entity IDs. Uses INSERT OR
-/// IGNORE + UPDATE to handle both first-access and subsequent accesses
-/// in a single SQL statement per entity.
+/// Increment access counts for a batch of entity IDs. Uses a single
+/// transaction with prepared statement reuse for efficiency. Without
+/// the transaction wrapper, each INSERT/UPDATE triggers a separate
+/// journal commit — 366 ids = 366 commits = ~15 seconds on ext4.
 pub fn increment_access_batch(
     conn: &Connection,
     entity_ids: &[String],
@@ -18,16 +19,20 @@ pub fn increment_access_batch(
         return Ok(());
     }
     let now = chrono::Utc::now().to_rfc3339();
-    let mut stmt = conn.prepare(
-        "INSERT INTO entity_access (entity_id, access_count, last_accessed)
-         VALUES (?1, 1, ?2)
-         ON CONFLICT(entity_id) DO UPDATE SET
-             access_count = access_count + 1,
-             last_accessed = ?2",
-    )?;
-    for id in entity_ids {
-        stmt.execute(rusqlite::params![id, now])?;
+    let tx = conn.unchecked_transaction()?;
+    {
+        let mut stmt = tx.prepare(
+            "INSERT INTO entity_access (entity_id, access_count, last_accessed)
+             VALUES (?1, 1, ?2)
+             ON CONFLICT(entity_id) DO UPDATE SET
+                 access_count = access_count + 1,
+                 last_accessed = ?2",
+        )?;
+        for id in entity_ids {
+            stmt.execute(rusqlite::params![id, now])?;
+        }
     }
+    tx.commit()?;
     Ok(())
 }
 

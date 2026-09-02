@@ -122,7 +122,14 @@ pub fn search(
         })
         .collect();
 
-    // 7. Graph expansion
+    // Track access counts for direct results only (derived state for
+    // composite scoring). Graph expansions are context, not retrieval.
+    let accessed_ids: Vec<String> = results.iter().map(|r| r.entity.id.clone()).collect();
+    if !accessed_ids.is_empty() {
+        let _ = crate::storage::access::increment_access_batch(conn, &accessed_ids);
+    }
+
+    // Extend with expanded results after access tracking.
     if params.expand && params.max_hops > 0 && !results.is_empty() {
         let seed_ids: Vec<String> = results.iter().map(|r| r.entity.id.clone()).collect();
         let exclude_ids: HashSet<String> = results.iter().map(|r| r.entity.id.clone()).collect();
@@ -176,13 +183,6 @@ pub fn search(
             }
         }
         results.extend(expanded_results);
-    }
-
-    // Track access counts for returned entities (derived state for
-    // composite scoring). Only direct results, not graph expansions.
-    let accessed_ids: Vec<String> = results.iter().map(|r| r.entity.id.clone()).collect();
-    if !accessed_ids.is_empty() {
-        let _ = crate::storage::access::increment_access_batch(conn, &accessed_ids);
     }
 
     Ok(SearchResults {

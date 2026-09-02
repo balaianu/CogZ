@@ -76,9 +76,36 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
     }
 
     // Scan knowledge entities for references.
+    // Use Aho-Corasick to search all patterns in a single pass per
+    // entity, reducing complexity from O(k × (p + n)) substring scans
+    // to O(k × content_length + total_pattern_length).
     let knowledge_types = ["observation", "rule", "knowledge"];
     let mut edges: Vec<Edge> = Vec::new();
     let now = chrono::Utc::now().to_rfc3339();
+
+    // Build the pattern list and a mapping from pattern index to
+    // code entity ID. Combine paths and names into one pattern set.
+    let mut patterns: Vec<String> = Vec::new();
+    let mut pattern_to_id: Vec<String> = Vec::new();
+
+    for (path, id) in &path_to_id {
+        patterns.push(path.clone());
+        pattern_to_id.push(id.clone());
+    }
+    for (name, id) in &unique_names {
+        if name.len() >= 4 {
+            patterns.push(name.clone());
+            pattern_to_id.push(id.clone());
+        }
+    }
+
+    let ac = match aho_corasick::AhoCorasick::new(&patterns) {
+        Ok(ac) => ac,
+        Err(e) => {
+            tracing::warn!("failed to build Aho-Corasick automaton: {}", e);
+            return 0;
+        }
+    };
 
     for kt in &knowledge_types {
         if let Ok(entities) = get_entities_by_type(&conn, kt, Some("active"), 100_000) {
@@ -89,36 +116,20 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
                     entity.content
                 );
 
-                // Path-based: find file paths in content.
-                for (path, id) in &path_to_id {
-                    if content.contains(path.as_str()) {
-                        edges.push(Edge {
-                            source_id: entity.id.clone(),
-                            target_id: id.clone(),
-                            edge_type: "auto_references".to_string(),
-                            weight: 1.0,
-                            created_at: now.clone(),
-                        });
-                    }
+                // Single pass over content for all patterns.
+                let mut matched_ids: Vec<String> = Vec::new();
+                for mat in ac.find_iter(&content) {
+                    matched_ids.push(pattern_to_id[mat.pattern()].clone());
                 }
 
-                // Name-based: find unique code entity names in content.
-                for (name, id) in &unique_names {
-                    // Skip very short names (< 4 chars) to reduce
-                    // false positives from common words matching
-                    // function names like "run" or "get".
-                    if name.len() < 4 {
-                        continue;
-                    }
-                    if content.contains(name.as_str()) {
-                        edges.push(Edge {
-                            source_id: entity.id.clone(),
-                            target_id: id.clone(),
-                            edge_type: "auto_references".to_string(),
-                            weight: 1.0,
-                            created_at: now.clone(),
-                        });
-                    }
+                for target_id in matched_ids {
+                    edges.push(Edge {
+                        source_id: entity.id.clone(),
+                        target_id,
+                        edge_type: "auto_references".to_string(),
+                        weight: 1.0,
+                        created_at: now.clone(),
+                    });
                 }
             }
         }
@@ -130,19 +141,19 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
 
     let count = edges.len();
 
-    if let Err(e) = conn.execute_batch("BEGIN") {
-        tracing::warn!(
-            "failed to begin auto-link transaction: {} — falling back to autocommit",
-            e
-        );
+    let in_transaction = conn.execute_batch("BEGIN").is_ok();
+    if !in_transaction {
+        tracing::warn!("failed to begin auto-link transaction — falling back to autocommit");
     }
     for edge in &edges {
         if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, edge) {
             tracing::debug!("skipped auto-link edge: {}", e);
         }
     }
-    if let Err(e) = conn.execute_batch("COMMIT") {
+    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
         tracing::warn!("failed to commit auto-link transaction: {}", e);
+        // Transaction rolled back — none of the edges persisted.
+        return 0;
     }
 
     count

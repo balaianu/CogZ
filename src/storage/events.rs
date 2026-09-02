@@ -28,6 +28,7 @@ pub enum EventType {
     PostToolUse,
     FileSave,
     SessionEnd,
+    Stop,
 }
 
 impl EventType {
@@ -50,6 +51,7 @@ impl EventType {
             Self::PostToolUse => "post_tool_use",
             Self::FileSave => "file_save",
             Self::SessionEnd => "session_end",
+            Self::Stop => "stop",
         }
     }
 }
@@ -130,11 +132,8 @@ pub fn count_events(conn: &Connection) -> Result<i64, StorageError> {
 fn row_to_event(row: &rusqlite::Row<'_>) -> Result<DomainEvent, rusqlite::Error> {
     let payload_str: String = row.get(3)?;
     let payload = serde_json::from_str(&payload_str).unwrap_or_else(|e| {
-        tracing::warn!(
-            "malformed event payload, falling back to empty object: {}",
-            e
-        );
-        serde_json::json!({})
+        tracing::warn!("malformed event payload JSON: {}", e);
+        serde_json::json!({ "_corrupt_payload": payload_str })
     });
     Ok(DomainEvent {
         id: row.get(0)?,

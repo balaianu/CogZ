@@ -97,6 +97,58 @@ pub fn sync_incremental(storage: &storage::Storage, cogz_dir: &Path) -> SyncResu
     sync_inner(storage, cogz_dir, true)
 }
 
+/// Sync a single entity file to the DB. Used by the file_save hook
+/// to avoid scanning the entire `.cogz/` directory when only one file
+/// changed. The file path is relative to the repo root (e.g.
+/// `.cogz/knowledge/foo.md`).
+pub fn sync_single_file(
+    storage: &storage::Storage,
+    cogz_dir: &Path,
+    file_path: &str,
+) -> SyncResult {
+    let abs_path = if file_path.starts_with(".cogz/") || file_path.starts_with("./.cogz/") {
+        // Relative to repo root — resolve via cogz_dir's parent.
+        let repo_root = cogz_dir.parent().unwrap_or(cogz_dir);
+        repo_root.join(file_path)
+    } else {
+        cogz_dir.join(file_path)
+    };
+
+    if !abs_path.exists() {
+        return SyncResult::default();
+    }
+
+    let mut result = SyncResult::default();
+
+    // Phase 1: read and parse the file (no lock held).
+    let (entity_file, hash, relative_path) = match read_and_parse(&abs_path, cogz_dir) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            result.errors.push(SyncFailure {
+                file_path: abs_path,
+                error,
+            });
+            return result;
+        }
+    };
+
+    // Phase 2: DB operations (lock held).
+    {
+        let conn = storage.conn();
+        match sync_parsed_file(&conn, &entity_file, &hash, &relative_path, true) {
+            Ok(action) => record_action(&mut result, action, &entity_file.id),
+            Err(error) => {
+                result.errors.push(SyncFailure {
+                    file_path: abs_path,
+                    error,
+                });
+            }
+        }
+    }
+
+    result
+}
+
 /// Shared sync implementation. When `incremental` is true, files whose
 /// content hash hasn't changed are skipped.
 ///

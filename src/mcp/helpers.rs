@@ -152,8 +152,23 @@ pub fn write_and_sync(
     embed_model: Option<&OnnxEmbeddingModel>,
     nli_model: Option<&dyn NliModel>,
 ) -> Result<serde_json::Value, McpError> {
-    // 1. Write file first (file-first invariant)
-    let path = entity.file_path(cogz_dir);
+    // 0. Scan for secrets before writing to disk. Knowledge and rules
+    // are committed to git — a secret there is nearly impossible to
+    // remove from version history.
+    if let Some(scan) = crate::security::scan_content(&entity.title, &entity.body) {
+        return Err(mcp_error(
+            "secret_detected",
+            &format!(
+                "Content contains a suspected {} (starting with \"{}...\"). \
+                 Remove the secret before recording this entity.",
+                scan.kind, scan.preview
+            ),
+        ));
+    }
+
+    // 1. Write file first (file-first invariant). Use file_path_safe
+    // to avoid silent overwrites when titles slugify identically.
+    let path = entity.file_path_safe(cogz_dir);
     write_entity_file(&path, entity).map_err(|e| {
         mcp_error(
             "file_write_failed",
@@ -246,9 +261,7 @@ pub fn write_and_sync(
         let _ = events::record_event(&conn, event_type, Some(&entity.id), &payload);
     }
 
-    let relative_path = path
-        .strip_prefix(cogz_dir.parent().unwrap_or(cogz_dir))
-        .unwrap_or(&path);
+    let relative_path = path.strip_prefix(cogz_dir).unwrap_or(&path);
 
     Ok(json!({
         "id": entity.id,

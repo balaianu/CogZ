@@ -381,6 +381,7 @@ dependencies = [
 name = "cogz"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "chrono",
  "clap",
@@ -392,6 +393,7 @@ dependencies = [
  "ndarray 0.16.1",
  "ort",
  "pretty_assertions",
+ "regex",
  "rmcp",
  "rusqlite",
  "schemars",

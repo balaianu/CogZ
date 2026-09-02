@@ -264,26 +264,17 @@ pub fn run_mcp_stdio(repo: &std::path::Path) -> anyhow::Result<()> {
 /// pack to stdout for agent injection. For file_save, prints reindex
 /// summary to stderr. Status info goes to stderr so stdout stays
 /// clean for context pack injection.
-pub fn run_capture_event(
-    repo: &std::path::Path,
-    event_type: &str,
-    prompt: Option<&str>,
-    prompt_file: Option<&str>,
-    tool_name: Option<&str>,
-    tool_result: Option<&str>,
-    file_path: Option<&str>,
-) -> anyhow::Result<()> {
-    let result = cogz::hooks::run_capture_event(
-        repo,
-        event_type,
-        prompt,
-        prompt_file,
-        tool_name,
-        tool_result,
-        file_path,
-    )?;
+pub fn run_capture_event(input: &cogz::hooks::CaptureInput) -> anyhow::Result<()> {
+    let result = cogz::hooks::run_capture_event(input)?;
 
-    eprintln!("Event {} recorded (id: {})", event_type, result.event_id);
+    // In hook-json mode, stdout is reserved for the JSON response.
+    // Status info goes to stderr so it doesn't corrupt the JSON.
+    if !input.hook_json {
+        eprintln!(
+            "Event {} recorded (id: {})",
+            input.event_str, result.event_id
+        );
+    }
     if let Some(ref obs_id) = result.observation_id {
         eprintln!("Observation recorded: {}", obs_id);
     }

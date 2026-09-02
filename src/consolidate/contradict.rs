@@ -131,14 +131,13 @@ pub fn classify_candidates(
         None
     };
 
-    let mut contradicts_ids = Vec::new();
+    // Phase 1: apply cheap pre-filters (identical text, length ratio)
+    // to determine which candidates need embedding + NLI.
+    let mut need_nli: Vec<&Entity> = Vec::new();
     for entity in &candidates {
-        // Fast-path: identical texts are entailment, not contradiction.
         if new_lower == entity.content.to_lowercase() {
             continue;
         }
-
-        // Length ratio pre-filter.
         let entity_len = entity.content.len();
         if new_len > 0 && entity_len > 0 {
             let ratio = (new_len.max(entity_len) as f64) / (new_len.min(entity_len) as f64);
@@ -146,13 +145,32 @@ pub fn classify_candidates(
                 continue;
             }
         }
+        need_nli.push(entity);
+    }
 
-        // Cosine similarity pre-filter (when embedding model is available).
-        if let (Some(new_emb), Some(em)) = (&new_embedding, embed_model)
-            && let Ok(entity_embs) = em.embed(&[entity.content.as_str()])
-            && let Some(entity_emb) = entity_embs.into_iter().next()
-        {
-            let cos = cosine_similarity(new_emb, &entity_emb);
+    if need_nli.is_empty() {
+        return Vec::new();
+    }
+
+    // Phase 2: batch-embed all candidates that passed the cheap filters,
+    // instead of one embed call per candidate inside the loop.
+    let candidate_embeddings: Vec<Option<Vec<f32>>> =
+        if let (Some(em), Some(_)) = (embed_model, &new_embedding) {
+            let texts: Vec<&str> = need_nli.iter().map(|e| e.content.as_str()).collect();
+            match em.embed(&texts) {
+                Ok(embs) => embs.into_iter().map(Some).collect(),
+                Err(_) => need_nli.iter().map(|_| None).collect(),
+            }
+        } else {
+            need_nli.iter().map(|_| None).collect()
+        };
+
+    // Phase 3: cosine pre-filter + NLI scoring.
+    let mut contradicts_ids = Vec::new();
+    for (entity, entity_emb) in need_nli.iter().zip(candidate_embeddings) {
+        // Cosine similarity pre-filter (when embedding is available).
+        if let (Some(new_emb), Some(ref ent_emb)) = (&new_embedding, entity_emb) {
+            let cos = cosine_similarity(new_emb, ent_emb);
             if cos < config.contradiction_cosine_threshold {
                 continue;
             }

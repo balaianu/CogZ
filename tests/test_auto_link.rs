@@ -1,12 +1,25 @@
 //! Integration tests for auto-linking knowledge entities to code entities.
 
-use std::path::Path;
-
 use cogz::index::{self, tree_sitter::Language};
 use cogz::storage::{self, Storage, crud::Entity};
 
 fn setup_storage() -> Storage {
     Storage::open_memory().unwrap()
+}
+
+/// Helper: parse files and sync entities + edges to DB.
+fn sync_code(storage: &Storage, files: &[(std::path::PathBuf, String, Language)]) {
+    use cogz::index::tree_sitter::extract_all;
+    let mut entities_by_file = Vec::new();
+    let mut raw_edges_by_file = Vec::new();
+    for (path, source, lang) in files {
+        let (entities, raw_edges) = extract_all(path, source, *lang);
+        let path_str = path.to_string_lossy().to_string();
+        entities_by_file.push((path_str.clone(), entities));
+        raw_edges_by_file.push((path_str, raw_edges));
+    }
+    index::sync::sync_code_entities(storage, &entities_by_file);
+    index::code_graph::sync_code_edges(storage, &entities_by_file, &raw_edges_by_file);
 }
 
 #[test]
@@ -25,8 +38,7 @@ fn build_sql_query(table: &str) -> String {
         Language::Rust,
     )];
 
-    index::sync::sync_code_entities(&storage, Path::new("."), &files);
-    index::code_graph::sync_code_edges(&storage, Path::new("."), &files);
+    sync_code(&storage, &files);
 
     // Insert a knowledge entity that references the file path
     let conn = storage.conn();
@@ -70,8 +82,7 @@ fn compute_embedding_similarity(a: &[f32], b: &[f32]) -> f32 {
         Language::Rust,
     )];
 
-    index::sync::sync_code_entities(&storage, Path::new("."), &files);
-    index::code_graph::sync_code_edges(&storage, Path::new("."), &files);
+    sync_code(&storage, &files);
 
     // Knowledge entity that mentions the function name
     let conn = storage.conn();
@@ -99,8 +110,7 @@ fn auto_links_are_rebuildable() {
         Language::Rust,
     )];
 
-    index::sync::sync_code_entities(&storage, Path::new("."), &files);
-    index::code_graph::sync_code_edges(&storage, Path::new("."), &files);
+    sync_code(&storage, &files);
 
     let conn = storage.conn();
     let entity = Entity::new(
@@ -142,8 +152,7 @@ fn auto_links_preserve_manual_references() {
         Language::Rust,
     )];
 
-    index::sync::sync_code_entities(&storage, Path::new("."), &files);
-    index::code_graph::sync_code_edges(&storage, Path::new("."), &files);
+    sync_code(&storage, &files);
 
     // Insert a manual references edge
     let conn = storage.conn();

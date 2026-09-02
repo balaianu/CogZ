@@ -16,6 +16,8 @@ pub fn run_embed_bg(
     ids_file: &Path,
     code_model: &str,
     dimension: usize,
+    idle_ttl: u64,
+    min_free_mb: u64,
 ) -> anyhow::Result<()> {
     use cogz::embed::{EmbeddingCache, ModelType, OnnxEmbeddingModel};
     use cogz::storage::crud::get_entities_batch;
@@ -50,8 +52,14 @@ pub fn run_embed_bg(
 
     // Load the code model.
     let models_dir = cli::models_dir();
-    let model =
-        OnnxEmbeddingModel::with_model_id(ModelType::Code, &models_dir, dimension, code_model);
+    let model = OnnxEmbeddingModel::with_resource_config(
+        ModelType::Code,
+        &models_dir,
+        dimension,
+        code_model,
+        idle_ttl,
+        min_free_mb,
+    );
 
     if !model.model_files_exist() {
         tracing::warn!("background embed: code model not available");

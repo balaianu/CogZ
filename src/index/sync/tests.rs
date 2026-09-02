@@ -1,5 +1,19 @@
 use super::*;
+use crate::index::tree_sitter::{Language, extract_all};
 use crate::storage::Storage;
+
+/// Helper: parse source files and return entities_by_file for sync.
+fn parse_files(
+    files: &[(std::path::PathBuf, String, Language)],
+) -> Vec<(String, Vec<crate::index::tree_sitter::CodeEntity>)> {
+    files
+        .iter()
+        .map(|(path, source, lang)| {
+            let (entities, _) = extract_all(path, source, *lang);
+            (path.to_string_lossy().to_string(), entities)
+        })
+        .collect()
+}
 
 #[test]
 fn uuid_is_deterministic() {
@@ -39,7 +53,8 @@ fn sync_inserts_code_entities() {
         Language::Rust,
     )];
 
-    let result = sync_code_entities(&storage, Path::new("."), &files);
+    let entities = parse_files(&files);
+    let result = sync_code_entities(&storage, &entities);
     assert_eq!(result.created, 2); // file + function
     assert_eq!(result.updated, 0);
     assert_eq!(result.marked_stale, 0);
@@ -62,11 +77,12 @@ fn sync_skips_unchanged_entities() {
     )];
 
     // First sync — creates
-    let result1 = sync_code_entities(&storage, Path::new("."), &files);
+    let entities = parse_files(&files);
+    let result1 = sync_code_entities(&storage, &entities);
     assert_eq!(result1.created, 2);
 
     // Second sync — skips (same content)
-    let result2 = sync_code_entities(&storage, Path::new("."), &files);
+    let result2 = sync_code_entities(&storage, &entities);
     assert_eq!(result2.created, 0);
     assert_eq!(result2.skipped, 2);
 }
@@ -83,7 +99,8 @@ fn sync_updates_changed_entities() {
     )];
 
     // First sync
-    sync_code_entities(&storage, Path::new("."), &files1);
+    let entities1 = parse_files(&files1);
+    sync_code_entities(&storage, &entities1);
 
     // Second sync with changed content
     let files2 = vec![(
@@ -91,7 +108,8 @@ fn sync_updates_changed_entities() {
         code2.to_string(),
         Language::Rust,
     )];
-    let result2 = sync_code_entities(&storage, Path::new("."), &files2);
+    let entities2 = parse_files(&files2);
+    let result2 = sync_code_entities(&storage, &entities2);
     assert_eq!(result2.updated, 2);
     assert_eq!(result2.skipped, 0);
 }
@@ -107,10 +125,11 @@ fn sync_marks_stale_when_file_removed() {
     )];
 
     // First sync — creates
-    sync_code_entities(&storage, Path::new("."), &files);
+    let entities = parse_files(&files);
+    sync_code_entities(&storage, &entities);
 
     // Second sync — empty file list, should mark stale
-    let result = sync_code_entities(&storage, Path::new("."), &[]);
+    let result = sync_code_entities(&storage, &[]);
     assert_eq!(result.marked_stale, 2);
 }
 
@@ -125,13 +144,14 @@ fn sync_reactivates_stale_entities() {
     )];
 
     // First sync — creates
-    sync_code_entities(&storage, Path::new("."), &files);
+    let entities = parse_files(&files);
+    sync_code_entities(&storage, &entities);
 
     // Second sync — empty, marks stale
-    sync_code_entities(&storage, Path::new("."), &[]);
+    sync_code_entities(&storage, &[]);
 
     // Third sync — file is back, should reactivate
-    let result = sync_code_entities(&storage, Path::new("."), &files);
+    let result = sync_code_entities(&storage, &entities);
     assert_eq!(result.updated, 2);
     assert_eq!(result.marked_stale, 0);
 
@@ -149,7 +169,6 @@ fn sync_reactivates_stale_entities() {
 
 #[test]
 fn rebuild_produces_same_uuids() {
-    let storage = Storage::open_memory().unwrap();
     let code = "fn add(a: i32, b: i32) -> i32 { a + b }";
     let files = vec![(
         std::path::PathBuf::from("src/math.rs"),
@@ -158,7 +177,9 @@ fn rebuild_produces_same_uuids() {
     )];
 
     // First sync
-    sync_code_entities(&storage, Path::new("."), &files);
+    let storage = Storage::open_memory().unwrap();
+    let entities = parse_files(&files);
+    sync_code_entities(&storage, &entities);
     let conn = storage.conn();
     let ids_before: Vec<String> = conn
         .prepare("SELECT id FROM entities ORDER BY id")
@@ -171,7 +192,7 @@ fn rebuild_produces_same_uuids() {
     // Reset and rebuild
     drop(conn);
     let storage2 = Storage::open_memory().unwrap();
-    sync_code_entities(&storage2, Path::new("."), &files);
+    sync_code_entities(&storage2, &entities);
     let conn2 = storage2.conn();
     let ids_after: Vec<String> = conn2
         .prepare("SELECT id FROM entities ORDER BY id")
@@ -182,4 +203,84 @@ fn rebuild_produces_same_uuids() {
         .collect();
 
     assert_eq!(ids_before, ids_after);
+}
+
+#[test]
+fn incremental_sync_marks_renamed_entities_stale() {
+    let storage = Storage::open_memory().unwrap();
+
+    // V1: file defines `old_fn`
+    let code_v1 = "fn old_fn() {}\nfn keeper() {}\n";
+    let files_v1 = vec![(
+        std::path::PathBuf::from("src/test.rs"),
+        code_v1.to_string(),
+        Language::Rust,
+    )];
+    let entities_v1 = parse_files(&files_v1);
+    sync_code_entities(&storage, &entities_v1);
+
+    let old_fn_id = code_entity_uuid("src/test.rs", "function", "old_fn");
+    let keeper_id = code_entity_uuid("src/test.rs", "function", "keeper");
+    {
+        let conn = storage.conn();
+        let old_status: String = conn
+            .query_row(
+                "SELECT status FROM entities WHERE id = ?1",
+                rusqlite::params![old_fn_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_status, "active");
+    }
+
+    // V2: `old_fn` renamed to `new_fn`, `keeper` unchanged
+    let code_v2 = "fn new_fn() {}\nfn keeper() {}\n";
+    let files_v2 = vec![(
+        std::path::PathBuf::from("src/test.rs"),
+        code_v2.to_string(),
+        Language::Rust,
+    )];
+    let entities_v2 = parse_files(&files_v2);
+    let result = sync_code_entities_incremental(&storage, &entities_v2);
+
+    // old_fn should be marked stale (not left active)
+    let conn = storage.conn();
+    let old_status: String = conn
+        .query_row(
+            "SELECT status FROM entities WHERE id = ?1",
+            rusqlite::params![old_fn_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        old_status, "stale",
+        "renamed entity should be marked stale, not left active"
+    );
+
+    // new_fn should be active
+    let new_fn_id = code_entity_uuid("src/test.rs", "function", "new_fn");
+    let new_status: String = conn
+        .query_row(
+            "SELECT status FROM entities WHERE id = ?1",
+            rusqlite::params![new_fn_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(new_status, "active");
+
+    // keeper should still be active (unchanged)
+    let keeper_status: String = conn
+        .query_row(
+            "SELECT status FROM entities WHERE id = ?1",
+            rusqlite::params![keeper_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(keeper_status, "active");
+
+    // The stale-marked ID should be in the result for knowledge flagging
+    assert!(
+        result.removed_entity_ids.contains(&old_fn_id),
+        "removed_entity_ids should contain the renamed entity's ID"
+    );
 }

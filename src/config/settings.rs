@@ -47,17 +47,27 @@ pub struct EmbeddingConfig {
     /// Seconds of idle time before unloading ONNX models from memory.
     /// 0 = never unload (keep resident for process lifetime).
     /// On a 7GB RAM system, unloading idle models frees ~300-500MB.
-    #[serde(default)]
+    /// Default: 300 (5 minutes).
+    #[serde(default = "default_model_idle_ttl")]
     pub model_idle_ttl: u64,
     /// Minimum free memory (MB) required to load a model. If available
     /// RAM drops below this, model loading fails gracefully and the
     /// system degrades to FTS-only. 0 = no check.
-    #[serde(default)]
+    /// Default: 512.
+    #[serde(default = "default_model_min_free_mb")]
     pub model_min_free_mb: u64,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_model_idle_ttl() -> u64 {
+    300
+}
+
+fn default_model_min_free_mb() -> u64 {
+    512
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -146,8 +156,6 @@ pub struct ContextConfig {
     pub escalation_token_budget: usize,
     /// Number of recent rules to include in cold_start mode.
     pub cold_start_rules: usize,
-    /// Number of recent observations to include in cold_start mode.
-    pub cold_start_observations: usize,
     /// Max search results in task mode before expansion.
     pub task_max_results: u32,
     /// Graph expansion hops in task mode.
@@ -173,7 +181,6 @@ impl Default for ContextConfig {
             task_token_budget: 8192,
             escalation_token_budget: 8192,
             cold_start_rules: 5,
-            cold_start_observations: 5,
             task_max_results: 10,
             task_max_hops: 2,
             escalation_max_results: 20,
@@ -198,8 +205,8 @@ impl Config {
                 dimension: crate::embed::registry::DEFAULT_DIMENSION,
                 nli_model: crate::embed::registry::DEFAULT_NLI_MODEL.to_string(),
                 auto_download: true,
-                model_idle_ttl: 0,
-                model_min_free_mb: 0,
+                model_idle_ttl: 300,
+                model_min_free_mb: 512,
             },
             search: SearchConfig {
                 fts_weight: 0.3,
@@ -239,6 +246,23 @@ impl Config {
             return Err(super::ConfigError::Validation(
                 "embedding dimension must be greater than 0".to_string(),
             ));
+        }
+        // Cross-reference configured dimension against the model registry.
+        // A mismatch means the vec0 table is created at one dimension while
+        // the model produces vectors at another — KNN will fail silently.
+        for (model_id, label) in [
+            (&self.embedding.code_model, "code_model"),
+            (&self.embedding.knowledge_model, "knowledge_model"),
+        ] {
+            if let Some(entry) = crate::embed::registry::lookup(model_id)
+                && entry.dim != self.embedding.dimension
+            {
+                return Err(super::ConfigError::Validation(format!(
+                    "embedding.dimension ({}) does not match {} registry dimension ({}) for model '{}'. \
+                     Set dimension to {} or change the model.",
+                    self.embedding.dimension, label, entry.dim, model_id, entry.dim
+                )));
+            }
         }
         if self.search.rrf_k == 0 {
             return Err(super::ConfigError::Validation(
@@ -363,7 +387,6 @@ promotion_threshold = 3
 [context]
 default_token_budget = 4096
 cold_start_rules = 5
-cold_start_observations = 5
 task_max_results = 10
 task_max_hops = 2
 escalation_max_results = 20

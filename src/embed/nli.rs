@@ -125,13 +125,15 @@ impl OnnxNliModel {
     }
 
     fn try_load(&self) -> EmbeddingResult<()> {
-        if self.idle_tracker.is_idle() {
-            self.unload();
-        }
-
+        // Fast path: model already loaded.
         if self.session.lock().unwrap().is_some() {
             self.idle_tracker.touch();
             return Ok(());
+        }
+
+        // Unload idle model to free memory before reloading.
+        if self.idle_tracker.is_idle() {
+            self.unload();
         }
 
         if !super::resources::has_enough_memory(self.min_free_mb) {

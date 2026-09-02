@@ -1,9 +1,9 @@
-//! Python AST extraction — functions, classes, files.
+//! Python AST extraction — functions, classes, files, raw edges.
 
 use serde_json::json;
 use tree_sitter::Node;
 
-use super::{CodeEntity, node_text};
+use super::{CodeEntity, RawEdge, node_text, walk_descendants};
 
 pub(super) fn extract_python(
     root: &Node,
@@ -122,4 +122,104 @@ fn extract_python_class_methods(
             entities.push(entity);
         }
     }
+}
+
+// ── Python raw edge extraction ────────────────────────────────────
+
+pub(super) fn extract_python_raw_edges(
+    root: &Node,
+    source: &[u8],
+    file_path: &str,
+    edges: &mut Vec<RawEdge>,
+) {
+    let mut cursor = root.walk();
+    for node in root.named_children(&mut cursor) {
+        match node.kind() {
+            "import_statement" | "import_from_statement" => {
+                let mut imp_cursor = node.walk();
+                for child in node.named_children(&mut imp_cursor) {
+                    let name = node_text(&child, source).unwrap_or_default();
+                    if !name.is_empty() {
+                        edges.push(RawEdge {
+                            source_type: "file",
+                            source_name: file_path.to_string(),
+                            target_name: name,
+                            edge_type: "imports",
+                        });
+                    }
+                }
+            }
+            "function_definition" => {
+                let func_name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| node_text(&n, source))
+                    .unwrap_or_default();
+                if !func_name.is_empty() {
+                    collect_python_calls(&node, source, "function", &func_name, edges);
+                }
+            }
+            "class_definition" => {
+                // extends: class Foo(Bar) → extends from Foo to Bar
+                let class_name = node
+                    .child_by_field_name("name")
+                    .and_then(|n| node_text(&n, source))
+                    .unwrap_or_default();
+                if let Some(sc_node) = node.child_by_field_name("superclasses") {
+                    let mut sc_cursor = sc_node.walk();
+                    for sc in sc_node.named_children(&mut sc_cursor) {
+                        let sc_name = node_text(&sc, source).unwrap_or_default();
+                        if !sc_name.is_empty() && !class_name.is_empty() {
+                            edges.push(RawEdge {
+                                source_type: "class",
+                                source_name: class_name.clone(),
+                                target_name: sc_name,
+                                edge_type: "extends",
+                            });
+                        }
+                    }
+                }
+                // calls from methods inside class
+                let mut class_cursor = node.walk();
+                for child in node.named_children(&mut class_cursor) {
+                    if child.kind() == "function_definition" {
+                        let method_name = child
+                            .child_by_field_name("name")
+                            .and_then(|n| node_text(&n, source))
+                            .unwrap_or_default();
+                        if !method_name.is_empty() {
+                            let qualified = format!("{class_name}::{method_name}");
+                            collect_python_calls(&child, source, "function", &qualified, edges);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_python_calls(
+    node: &Node,
+    source: &[u8],
+    source_type: &'static str,
+    source_name: &str,
+    edges: &mut Vec<RawEdge>,
+) {
+    let mut f = |desc: &Node| {
+        if desc.kind() == "call"
+            && let Some(func_node) = desc.child_by_field_name("function")
+        {
+            let call_name = node_text(&func_node, source).unwrap_or_default();
+            if !call_name.is_empty() {
+                edges.push(RawEdge {
+                    source_type,
+                    source_name: source_name.to_string(),
+                    target_name: call_name,
+                    edge_type: "calls",
+                });
+            }
+        }
+        true
+    };
+    walk_descendants(node, &mut f);
 }

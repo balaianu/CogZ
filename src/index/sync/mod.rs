@@ -15,17 +15,12 @@
 mod tests;
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::index::tree_sitter::Language;
 use crate::storage;
 use crate::storage::crud::{Entity, EntityType};
-
-/// Parsed source file: (relative_path, source_code, language).
-pub type SourceFile = (std::path::PathBuf, String, Language);
 
 /// Parsed entity ready for DB sync: (id, entity).
 type ParsedEntity = (String, Entity);
@@ -46,6 +41,9 @@ pub struct CodeSyncResult {
     pub skipped: usize,
     /// IDs of entities that were created or updated (for embedding).
     pub synced_entity_ids: Vec<String>,
+    /// IDs of entities marked stale because they're no longer present
+    /// in the new parse (renamed or removed within a changed file).
+    pub removed_entity_ids: Vec<String>,
 }
 
 /// Generate a deterministic UUID v5 for a code entity.
@@ -77,13 +75,12 @@ fn content_hash(content: &str) -> String {
 /// DB operations acquire it in a second phase.
 pub fn sync_code_entities(
     storage: &storage::Storage,
-    repo_root: &Path,
-    source_files: &[SourceFile],
+    entities_by_file: &[(String, Vec<crate::index::tree_sitter::CodeEntity>)],
 ) -> CodeSyncResult {
     let mut result = CodeSyncResult::default();
 
-    // Phase 1: parse all source files (no lock held).
-    let (all_entities, file_to_entity_ids) = parse_source_files(repo_root, source_files);
+    // Phase 1: convert CodeEntity values to ParsedEntity (no lock held).
+    let (all_entities, file_to_entity_ids) = convert_entities(entities_by_file);
 
     // Phase 2: DB operations (lock held).
     let conn = storage.conn();
@@ -107,17 +104,27 @@ pub fn sync_code_entities(
 /// full stale-marking sweep. Used by `reindex_code` when git diff
 /// provides the exact set of changed files. Deleted files are
 /// handled separately by the caller via `mark_stale_for_deleted_files`.
+///
+/// Per-file stale marking: for each changed file, any active code
+/// entity in the DB whose ID is not in the new parse is marked stale.
+/// This catches renamed or removed entities within files that still
+/// exist on disk.
 pub fn sync_code_entities_incremental(
     storage: &storage::Storage,
-    repo_root: &Path,
-    source_files: &[SourceFile],
+    entities_by_file: &[(String, Vec<crate::index::tree_sitter::CodeEntity>)],
 ) -> CodeSyncResult {
     let mut result = CodeSyncResult::default();
 
-    let (all_entities, _) = parse_source_files(repo_root, source_files);
+    let (all_entities, file_to_entity_ids) = convert_entities(entities_by_file);
 
     let conn = storage.conn();
     sync_entities_to_db(&conn, &all_entities, &mut result);
+
+    // Per-file stale marking: mark entities no longer present in the
+    // new parse as stale (renamed or removed within changed files).
+    let (stale_count, stale_ids) = mark_stale_for_removed_entities(&conn, &file_to_entity_ids);
+    result.marked_stale += stale_count;
+    result.removed_entity_ids = stale_ids;
 
     let now = chrono::Utc::now().to_rfc3339();
     if let Err(e) = storage::set_meta(&conn, "last_code_index", &now) {
@@ -127,23 +134,17 @@ pub fn sync_code_entities_incremental(
     result
 }
 
-/// Parse source files into entities + file-to-entity-ID map.
-/// No lock held — pure CPU work.
-fn parse_source_files(
-    repo_root: &Path,
-    source_files: &[SourceFile],
+/// Convert pre-parsed CodeEntity values into ParsedEntity values
+/// ready for DB sync. No lock held — pure CPU work.
+fn convert_entities(
+    entities_by_file: &[(String, Vec<crate::index::tree_sitter::CodeEntity>)],
 ) -> (Vec<ParsedEntity>, HashMap<String, Vec<String>>) {
     let mut all_entities: Vec<ParsedEntity> = Vec::new();
     let mut file_to_entity_ids: HashMap<String, Vec<String>> = HashMap::new();
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (rel_path, source, language) in source_files {
-        let abs_path = repo_root.join(rel_path);
-        let entities = crate::index::tree_sitter::extract_entities(&abs_path, source, *language);
-
+    for (file_path_str, entities) in entities_by_file {
         for ce in entities {
-            let file_path_str = rel_path.to_string_lossy().to_string();
-
             // File entities use the full path as qualified_name so that
             // code_graph can compute the same UUID from the path alone.
             // Other entity types use qualified_name/module_path/title.
@@ -158,7 +159,7 @@ fn parse_source_files(
                     .to_string()
             };
 
-            let id = code_entity_uuid(&file_path_str, ce.entity_type, &qualified_name);
+            let id = code_entity_uuid(file_path_str, ce.entity_type, &qualified_name);
 
             // Multiple impl blocks for the same type produce the same
             // UUID. Keep the first; methods from all blocks are still
@@ -192,7 +193,7 @@ fn parse_source_files(
             };
 
             file_to_entity_ids
-                .entry(file_path_str)
+                .entry(file_path_str.clone())
                 .or_default()
                 .push(id.clone());
             all_entities.push((id.clone(), entity));
@@ -218,8 +219,98 @@ pub fn mark_stale_for_deleted_files(
     storage::crud::mark_code_entities_stale_by_file_paths(&conn, &deleted).unwrap_or(0)
 }
 
+/// Mark code entities as stale when they exist in the DB for a changed
+/// file but are no longer present in the new parse. This catches
+/// renamed or removed entities within files that still exist on disk
+/// (deleted files are handled by `mark_stale_for_deleted_files`).
+///
+/// Returns `(count, stale_entity_ids)` so callers can pass the IDs to
+/// `flag_stale_knowledge` for downstream knowledge flagging.
+fn mark_stale_for_removed_entities(
+    conn: &rusqlite::Connection,
+    file_to_entity_ids: &HashMap<String, Vec<String>>,
+) -> (usize, Vec<String>) {
+    if file_to_entity_ids.is_empty() {
+        return (0, Vec::new());
+    }
+
+    let new_ids: std::collections::HashSet<String> = file_to_entity_ids
+        .values()
+        .flat_map(|ids| ids.iter().cloned())
+        .collect();
+
+    let code_types = ["function", "class", "file", "module"];
+    let type_placeholders = (0..code_types.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let file_paths: Vec<String> = file_to_entity_ids.keys().cloned().collect();
+    let mut stale_ids: Vec<String> = Vec::new();
+
+    // 4 type params + up to 995 file paths = 999 (SQLite variable limit).
+    const CHUNK_SIZE: usize = 995;
+    for chunk in file_paths.chunks(CHUNK_SIZE) {
+        let path_placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT id FROM entities \
+             WHERE status = 'active' AND type IN ({type_placeholders}) \
+             AND file_path IN ({path_placeholders})"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(code_types.len() + chunk.len());
+        for t in &code_types {
+            params.push(t);
+        }
+        for p in chunk {
+            params.push(p);
+        }
+        if let Ok(mut stmt) = conn.prepare(&sql)
+            && let Ok(rows) = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))
+        {
+            for row in rows.flatten() {
+                if !new_ids.contains(&row) {
+                    stale_ids.push(row);
+                }
+            }
+        }
+    }
+
+    if stale_ids.is_empty() {
+        return (0, Vec::new());
+    }
+
+    // Batch-mark stale. The WHERE clause enforces active→stale,
+    // which is a legal transition per the status state machine.
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut count = 0;
+    for chunk in stale_ids.chunks(999) {
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "UPDATE entities SET status = 'stale', updated_at = ? \
+             WHERE id IN ({placeholders}) AND status = 'active'"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + chunk.len());
+        params.push(&now);
+        for id in chunk {
+            params.push(id);
+        }
+        match conn.execute(&sql, params.as_slice()) {
+            Ok(n) => count += n,
+            Err(e) => tracing::warn!("failed to mark removed entities stale: {}", e),
+        }
+    }
+
+    (count, stale_ids)
+}
+
 /// Core DB sync — insert or update each entity, tracking results.
 /// Batch-fetches all existing entities in one query to avoid N+1.
+///
+/// Counts are tracked locally and only applied to `result` after
+/// successful commit. If the transaction commit fails, the counts
+/// are discarded — the DB rolled back, so reporting non-zero counts
+/// would be misleading.
 fn sync_entities_to_db(
     conn: &rusqlite::Connection,
     all_entities: &[ParsedEntity],
@@ -233,14 +324,18 @@ fn sync_entities_to_db(
             .map(|e| (e.id.clone(), e))
             .collect();
 
+    // Track counts locally so they can be discarded on commit failure.
+    let mut created = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut synced_ids: Vec<String> = Vec::new();
+
     // Wrap all inserts/updates in a single transaction to avoid
     // one fsync per row. On a 1000+ entity codebase this reduces
     // the DB sync phase from minutes to seconds.
-    if let Err(e) = conn.execute_batch("BEGIN") {
-        tracing::warn!(
-            "failed to begin transaction: {} — falling back to autocommit",
-            e
-        );
+    let in_transaction = conn.execute_batch("BEGIN").is_ok();
+    if !in_transaction {
+        tracing::warn!("failed to begin entity transaction — falling back to autocommit");
     }
 
     for (id, entity) in all_entities {
@@ -248,46 +343,53 @@ fn sync_entities_to_db(
             Some(existing) => {
                 if existing.status == "stale" {
                     // Reactivate stale entity even if content is unchanged.
-                    let mut updated = entity.clone();
-                    updated.status = "active".to_string();
-                    updated.created_at = existing.created_at.clone();
-                    if let Err(e) = storage::crud::update_entity(conn, &updated) {
+                    let mut updated_entity = entity.clone();
+                    updated_entity.status = "active".to_string();
+                    updated_entity.created_at = existing.created_at.clone();
+                    if let Err(e) = storage::crud::update_entity(conn, &updated_entity) {
                         tracing::warn!("failed to reactivate code entity {}: {}", id, e);
                         continue;
                     }
-                    result.updated += 1;
-                    result.synced_entity_ids.push(id.clone());
+                    updated += 1;
+                    synced_ids.push(id.clone());
                     continue;
                 }
                 if existing.content_hash == entity.content_hash {
-                    result.skipped += 1;
+                    skipped += 1;
                     continue;
                 }
                 // Update content, properties, hash. Preserve status.
-                let mut updated = entity.clone();
-                updated.status = existing.status.clone();
-                updated.created_at = existing.created_at.clone();
-                if let Err(e) = storage::crud::update_entity(conn, &updated) {
+                let mut updated_entity = entity.clone();
+                updated_entity.status = existing.status.clone();
+                updated_entity.created_at = existing.created_at.clone();
+                if let Err(e) = storage::crud::update_entity(conn, &updated_entity) {
                     tracing::warn!("failed to update code entity {}: {}", id, e);
                     continue;
                 }
-                result.updated += 1;
-                result.synced_entity_ids.push(id.clone());
+                updated += 1;
+                synced_ids.push(id.clone());
             }
             None => {
                 if let Err(e) = storage::crud::insert_entity(conn, entity) {
                     tracing::warn!("failed to insert code entity {}: {}", id, e);
                     continue;
                 }
-                result.created += 1;
-                result.synced_entity_ids.push(id.clone());
+                created += 1;
+                synced_ids.push(id.clone());
             }
         }
     }
 
-    if let Err(e) = conn.execute_batch("COMMIT") {
+    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
         tracing::warn!("failed to commit entity transaction: {}", e);
+        // Transaction rolled back — discard counts.
+        return;
     }
+
+    result.created += created;
+    result.updated += updated;
+    result.skipped += skipped;
+    result.synced_entity_ids.extend(synced_ids);
 }
 
 /// Mark code entities as stale if their source file is no longer present.

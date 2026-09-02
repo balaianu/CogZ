@@ -15,7 +15,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::embed::{EmbeddingCache, EmbeddingModel, OnnxEmbeddingModel};
 use crate::files::embed_sync::{embed_entities, store_embeddings};
-use crate::files::sync_incremental;
+use crate::files::sync_single_file;
 use crate::hooks::lifecycle::{ConsolidationSummary, ReindexSummary};
 use crate::storage::Storage;
 use crate::storage::crud::get_entities_batch;
@@ -53,26 +53,26 @@ pub fn handle_file_save(
         }
     };
 
-    if path.starts_with(".cogz/") || path.contains("/.cogz/") {
-        return handle_cogz_file_save(storage, cogz_dir, query_model);
+    if path.starts_with(".cogz/") || path.contains("/.cogz/") || path.starts_with("./.cogz/") {
+        return handle_cogz_file_save(storage, cogz_dir, query_model, path);
     }
 
     handle_source_file_save(storage, config, cogz_dir, path)
 }
 
-/// Sync a `.cogz/` entity file to the DB and embed it. Runs
-/// `sync_incremental` (which scans all entity files but only processes
-/// changed ones), then embeds any synced entities using the knowledge
-/// model. Follows the lock discipline: fetch under lock, embed without
-/// lock, store under lock.
+/// Sync a `.cogz/` entity file to the DB and embed it. Syncs only
+/// the saved file (not the entire `.cogz/` directory), then embeds
+/// the entity using the knowledge model. Follows the lock discipline:
+/// fetch under lock, embed without lock, store under lock.
 fn handle_cogz_file_save(
     storage: &Arc<Storage>,
     cogz_dir: &Path,
     query_model: &OnnxEmbeddingModel,
+    file_path: &str,
 ) -> ReindexSummary {
-    tracing::debug!("file_save hook: syncing .cogz/ entity files");
+    tracing::debug!("file_save hook: syncing {file_path}");
 
-    let result = sync_incremental(storage, cogz_dir);
+    let result = sync_single_file(storage, cogz_dir, file_path);
 
     if !result.errors.is_empty() {
         tracing::warn!(

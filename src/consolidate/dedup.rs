@@ -100,11 +100,16 @@ pub fn check_duplicate(
 }
 
 /// Check for title matches among existing entities.
+///
+/// `threshold` gates which matches are reported: only matches with
+/// similarity >= threshold are returned. Exact match = 1.0, fuzzy
+/// (normalized) match = 0.95. With the default threshold of 0.85,
+/// both pass; raising to 0.99 suppresses fuzzy matches.
 fn check_title_match(
     existing: &[Entity],
     new_id: &str,
     new_title: &str,
-    _threshold: f64,
+    threshold: f64,
 ) -> Option<DuplicateWarning> {
     let new_lower = new_title.to_lowercase();
     let new_normalized = normalize_title(new_title);
@@ -118,7 +123,7 @@ fn check_title_match(
         };
 
         // Exact match (case-insensitive)
-        if title.to_lowercase() == new_lower {
+        if title.to_lowercase() == new_lower && 1.0 >= threshold {
             return Some(DuplicateWarning {
                 existing_id: entity.id.clone(),
                 existing_title: title.clone(),
@@ -133,7 +138,8 @@ fn check_title_match(
 
         // Fuzzy match (normalized comparison)
         let existing_normalized = normalize_title(title);
-        if new_normalized == existing_normalized && !new_normalized.is_empty() {
+        if new_normalized == existing_normalized && !new_normalized.is_empty() && 0.95 >= threshold
+        {
             return Some(DuplicateWarning {
                 existing_id: entity.id.clone(),
                 existing_title: title.clone(),
@@ -151,6 +157,14 @@ fn check_title_match(
 }
 
 /// Check embedding similarity via KNN search.
+///
+/// KNN searches the knowledge embedding space, which contains
+/// observations, rules, AND knowledge entries. The `existing` list is
+/// already filtered to the same entity type, and only same-type
+/// neighbors match (line 186). Use k=20 instead of k=5 so
+/// different-type neighbors don't consume all slots — otherwise a new
+/// rule might find zero rule candidates if 5 knowledge entries are
+/// nearer in the embedding space.
 fn check_embedding_similarity(
     conn: &Connection,
     new_embedding: &[f32],
@@ -158,7 +172,7 @@ fn check_embedding_similarity(
     new_id: &str,
     dedup_threshold: f64,
 ) -> Option<(bool, Option<DuplicateWarning>)> {
-    let neighbors = knn_search(conn, EmbeddingSpace::Knowledge, new_embedding, 5).ok()?;
+    let neighbors = knn_search(conn, EmbeddingSpace::Knowledge, new_embedding, 20).ok()?;
 
     let mut dedup_flagged = false;
     let mut best_warning: Option<DuplicateWarning> = None;
@@ -202,6 +216,12 @@ fn check_embedding_similarity(
 /// True duplicates entail mutually: both A entails B and B entails A
 /// must score above the threshold. A subset-fact (A entails B but not
 /// vice versa) is not a duplicate.
+///
+/// If one direction fails (tokenization or inference error), falls back
+/// to the other direction's score alone. This is more lenient than full
+/// bidirectional confirmation but avoids missing real duplicates on
+/// transient single-direction failures. Both directions failing returns
+/// false.
 ///
 /// Returns true if the pair is confirmed as duplicates, false otherwise.
 /// Returns false if the NLI model is unavailable.

@@ -23,6 +23,12 @@ enum Commands {
         /// Repository root directory. Defaults to current directory.
         #[arg(long, default_value = ".")]
         repo: PathBuf,
+        /// Gitignore all of .cogz/ — nothing is committed to git.
+        /// Use this for solo projects where knowledge and rules
+        /// should stay local. Default is team-sharing mode (knowledge
+        /// and rules are committed, observations and DB are gitignored).
+        #[arg(long)]
+        local_only: bool,
     },
 
     /// Show system status — DB stats, entity counts, stale count.
@@ -137,12 +143,14 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// Capture a lifecycle event from hook scripts. For session_start
-    /// and prompt_submit, prints a context pack to stdout for agent
-    /// injection. For file_save, triggers an incremental code reindex.
-    /// For session_end, runs consolidation and reports counts.
+    /// Capture a lifecycle event. Called by agent hook systems or
+    /// manually. For session_start and prompt_submit, prints a context
+    /// pack to stdout for agent injection. For file_save, triggers an
+    /// incremental code reindex. For session_end, runs consolidation.
+    /// For stop, records the event (no side effects).
     CaptureEvent {
-        /// Event type: session_start, prompt_submit, pre_tool_use, post_tool_use, file_save, session_end.
+        /// Event type: session_start, prompt_submit, pre_tool_use,
+        /// post_tool_use, file_save, session_end, stop.
         event_type: String,
 
         /// Repository root directory. Defaults to current directory.
@@ -168,6 +176,18 @@ enum Commands {
         /// Saved file path, relative to repo root (for file_save).
         #[arg(long)]
         file_path: Option<String>,
+
+        /// Wrap output as JSON for agent hook systems
+        /// ({"hookSpecificOutput": {...}}). Silent skip if no .cogz/
+        /// found. Use this when calling from agent hook configs.
+        #[arg(long)]
+        hook_json: bool,
+
+        /// Skip model loading — use FTS-only search for context
+        /// assembly. Much faster (~2s vs ~40s) but lower quality
+        /// ranking. Recommended for hook calls where speed matters.
+        #[arg(long)]
+        fts_only: bool,
     },
 
     /// Model management — download, list, clean.
@@ -212,6 +232,14 @@ enum Commands {
         /// Embedding dimension.
         #[arg(long)]
         dimension: usize,
+
+        /// Model idle TTL in seconds (0 = never unload).
+        #[arg(long, default_value_t = 300)]
+        idle_ttl: u64,
+
+        /// Minimum free memory in MB to load a model (0 = no check).
+        #[arg(long, default_value_t = 512)]
+        min_free_mb: u64,
     },
 }
 
@@ -258,8 +286,8 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { repo } => {
-            let msg = cogz::init::run(&repo)?;
+        Commands::Init { repo, local_only } => {
+            let msg = cogz::init::run(&repo, local_only)?;
             println!("{}", msg);
             Ok(())
         }
@@ -293,15 +321,19 @@ fn main() -> anyhow::Result<()> {
             tool_name,
             tool_result,
             file_path,
-        } => cli::run_capture_event(
-            &repo,
-            &event_type,
-            prompt.as_deref(),
-            prompt_file.as_deref(),
-            tool_name.as_deref(),
-            tool_result.as_deref(),
-            file_path.as_deref(),
-        ),
+            hook_json,
+            fts_only,
+        } => cli::run_capture_event(&cogz::hooks::CaptureInput {
+            repo: &repo,
+            event_str: &event_type,
+            prompt: prompt.as_deref(),
+            prompt_file: prompt_file.as_deref(),
+            tool_name: tool_name.as_deref(),
+            tool_result: tool_result.as_deref(),
+            file_path: file_path.as_deref(),
+            hook_json,
+            fts_only,
+        }),
         Commands::Models { subcommand } => match subcommand {
             ModelsSub::Download {
                 repo,
@@ -329,6 +361,15 @@ fn main() -> anyhow::Result<()> {
             ids_file,
             code_model,
             dimension,
-        } => commands::run_embed_bg(&db, &ids_file, &code_model, dimension),
+            idle_ttl,
+            min_free_mb,
+        } => commands::run_embed_bg(
+            &db,
+            &ids_file,
+            &code_model,
+            dimension,
+            idle_ttl,
+            min_free_mb,
+        ),
     }
 }

@@ -74,6 +74,7 @@ pub fn delete_embedding(conn: &Connection, entity_id: &str) -> Result<(), Storag
 
 /// Get the embedding for a single entity. Checks both tables.
 /// Returns `None` if no embedding is stored for the entity.
+/// Returns an error if the stored blob is corrupted (not a multiple of 4 bytes).
 pub fn get_embedding(conn: &Connection, entity_id: &str) -> Result<Option<Vec<f32>>, StorageError> {
     // Try knowledge first (more common in query paths), then code.
     for table in ["knowledge_embeddings", "code_embeddings"] {
@@ -81,6 +82,19 @@ pub fn get_embedding(conn: &Connection, entity_id: &str) -> Result<Option<Vec<f3
         let mut stmt = conn.prepare(&sql)?;
         let result = stmt.query_row(params![entity_id], |r| {
             let blob: Vec<u8> = r.get(0)?;
+            if !blob.len().is_multiple_of(4) {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "embedding blob is {} bytes, not a multiple of 4",
+                            blob.len()
+                        ),
+                    )),
+                ));
+            }
             let floats: Vec<f32> = blob
                 .as_chunks::<4>()
                 .0
@@ -124,6 +138,37 @@ pub fn knn_search(
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![query.as_bytes(), k], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?))
+    })?;
+    let mut results = Vec::new();
+    for row in rows {
+        results.push(row?);
+    }
+    Ok(results)
+}
+
+/// KNN search filtered by entity type. Uses a subquery to restrict
+/// results to entities of the specified type, preventing unrelated
+/// entity types from consuming KNN slots. For example, when searching
+/// for merge candidates among observations, this prevents knowledge
+/// entries from crowding out observation neighbors.
+pub fn knn_search_with_type_filter(
+    conn: &Connection,
+    space: EmbeddingSpace,
+    query: &[f32],
+    k: i64,
+    entity_type: &str,
+) -> Result<Vec<(String, f32)>, StorageError> {
+    let sql = format!(
+        "SELECT entity_id, distance
+         FROM {}
+         WHERE embedding MATCH ?1 AND k = ?2
+           AND entity_id IN (SELECT id FROM entities WHERE type = ?3)
+         ORDER BY distance",
+        space.table()
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![query.as_bytes(), k, entity_type], |r| {
         Ok((r.get::<_, String>(0)?, r.get::<_, f32>(1)?))
     })?;
     let mut results = Vec::new();
@@ -233,6 +278,35 @@ mod tests {
 
         let results = knn_search(&conn, EmbeddingSpace::Knowledge, &vec![0.1_f32; 768], 1).unwrap();
         assert!(results.is_empty());
+    }
+
+    #[test]
+    fn knn_search_type_filter_excludes_other_types() {
+        let conn = setup();
+        // Insert an observation and a knowledge entry with identical
+        // embeddings. Without the type filter, both would be returned.
+        insert_entity(&conn, &Entity::new("obs1", "observation", "Obs", "c")).unwrap();
+        insert_entity(&conn, &Entity::new("k1", "knowledge", "Knowledge", "c")).unwrap();
+        insert_embedding(&conn, "obs1", "observation", &vec![0.1_f32; 768]).unwrap();
+        insert_embedding(&conn, "k1", "knowledge", &vec![0.1_f32; 768]).unwrap();
+
+        let query = vec![0.1_f32; 768];
+
+        // Unfiltered: both entities are returned.
+        let unfiltered = knn_search(&conn, EmbeddingSpace::Knowledge, &query, 10).unwrap();
+        assert_eq!(unfiltered.len(), 2);
+
+        // Filtered to observations only: knowledge entry is excluded.
+        let filtered = knn_search_with_type_filter(
+            &conn,
+            EmbeddingSpace::Knowledge,
+            &query,
+            10,
+            "observation",
+        )
+        .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].0, "obs1");
     }
 
     #[test]

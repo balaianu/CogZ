@@ -81,8 +81,24 @@ pub fn update_knowledge_file(
     }
     entity_file.updated_at = chrono::Utc::now().to_rfc3339();
 
-    // 4. Write the file (may move to new path if category changed)
-    let new_path = entity_file.file_path(cogz_dir);
+    // 3.5. Scan for secrets before writing. Knowledge files are
+    // committed to git — a secret there is nearly impossible to
+    // remove from version history.
+    if let Some(scan) = crate::security::scan_content(&entity_file.title, &entity_file.body) {
+        return Err(mcp_error(
+            "secret_detected",
+            &format!(
+                "Content contains a suspected {} (starting with \"{}...\"). \
+                 Remove the secret before updating this entity.",
+                scan.kind, scan.preview
+            ),
+        ));
+    }
+
+    // 4. Write the file (may move to new path if category changed).
+    // Use file_path_safe to avoid silent overwrites when the new
+    // title/category slug collides with a different entity's file.
+    let new_path = entity_file.file_path_safe(cogz_dir);
     if new_path != abs_path
         && let Err(e) = std::fs::remove_file(&abs_path)
     {
@@ -127,9 +143,7 @@ pub fn update_knowledge_file(
         );
     }
 
-    let relative_path = new_path
-        .strip_prefix(cogz_dir.parent().unwrap_or(cogz_dir))
-        .unwrap_or(&new_path);
+    let relative_path = new_path.strip_prefix(cogz_dir).unwrap_or(&new_path);
 
     Ok(json!({
         "id": entity_file.id,

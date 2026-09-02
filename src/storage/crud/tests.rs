@@ -99,6 +99,8 @@ fn tombstone_entity_clears_content_and_sets_status() {
     let conn = setup();
     let entity = Entity::new("uuid-1", "observation", "Title", "content");
     insert_entity(&conn, &entity).unwrap();
+    // Pruning requires rejected or superseded status.
+    update_status(&conn, "uuid-1", "rejected").unwrap();
 
     tombstone_entity(&conn, "uuid-1").unwrap();
 
@@ -107,6 +109,16 @@ fn tombstone_entity_clears_content_and_sets_status() {
     assert_eq!(fetched.content, "");
     assert!(fetched.title.is_none());
     assert!(fetched.content_hash.is_none());
+}
+
+#[test]
+fn tombstone_entity_rejects_active_status() {
+    let conn = setup();
+    let entity = Entity::new("uuid-active", "observation", "Title", "content");
+    insert_entity(&conn, &entity).unwrap();
+
+    let result = tombstone_entity(&conn, "uuid-active");
+    assert!(result.is_err(), "tombstoning an active entity should fail");
 }
 
 #[test]

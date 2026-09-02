@@ -13,4 +13,6 @@ pub mod sync;
 
 pub use entities::{EntityFile, FileEntityType, read_entity_file, slugify, write_entity_file};
 pub use frontmatter::{FmValue, Frontmatter, FrontmatterError};
-pub use sync::{SyncResult, content_hash, scan_entity_files, sync_all, sync_incremental};
+pub use sync::{
+    SyncResult, content_hash, scan_entity_files, sync_all, sync_incremental, sync_single_file,
+};

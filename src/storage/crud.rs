@@ -298,11 +298,27 @@ pub fn tombstone_entity(conn: &Connection, id: &str) -> Result<(), StorageError>
     let now = chrono::Utc::now().to_rfc3339();
     let affected = conn.execute(
         "UPDATE entities SET content = '', title = NULL, content_hash = NULL, \
-         status = 'pruned', updated_at = ?1 WHERE id = ?2",
+         status = 'pruned', updated_at = ?1 \
+         WHERE id = ?2 AND status IN ('rejected', 'superseded')",
         params![now, id],
     )?;
     if affected == 0 {
-        return Err(StorageError::EntityNotFound(id.to_string()));
+        // Either the entity doesn't exist or it's not in a prunable status.
+        // Check which one for a precise error.
+        let exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM entities WHERE id = ?1)",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if !exists {
+            return Err(StorageError::EntityNotFound(id.to_string()));
+        }
+        return Err(StorageError::IllegalTransition {
+            from: "current".to_string(),
+            to: "pruned".to_string(),
+        });
     }
     Ok(())
 }
@@ -345,7 +361,10 @@ pub fn count_all(conn: &Connection) -> Result<i64, StorageError> {
 
 pub fn row_to_entity(row: &rusqlite::Row<'_>) -> Result<Entity, rusqlite::Error> {
     let props_str: String = row.get(4)?;
-    let properties = serde_json::from_str(&props_str).unwrap_or(serde_json::json!({}));
+    let properties = serde_json::from_str(&props_str).unwrap_or_else(|e| {
+        tracing::warn!("malformed entity properties JSON: {}", e);
+        serde_json::json!({ "_corrupt_properties": props_str })
+    });
     Ok(Entity {
         id: row.get(0)?,
         r#type: row.get(1)?,

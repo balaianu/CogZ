@@ -16,11 +16,12 @@ pub struct Edge {
 }
 
 /// Insert an edge. If the edge already exists (same source, target,
-/// type), it is replaced (upsert).
+/// type), only the weight is updated — `created_at` is preserved.
 pub fn insert_edge(conn: &Connection, edge: &Edge) -> Result<(), StorageError> {
     conn.execute(
-        "INSERT OR REPLACE INTO edges (source_id, target_id, edge_type, weight, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO edges (source_id, target_id, edge_type, weight, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(source_id, target_id, edge_type) DO UPDATE SET weight = excluded.weight",
         params![
             edge.source_id,
             edge.target_id,

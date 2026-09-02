@@ -93,7 +93,7 @@ fn find_merge_candidates(
     storage: &crate::storage::Storage,
     config: &ConsolidationConfig,
 ) -> Result<Vec<MergeCandidate>, StorageError> {
-    use crate::storage::embeddings::{EmbeddingSpace, knn_search};
+    use crate::storage::embeddings::{EmbeddingSpace, knn_search_with_type_filter};
 
     let observations = {
         let conn = storage.conn();
@@ -107,15 +107,27 @@ fn find_merge_candidates(
     let mut seen_pairs = std::collections::HashSet::new();
     let mut candidates = Vec::new();
 
+    // Acquire the connection once for all KNN searches, instead of
+    // re-acquiring the mutex per observation.
+    let conn = storage.conn();
+
     for obs in &observations {
-        let conn = storage.conn();
         // Get this observation's embedding.
         let own_embedding = match get_embedding(&conn, &obs.id) {
             Some(e) => e,
             None => continue,
         };
 
-        let neighbors = match knn_search(&conn, EmbeddingSpace::Knowledge, &own_embedding, 5) {
+        // KNN search filtered to observations only. Without the type
+        // filter, knowledge entries near an observation could consume
+        // all KNN slots, leaving no observation candidates for merge.
+        let neighbors = match knn_search_with_type_filter(
+            &conn,
+            EmbeddingSpace::Knowledge,
+            &own_embedding,
+            10,
+            "observation",
+        ) {
             Ok(n) => n,
             Err(_) => continue,
         };
@@ -129,7 +141,8 @@ fn find_merge_candidates(
                 continue;
             }
 
-            // Only merge observations.
+            // Look up the neighbor in our observations list to get
+            // created_at for survivor/superseded ordering.
             let neighbor = match observations.iter().find(|o| o.id == *neighbor_id) {
                 Some(o) => o,
                 None => continue,
@@ -249,6 +262,10 @@ fn get_embedding(conn: &Connection, entity_id: &str) -> Option<Vec<f32>> {
 /// Redirect all edges pointing to or from `old_id` to `new_id`.
 /// Edges that would create duplicates (same source, target, type) are
 /// skipped. Self-loops are removed.
+///
+/// The original edge is only deleted after the redirected edge is
+/// successfully inserted. If the insert fails, the original edge is
+/// preserved to avoid data loss.
 fn redirect_edges(conn: &Connection, old_id: &str, new_id: &str) -> Result<(), StorageError> {
     // Redirect incoming edges: old_id as target → new_id as target.
     let incoming = get_edges_to(conn, old_id)?;
@@ -258,8 +275,9 @@ fn redirect_edges(conn: &Connection, old_id: &str, new_id: &str) -> Result<(), S
             delete_edge(conn, &edge.source_id, old_id, &edge.edge_type)?;
             continue;
         }
-        // Insert the redirected edge (skip if it already exists).
-        insert_edge(
+        // Insert the redirected edge first. Only delete the original
+        // if the insert succeeds — otherwise we'd lose the edge.
+        let inserted = insert_edge(
             conn,
             &Edge {
                 source_id: edge.source_id.clone(),
@@ -269,8 +287,10 @@ fn redirect_edges(conn: &Connection, old_id: &str, new_id: &str) -> Result<(), S
                 created_at: edge.created_at.clone(),
             },
         )
-        .ok();
-        delete_edge(conn, &edge.source_id, old_id, &edge.edge_type)?;
+        .is_ok();
+        if inserted {
+            delete_edge(conn, &edge.source_id, old_id, &edge.edge_type)?;
+        }
     }
 
     // Redirect outgoing edges: old_id as source → new_id as source.
@@ -281,7 +301,7 @@ fn redirect_edges(conn: &Connection, old_id: &str, new_id: &str) -> Result<(), S
             delete_edge(conn, old_id, &edge.target_id, &edge.edge_type)?;
             continue;
         }
-        insert_edge(
+        let inserted = insert_edge(
             conn,
             &Edge {
                 source_id: new_id.to_string(),
@@ -291,8 +311,10 @@ fn redirect_edges(conn: &Connection, old_id: &str, new_id: &str) -> Result<(), S
                 created_at: edge.created_at.clone(),
             },
         )
-        .ok();
-        delete_edge(conn, old_id, &edge.target_id, &edge.edge_type)?;
+        .is_ok();
+        if inserted {
+            delete_edge(conn, old_id, &edge.target_id, &edge.edge_type)?;
+        }
     }
 
     Ok(())

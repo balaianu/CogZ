@@ -14,5 +14,6 @@ pub mod index;
 pub mod init;
 pub mod mcp;
 pub mod search;
+pub mod security;
 pub mod storage;
 pub mod update;

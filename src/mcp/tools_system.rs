@@ -73,7 +73,7 @@ pub async fn capture_event(
         mcp_internal_error(
             "capture_event",
             &format!(
-                "invalid event_type '{}': expected session_start, prompt_submit, pre_tool_use, post_tool_use, file_save, or session_end",
+                "invalid event_type '{}': expected session_start, prompt_submit, pre_tool_use, post_tool_use, file_save, session_end, or stop",
                 params.event_type
             ),
         )
@@ -83,6 +83,7 @@ pub async fn capture_event(
     let config = server.config.clone();
     let cogz_dir = server.cogz_dir.clone();
     let query_model = server.query_model.clone();
+    let code_model = server.code_model.clone();
     let prompt = params.prompt.clone();
     let tool_name = params.tool_name.clone();
     let tool_result = params.tool_result.clone();
@@ -96,7 +97,14 @@ pub async fn capture_event(
             tool_result: tool_result.as_deref(),
             file_path: file_path.as_deref(),
         };
-        handle_lifecycle_event(&storage, &config, &cogz_dir, &query_model, &input)
+        handle_lifecycle_event(
+            &storage,
+            &config,
+            &cogz_dir,
+            &query_model,
+            &code_model,
+            &input,
+        )
     })
     .await
     .map_err(|e| mcp_internal_error("spawn_blocking", &e.to_string()))?

@@ -41,11 +41,13 @@ pub fn embed_synced(storage: &Storage, config: &Config, entity_ids: &[String]) -
     let mut all_embeddings = Vec::new();
 
     if !knowledge_entities.is_empty() {
-        let model = OnnxEmbeddingModel::with_model_id(
+        let model = OnnxEmbeddingModel::with_resource_config(
             ModelType::Knowledge,
             &models_dir,
             config.embedding.dimension,
             &config.embedding.knowledge_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
         );
         if model.model_files_exist() {
             all_embeddings.extend(cogz::files::embed_sync::embed_entities(
@@ -88,11 +90,13 @@ fn embed_code_inline(
     use cogz::embed::{ModelType, OnnxEmbeddingModel};
 
     let models_dir = models_dir();
-    let model = OnnxEmbeddingModel::with_model_id(
+    let model = OnnxEmbeddingModel::with_resource_config(
         ModelType::Code,
         &models_dir,
         config.embedding.dimension,
         &config.embedding.code_model,
+        config.embedding.model_idle_ttl,
+        config.embedding.model_min_free_mb,
     );
 
     if !model.model_files_exist() {
@@ -162,6 +166,10 @@ fn spawn_code_embed_background(
         .arg(&config.embedding.code_model)
         .arg("--dimension")
         .arg(config.embedding.dimension.to_string())
+        .arg("--idle-ttl")
+        .arg(config.embedding.model_idle_ttl.to_string())
+        .arg("--min-free-mb")
+        .arg(config.embedding.model_min_free_mb.to_string())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

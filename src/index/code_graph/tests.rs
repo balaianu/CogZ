@@ -1,6 +1,21 @@
 use super::*;
-use crate::index::sync::sync_code_entities;
+use crate::index::sync::{sync_code_entities, sync_code_entities_incremental};
+use crate::index::tree_sitter::{Language, extract_all};
 use crate::storage::Storage;
+
+/// Helper: parse source files and sync entities + edges to DB.
+fn index_files(storage: &Storage, files: &[(std::path::PathBuf, String, Language)]) {
+    let mut entities_by_file = Vec::new();
+    let mut raw_edges_by_file = Vec::new();
+    for (path, source, lang) in files {
+        let (entities, raw_edges) = extract_all(path, source, *lang);
+        let path_str = path.to_string_lossy().to_string();
+        entities_by_file.push((path_str.clone(), entities));
+        raw_edges_by_file.push((path_str, raw_edges));
+    }
+    sync_code_entities(storage, &entities_by_file);
+    sync_code_edges(storage, &entities_by_file, &raw_edges_by_file);
+}
 
 #[test]
 fn python_extends_edge_created() {
@@ -20,8 +35,7 @@ class Dog(Animal):
         Language::Python,
     )];
 
-    sync_code_entities(&storage, Path::new("."), &files);
-    sync_code_edges(&storage, Path::new("."), &files);
+    index_files(&storage, &files);
 
     let conn = storage.conn();
     let extends_count: i64 = conn
@@ -50,8 +64,7 @@ def compute():
         Language::Python,
     )];
 
-    sync_code_entities(&storage, Path::new("."), &files);
-    sync_code_edges(&storage, Path::new("."), &files);
+    index_files(&storage, &files);
 
     let conn = storage.conn();
     let calls_count: i64 = conn
@@ -89,8 +102,7 @@ impl Display for Point {
         Language::Rust,
     )];
 
-    sync_code_entities(&storage, Path::new("."), &files);
-    sync_code_edges(&storage, Path::new("."), &files);
+    index_files(&storage, &files);
 
     let conn = storage.conn();
     let extends_count: i64 = conn
@@ -113,8 +125,7 @@ fn no_edges_for_empty_file() {
         Language::Rust,
     )];
 
-    sync_code_entities(&storage, Path::new("."), &files);
-    sync_code_edges(&storage, Path::new("."), &files);
+    index_files(&storage, &files);
 
     let conn = storage.conn();
     let edge_count: i64 = conn
@@ -134,8 +145,7 @@ fn reindex_removes_stale_calls_edges() {
         code_v1.to_string(),
         Language::Rust,
     )];
-    sync_code_entities(&storage, Path::new("."), &files_v1);
-    sync_code_edges(&storage, Path::new("."), &files_v1);
+    index_files(&storage, &files_v1);
 
     let foo_id = code_entity_uuid("src/test.rs", "function", "foo");
     let bar_id = code_entity_uuid("src/test.rs", "function", "bar");
@@ -158,8 +168,7 @@ fn reindex_removes_stale_calls_edges() {
         code_v2.to_string(),
         Language::Rust,
     )];
-    sync_code_entities(&storage, Path::new("."), &files_v2);
-    sync_code_edges(&storage, Path::new("."), &files_v2);
+    index_files(&storage, &files_v2);
 
     let conn = storage.conn();
     let stale_foo_bar: i64 = conn
@@ -196,8 +205,7 @@ fn reindex_preserves_references_edges() {
         code.to_string(),
         Language::Rust,
     )];
-    sync_code_entities(&storage, Path::new("."), &files);
-    sync_code_edges(&storage, Path::new("."), &files);
+    index_files(&storage, &files);
 
     // Manually add a references edge (simulating user-created edge from frontmatter)
     let bar_id = code_entity_uuid("src/test.rs", "function", "bar");
@@ -234,7 +242,15 @@ fn reindex_preserves_references_edges() {
     }
 
     // Reindex code edges
-    sync_code_edges(&storage, Path::new("."), &files);
+    let mut entities_by_file = Vec::new();
+    let mut raw_edges_by_file = Vec::new();
+    for (path, source, lang) in &files {
+        let (entities, raw_edges) = extract_all(path, source, *lang);
+        let path_str = path.to_string_lossy().to_string();
+        entities_by_file.push((path_str.clone(), entities));
+        raw_edges_by_file.push((path_str, raw_edges));
+    }
+    sync_code_edges(&storage, &entities_by_file, &raw_edges_by_file);
 
     // references edge should still exist
     let conn = storage.conn();
@@ -269,8 +285,7 @@ impl Point {
         Language::Rust,
     )];
 
-    sync_code_entities(&storage, Path::new("."), &files);
-    sync_code_edges(&storage, Path::new("."), &files);
+    index_files(&storage, &files);
 
     let conn = storage.conn();
     let contains_count: i64 = conn
@@ -297,4 +312,70 @@ impl Point {
         )
         .unwrap();
     assert_eq!(non_file_sources, 0, "contains edges must come from files");
+}
+
+#[test]
+fn incremental_reindex_preserves_import_edges() {
+    let storage = Storage::open_memory().unwrap();
+
+    let utils_code = "pub fn helper() {}\n";
+    let main_code = "use utils::helper;\nfn main() { helper(); }\n";
+
+    let files = vec![
+        (
+            std::path::PathBuf::from("src/utils.rs"),
+            utils_code.to_string(),
+            Language::Rust,
+        ),
+        (
+            std::path::PathBuf::from("src/main.rs"),
+            main_code.to_string(),
+            Language::Rust,
+        ),
+    ];
+
+    index_files(&storage, &files);
+
+    let imports_after_full: i64 = {
+        let conn = storage.conn();
+        conn.query_row(
+            "SELECT COUNT(*) FROM edges WHERE edge_type = 'imports'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(
+        imports_after_full >= 1,
+        "expected at least 1 imports edge after full index, got {imports_after_full}"
+    );
+
+    // Incremental reindex: re-parse main.rs only (the importing file).
+    let changed = vec![(
+        std::path::PathBuf::from("src/main.rs"),
+        main_code.to_string(),
+        Language::Rust,
+    )];
+
+    let mut entities_by_file = Vec::new();
+    for (path, source, lang) in &changed {
+        let (entities, _) = extract_all(path, source, *lang);
+        entities_by_file.push((path.to_string_lossy().to_string(), entities));
+    }
+    sync_code_entities_incremental(&storage, &entities_by_file);
+    sync_code_edges_incremental(&storage, &changed);
+
+    let imports_after_incremental: i64 = {
+        let conn = storage.conn();
+        conn.query_row(
+            "SELECT COUNT(*) FROM edges WHERE edge_type = 'imports'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    assert!(
+        imports_after_incremental >= 1,
+        "import edges should survive incremental reindex, got {imports_after_incremental}"
+    );
 }

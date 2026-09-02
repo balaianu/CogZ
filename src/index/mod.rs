@@ -34,9 +34,12 @@ pub fn index_code(storage: &storage::Storage, repo_root: &Path, config: &Config)
         allow: &config.index.allow,
     });
 
-    // Phase 2: read and parse all source files (no lock held).
-    let mut source_files: Vec<(std::path::PathBuf, String, self::tree_sitter::Language)> =
-        Vec::new();
+    // Phase 2: read and parse all source files in a single pass.
+    // extract_all produces both entities and raw edges from one AST
+    // walk, eliminating the need for a second parse during edge sync.
+    let mut entities_by_file: Vec<(String, Vec<self::tree_sitter::CodeEntity>)> = Vec::new();
+    let mut raw_edges_by_file: Vec<(String, Vec<self::tree_sitter::RawEdge>)> = Vec::new();
+
     for rel_path in &source_paths {
         let abs_path = repo_root.join(rel_path);
         let source = match std::fs::read_to_string(&abs_path) {
@@ -53,14 +56,18 @@ pub fn index_code(storage: &storage::Storage, repo_root: &Path, config: &Config)
             },
             None => continue,
         };
-        source_files.push((rel_path.clone(), source, language));
+
+        let (entities, raw_edges) = self::tree_sitter::extract_all(&abs_path, &source, language);
+        let path_str = rel_path.to_string_lossy().to_string();
+        entities_by_file.push((path_str.clone(), entities));
+        raw_edges_by_file.push((path_str, raw_edges));
     }
 
     // Phase 3: sync code entities to DB (lock held).
-    let result = sync::sync_code_entities(storage, repo_root, &source_files);
+    let result = sync::sync_code_entities(storage, &entities_by_file);
 
     // Phase 4: sync structural edges (lock held).
-    code_graph::sync_code_edges(storage, repo_root, &source_files);
+    code_graph::sync_code_edges(storage, &entities_by_file, &raw_edges_by_file);
 
     // Phase 5: auto-link knowledge entities to code entities.
     let link_count = auto_link::sync_auto_links(storage);
@@ -142,6 +149,16 @@ pub fn reindex_code(
         None => {
             // No git or no baseline — full scan.
             let result = index_code(storage, repo_root, config);
+            // The full scan marks deleted code entities as stale via
+            // mark_stale_code_entities, but CodeSyncResult doesn't
+            // return their IDs. Query them so flag_stale_knowledge can
+            // be notified — otherwise knowledge referencing deleted
+            // code silently remains active in the no-git path.
+            let deleted_code_ids = if result.marked_stale > 0 {
+                query_stale_code_ids(storage)
+            } else {
+                Vec::new()
+            };
             ReindexResult {
                 incremental: false,
                 created: result.created,
@@ -150,7 +167,7 @@ pub fn reindex_code(
                 skipped: result.skipped,
                 synced_entity_ids: result.synced_entity_ids.clone(),
                 changed_code_ids: result.synced_entity_ids,
-                deleted_code_ids: Vec::new(),
+                deleted_code_ids,
             }
         }
     }
@@ -172,8 +189,9 @@ fn reindex_incremental(
         .iter()
         .partition(|f| f.change != git_diff::ChangeType::Deleted);
 
-    // Read and parse only changed files (no lock held).
-    let mut source_files: Vec<(std::path::PathBuf, String, self::tree_sitter::Language)> =
+    // Read and parse only changed files in a single pass (no lock held).
+    let mut entities_by_file: Vec<(String, Vec<self::tree_sitter::CodeEntity>)> = Vec::new();
+    let mut source_files_for_edges: Vec<(std::path::PathBuf, String, self::tree_sitter::Language)> =
         Vec::new();
     for cf in &to_parse {
         let abs_path = repo_root.join(&cf.path);
@@ -191,42 +209,68 @@ fn reindex_incremental(
             },
             None => continue,
         };
-        source_files.push((cf.path.clone(), source, language));
+        let path_str = cf.path.to_string_lossy().to_string();
+        let (entities, _) = self::tree_sitter::extract_all(&abs_path, &source, language);
+        entities_by_file.push((path_str, entities));
+        source_files_for_edges.push((cf.path.clone(), source, language));
     }
 
     // Sync changed entities to DB (no full stale sweep).
-    let sync_result = sync::sync_code_entities_incremental(storage, repo_root, &source_files);
+    let sync_result = sync::sync_code_entities_incremental(storage, &entities_by_file);
     result.created = sync_result.created;
     result.updated = sync_result.updated;
     result.skipped = sync_result.skipped;
     result.synced_entity_ids = sync_result.synced_entity_ids.clone();
-    result.changed_code_ids = sync_result.synced_entity_ids;
+    result.changed_code_ids = sync_result.synced_entity_ids.clone();
+    // Entities removed from changed files (renamed or deleted within
+    // a file that still exists) are marked stale by the sync function.
+    result.marked_stale = sync_result.marked_stale;
+    result.deleted_code_ids = sync_result.removed_entity_ids;
 
     // Re-extract structural edges for changed files only (incremental).
-    if !source_files.is_empty() {
-        code_graph::sync_code_edges_incremental(storage, repo_root, &source_files);
+    if !source_files_for_edges.is_empty() {
+        code_graph::sync_code_edges_incremental(storage, &source_files_for_edges);
     }
 
     // Mark deleted files' code entities as stale.
     let deleted_paths: Vec<std::path::PathBuf> = deleted.iter().map(|f| f.path.clone()).collect();
     if !deleted_paths.is_empty() {
-        result.marked_stale = sync::mark_stale_for_deleted_files(storage, &deleted_paths);
+        result.marked_stale += sync::mark_stale_for_deleted_files(storage, &deleted_paths);
         // Collect the IDs of stale-marked entities for knowledge flagging.
+        // Single query filtered by file_path, instead of scanning all
+        // stale entities and filtering in Rust.
         let conn = storage.conn();
         let code_types = ["function", "class", "file", "module"];
-        for entity_type in &code_types {
-            if let Ok(entities) =
-                storage::query::get_entities_by_type(&conn, entity_type, Some("stale"), 100_000)
-            {
-                for entity in entities {
-                    if let Some(ref fp) = entity.file_path
-                        && deleted_paths
-                            .iter()
-                            .any(|p| p.to_string_lossy() == fp.as_str())
-                    {
-                        result.deleted_code_ids.push(entity.id);
-                    }
-                }
+        let type_placeholders = (0..code_types.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let path_placeholders = (0..deleted_paths.len())
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT id FROM entities \
+             WHERE type IN ({type_placeholders}) AND status = 'stale' \
+             AND file_path IN ({path_placeholders})"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(code_types.len() + deleted_paths.len());
+        for t in &code_types {
+            params.push(t);
+        }
+        let deleted_path_strs: Vec<String> = deleted_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        for p in &deleted_path_strs {
+            params.push(p);
+        }
+        if let Ok(mut stmt) = conn.prepare(&sql)
+            && let Ok(rows) = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))
+        {
+            for row in rows.flatten() {
+                result.deleted_code_ids.push(row);
             }
         }
     }
@@ -240,4 +284,41 @@ fn reindex_incremental(
     }
 
     result
+}
+
+/// Query all stale code entity IDs (function, class, file, module).
+/// Used by the full-scan reindex fallback to populate
+/// `deleted_code_ids` so `flag_stale_knowledge` can be notified about
+/// code entities that were marked stale because their source files no
+/// longer exist on disk.
+fn query_stale_code_ids(storage: &storage::Storage) -> Vec<String> {
+    let conn = storage.conn();
+    let code_types = ["function", "class", "file", "module"];
+    let placeholders = (0..code_types.len())
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT id FROM entities \
+         WHERE type IN ({placeholders}) AND status = 'stale'"
+    );
+    let params: Vec<&dyn rusqlite::ToSql> = code_types
+        .iter()
+        .map(|t| t as &dyn rusqlite::ToSql)
+        .collect();
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to query stale code IDs: {}", e);
+            return Vec::new();
+        }
+    };
+    let rows = match stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0)) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("failed to query stale code IDs: {}", e);
+            return Vec::new();
+        }
+    };
+    rows.flatten().collect()
 }

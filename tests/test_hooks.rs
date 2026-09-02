@@ -40,16 +40,28 @@ fn query_model(config: &Config) -> OnnxEmbeddingModel {
     )
 }
 
+fn code_model(config: &Config) -> OnnxEmbeddingModel {
+    let models_dir = cogz::embed::models_dir();
+    OnnxEmbeddingModel::with_model_id(
+        ModelType::Code,
+        &models_dir,
+        config.embedding.dimension,
+        &config.embedding.code_model,
+    )
+}
+
 #[test]
 fn session_start_records_event_and_returns_cold_start_pack() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     let output = handle_lifecycle_event(
         &storage,
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::SessionStart,
             prompt: None,
@@ -77,6 +89,7 @@ fn session_start_records_event_and_returns_cold_start_pack() {
 fn prompt_submit_records_event_and_returns_task_pack() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     // Need some entities for task mode to find.
     insert_test_observation(&storage, "Test knowledge", "Some content about testing");
@@ -86,6 +99,7 @@ fn prompt_submit_records_event_and_returns_task_pack() {
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::PromptSubmit,
             prompt: Some("testing"),
@@ -113,12 +127,14 @@ fn prompt_submit_records_event_and_returns_task_pack() {
 fn pre_tool_use_records_event_only() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     let output = handle_lifecycle_event(
         &storage,
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::PreToolUse,
             prompt: None,
@@ -145,15 +161,17 @@ fn pre_tool_use_records_event_only() {
 }
 
 #[test]
-fn post_tool_use_with_both_fields_records_observation() {
+fn post_tool_use_records_event_but_not_observation() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     let output = handle_lifecycle_event(
         &storage,
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::PostToolUse,
             prompt: None,
@@ -166,34 +184,42 @@ fn post_tool_use_with_both_fields_records_observation() {
 
     assert!(output.event_id > 0);
     assert!(output.context_pack.is_none());
-    let obs_id = output
-        .observation_id
-        .expect("post_tool_use with both fields should record an observation");
-    assert!(!obs_id.is_empty());
+    // post_tool_use no longer auto-records observations — the agent
+    // decides what's salient via the record_observation MCP tool.
+    assert!(
+        output.observation_id.is_none(),
+        "post_tool_use should not auto-record an observation"
+    );
 
-    // The observation file should exist on disk.
-    let obs_files: Vec<_> = std::fs::read_dir(cogz_dir.join("observations"))
-        .unwrap()
-        .flatten()
-        .flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten())
-        .collect();
-    assert_eq!(obs_files.len(), 1, "one observation file should exist");
+    // No observation file should be created.
+    let obs_dir = cogz_dir.join("observations");
+    if obs_dir.exists() {
+        let obs_files: Vec<_> = std::fs::read_dir(&obs_dir)
+            .unwrap()
+            .flatten()
+            .flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten())
+            .collect();
+        assert!(obs_files.is_empty(), "no observation files should exist");
+    }
 
+    // The event should still be recorded.
     let conn = storage.conn();
     let events = get_recent_events(&conn, "post_tool_use", 10).unwrap();
     assert_eq!(events.len(), 1);
 }
 
 #[test]
-fn post_tool_use_without_tool_result_does_not_record_observation() {
+fn post_tool_use_without_tool_result_records_event_only() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     let output = handle_lifecycle_event(
         &storage,
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::PostToolUse,
             prompt: None,
@@ -207,7 +233,7 @@ fn post_tool_use_without_tool_result_does_not_record_observation() {
     assert!(output.event_id > 0);
     assert!(
         output.observation_id.is_none(),
-        "missing tool_result should not record an observation"
+        "post_tool_use should not auto-record an observation"
     );
 }
 
@@ -244,12 +270,14 @@ fn lifecycle_event_parse_roundtrip() {
 fn file_save_for_cogz_file_triggers_sync_not_reindex() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     let output = handle_lifecycle_event(
         &storage,
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::FileSave,
             prompt: None,
@@ -281,12 +309,14 @@ fn file_save_for_cogz_file_triggers_sync_not_reindex() {
 fn file_save_without_path_records_event_only() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     let output = handle_lifecycle_event(
         &storage,
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::FileSave,
             prompt: None,
@@ -309,12 +339,14 @@ fn file_save_without_path_records_event_only() {
 fn session_end_records_event_and_runs_consolidation() {
     let (storage, config, cogz_dir, _dir) = setup();
     let model = query_model(&config);
+    let code_mod = code_model(&config);
 
     let output = handle_lifecycle_event(
         &storage,
         &config,
         &cogz_dir,
         &model,
+        &code_mod,
         &LifecycleInput {
             event: LifecycleEvent::SessionEnd,
             prompt: None,

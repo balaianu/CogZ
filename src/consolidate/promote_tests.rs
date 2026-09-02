@@ -118,6 +118,24 @@ fn promotes_observation_with_enough_supporters() {
             .any(|e| e.edge_type == "derived_from" && e.target_id == "obs-1")
     );
 
+    // Verify supports edges from supporting_ids frontmatter.
+    // Without sync_references, these edges were missing — the rule file
+    // had supporting_ids in frontmatter but no DB edges.
+    let supports_edges: Vec<_> = edges.iter().filter(|e| e.edge_type == "supports").collect();
+    assert_eq!(
+        supports_edges.len(),
+        3,
+        "promoted rule should have supports edges to all 3 supporters"
+    );
+    for i in 2..=4 {
+        assert!(
+            supports_edges
+                .iter()
+                .any(|e| e.target_id == format!("sup-{i}")),
+            "missing supports edge to sup-{i}"
+        );
+    }
+
     // Verify rule_promoted event.
     let events =
         crate::storage::events::get_events_for_entity(&conn, &results[0].new_rule_id).unwrap();

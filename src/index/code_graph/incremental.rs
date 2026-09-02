@@ -2,14 +2,10 @@
 //! preserving edges from unchanged files.
 
 use std::collections::HashMap;
-use std::path::Path;
 
-use tree_sitter::Parser;
-use tree_sitter_language::LanguageFn;
-
-use crate::index::code_graph::{CodeEdge, extract_rust_edges, python};
+use crate::index::code_graph::{CodeEdge, build_contains_edges, resolve_edges};
 use crate::index::sync::code_entity_uuid;
-use crate::index::tree_sitter::Language;
+use crate::index::tree_sitter::{Language, RawEdge};
 use crate::storage;
 use crate::storage::edges::Edge;
 
@@ -24,7 +20,6 @@ use crate::storage::edges::Edge;
 /// files can be resolved.
 pub fn sync_code_edges_incremental(
     storage: &storage::Storage,
-    repo_root: &Path,
     source_files: &[(std::path::PathBuf, String, Language)],
 ) {
     // Build name → UUID map from ALL code entities in the DB.
@@ -36,9 +31,24 @@ pub fn sync_code_edges_incremental(
             storage::query::get_entities_by_type(&conn, entity_type, None, 100_000)
         {
             for entity in entities {
+                // File entities: the title is just the filename (e.g.
+                // "main.rs"), but raw import edges use the full relative
+                // path (e.g. "src/main.rs") as source_name. Insert the
+                // file_path column as a key so import edges can resolve,
+                // matching build_name_map's use of file_path_str.
+                if entity.r#type == "file"
+                    && let Some(ref fp) = entity.file_path
+                {
+                    name_to_uuid.insert(fp.clone(), entity.id.clone());
+                }
                 if let Some(ref title) = entity.title {
                     name_to_uuid.insert(title.clone(), entity.id.clone());
                     if let Some(simple) = title.rsplit("::").next() {
+                        name_to_uuid
+                            .entry(simple.to_string())
+                            .or_insert_with(|| entity.id.clone());
+                    }
+                    if let Some(simple) = title.rsplit('.').next() {
                         name_to_uuid
                             .entry(simple.to_string())
                             .or_insert_with(|| entity.id.clone());
@@ -49,23 +59,31 @@ pub fn sync_code_edges_incremental(
     }
     drop(conn);
 
-    // Collect changed entity IDs for targeted edge deletion.
-    // Also build file → children for `contains` edges.
+    // Single-pass parse of changed files: extract entities + raw edges.
     let mut changed_entity_ids: Vec<String> = Vec::new();
     let mut file_to_children: HashMap<String, Vec<String>> = HashMap::new();
+    let mut all_raw_edges: Vec<(String, Vec<RawEdge>)> = Vec::new();
+
     for (rel_path, source, language) in source_files {
-        let abs_path = repo_root.join(rel_path);
-        let entities = crate::index::tree_sitter::extract_entities(&abs_path, source, *language);
+        // Pass rel_path (not abs_path) to extract_all so that raw edge
+        // source_name matches the DB's file_path column. extract_all
+        // doesn't read the file — source is passed in — so the path is
+        // only used for string representation in entities and edges.
+        let (entities, raw_edges) =
+            crate::index::tree_sitter::extract_all(rel_path, source, *language);
 
         let file_path_str = rel_path.to_string_lossy().to_string();
-        for ce in entities {
-            let qualified_name = ce
-                .properties
-                .get("qualified_name")
-                .and_then(|v| v.as_str())
-                .or_else(|| ce.properties.get("module_path").and_then(|v| v.as_str()))
-                .unwrap_or(&ce.title)
-                .to_string();
+        for ce in &entities {
+            let qualified_name = if ce.entity_type == "file" {
+                file_path_str.clone()
+            } else {
+                ce.properties
+                    .get("qualified_name")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| ce.properties.get("module_path").and_then(|v| v.as_str()))
+                    .unwrap_or(&ce.title)
+                    .to_string()
+            };
 
             let id = code_entity_uuid(&file_path_str, ce.entity_type, &qualified_name);
             changed_entity_ids.push(id.clone());
@@ -77,53 +95,18 @@ pub fn sync_code_edges_incremental(
                     .push(id);
             }
         }
+
+        all_raw_edges.push((file_path_str, raw_edges));
     }
 
-    // Extract edges from changed files.
+    // Resolve raw edges using the global name map.
     let mut edges: Vec<CodeEdge> = Vec::new();
-    for (rel_path, source, language) in source_files {
-        let file_path_str = rel_path.to_string_lossy().to_string();
-        let mut parser = Parser::new();
-        let lang_fn: LanguageFn = language.tree_sitter_language();
-        if parser.set_language(&lang_fn.into()).is_err() {
-            continue;
-        }
-        let tree = match parser.parse(source.as_bytes(), None) {
-            Some(t) => t,
-            None => continue,
-        };
-        let root = tree.root_node();
-        let source_bytes = source.as_bytes();
-
-        match language {
-            Language::Rust => extract_rust_edges(
-                &root,
-                source_bytes,
-                &file_path_str,
-                &name_to_uuid,
-                &mut edges,
-            ),
-            Language::Python => python::extract_python_edges(
-                &root,
-                source_bytes,
-                &file_path_str,
-                &name_to_uuid,
-                &mut edges,
-            ),
-        }
+    for (_, raw_edges) in &all_raw_edges {
+        edges.extend(resolve_edges(raw_edges, &name_to_uuid));
     }
 
     // Build `contains` edges from file entities to their functions/classes.
-    for (file_path, children) in &file_to_children {
-        let file_uuid = code_entity_uuid(file_path, "file", file_path);
-        for child_id in children {
-            edges.push(CodeEdge {
-                source_id: file_uuid.clone(),
-                target_id: child_id.clone(),
-                edge_type: "contains",
-            });
-        }
-    }
+    edges.extend(build_contains_edges(&file_to_children));
 
     // Delete only edges sourced from changed entities, then re-insert.
     let conn = storage.conn();

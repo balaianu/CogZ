@@ -1068,7 +1068,7 @@ async fn capture_event_session_start_returns_context_pack() {
 }
 
 #[tokio::test]
-async fn capture_event_post_tool_use_records_observation() {
+async fn capture_event_post_tool_use_records_event_only() {
     let (server, dir) = setup();
     let client = spawn_server(server).await;
 
@@ -1093,18 +1093,24 @@ async fn capture_event_post_tool_use_records_observation() {
         value["context_pack"].is_null(),
         "post_tool_use should not return a context pack"
     );
-    let obs_id = value["observation_id"].as_str();
-    assert!(obs_id.is_some(), "observation should be recorded");
-    assert!(!obs_id.unwrap().is_empty());
+    // post_tool_use no longer auto-records observations — the agent
+    // decides what's salient via the record_observation MCP tool.
+    assert!(
+        value["observation_id"].is_null(),
+        "post_tool_use should not auto-record an observation"
+    );
 
-    // Verify the observation file was written.
+    // No observation file should be written.
     let cogz_dir = dir.path().join(".cogz");
-    let obs_count: usize = std::fs::read_dir(cogz_dir.join("observations"))
-        .unwrap()
-        .flatten()
-        .flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten())
-        .count();
-    assert_eq!(obs_count, 1, "one observation file should exist");
+    let obs_dir = cogz_dir.join("observations");
+    if obs_dir.exists() {
+        let obs_count: usize = std::fs::read_dir(&obs_dir)
+            .unwrap()
+            .flatten()
+            .flat_map(|d| std::fs::read_dir(d.path()).unwrap().flatten())
+            .count();
+        assert_eq!(obs_count, 0, "no observation files should exist");
+    }
 }
 
 #[tokio::test]
@@ -1140,4 +1146,79 @@ async fn mcp_server_lists_13_tools() {
         tool_names.contains(&"capture_event".to_string()),
         "capture_event should be listed"
     );
+}
+
+#[tokio::test]
+async fn create_knowledge_rejects_secret() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("create_knowledge").with_arguments(
+                call_tool_args(json!({
+                    "title": "API credentials",
+                    "content": "The API key is ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                    "category": "secrets",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await;
+
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("secret_detected") || msg.contains("GitHub token"),
+        "should reject with secret_detected error, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn record_observation_rejects_secret() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("record_observation").with_arguments(
+                call_tool_args(json!({
+                    "content": "Found private key: -----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await;
+
+    let err = result.unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("secret_detected") || msg.contains("private key"),
+        "should reject with secret_detected error, got: {}",
+        msg
+    );
+}
+
+#[tokio::test]
+async fn create_knowledge_allows_non_secret_content() {
+    let (server, _dir) = setup();
+    let client = spawn_server(server).await;
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("create_knowledge").with_arguments(
+                call_tool_args(json!({
+                    "title": "API design notes",
+                    "content": "When using API keys, store them in environment variables, not in code.",
+                    "category": "architecture",
+                }))
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+
+    let value = parse_result(result);
+    assert!(value["id"].as_str().is_some(), "should create the entry");
 }

@@ -909,7 +909,7 @@ capture_event                                   (implemented)
 ### Current commands (Phase 12)
 
 ```
-cogz init                    — initialize .cogz/ in a repo (autodetect project name, generate config.toml)
+cogz init [--local-only]      — initialize .cogz/ in a repo (autodetect project name, generate config.toml; --local-only gitignores all of .cogz/)
 cogz index [--no-download]   — index the repository (code + .cogz/ files)
 cogz reindex                 — re-index changed files (incremental, git diff-based)
 cogz search <query>          — search entities
@@ -921,7 +921,7 @@ cogz capture-event <type>    — capture a lifecycle event (hook scripts)
 cogz models download         — download models from HuggingFace
 cogz models list             — show model download status
 cogz models clean            — clean broken cache artifacts
-cogz doctor                  — health check (DB integrity, file sync, policy violations)
+cogz doctor                  — health check (DB integrity, file sync, policy violations, vec0 dimension mismatch)
 cogz doctor --prune-observations — dry-run: report prunable observations
 cogz doctor --prune-observations --confirm — prune observations, preserve tombstones
 cogz update                  — self-update from GitHub releases
@@ -965,6 +965,8 @@ knowledge_model = "BAAI/bge-small-en-v1.5"  # used for knowledge entity + query 
 nli_model = "nli-deberta-v3-xsmall"          # NLI model for contradiction detection
 dimension = 384
 auto_download = true                          # auto-download models on first use (Phase 12)
+model_idle_ttl = 300                         # unload idle models after 5 minutes (0 = never)
+model_min_free_mb = 512                      # don't load models if < 512MB free (0 = no check)
 
 [search]
 fts_weight = 0.4
@@ -986,7 +988,6 @@ default_token_budget = 4096      # token budget for cold_start mode
 task_token_budget = 8192         # token budget for task mode (larger for code)
 escalation_token_budget = 8192   # token budget for escalation mode
 cold_start_rules = 5             # recent rules in cold_start mode
-cold_start_observations = 5      # recent observations in cold_start mode
 task_max_results = 10            # max search results in task mode
 task_max_hops = 2                # graph expansion hops in task mode
 escalation_max_results = 20      # max search results in escalation mode
@@ -1021,3 +1022,34 @@ cogz                    — the binary (~10-20 MB)
 The binary is placed in `~/.local/bin/` or anywhere on PATH. MCP
 config references the binary path. Hook scripts call the binary
 directly. No wrapper scripts needed.
+
+### Secret prevention
+
+Knowledge and rules are committed to git. A secret (API key, token,
+password) in a knowledge entry or rule is nearly impossible to remove
+from version history. CogZ has three layers of protection:
+
+1. **Secret scanning** — All MCP write paths (`record_observation`,
+   `create_knowledge`, `create_rule`, `update_knowledge`) scan content
+   for high-confidence secret patterns before writing to disk. If a
+   secret is detected, the write is rejected with an error identifying
+   the pattern type. The agent can then rewrite without the secret.
+   Consolidation (`promote_one`) also scans before promoting an
+   observation to a committed rule file.
+
+2. **Init warning** — `cogz init` prints a warning that `knowledge/`
+   and `rules/` are committed to git, and that secrets should never
+   be recorded there.
+
+3. **Local-only mode** — `cogz init --local-only` gitignores all of
+   `.cogz/` instead of just `observations/` and the DB. Use this for
+   solo projects where knowledge and rules should stay local and
+   never enter version history.
+
+Detected patterns: PEM private keys, GitHub tokens (`ghp_`, `gho_`,
+`ghu_`, `ghs_`, `ghr_`), AWS access keys (`AKIA...`), Slack tokens
+(`xox[baprs]-`), OpenAI keys (`sk-`), Anthropic keys (`sk-ant-`), and
+generic credential assignments (`password: "..."`, `api_key = "..."`).
+The scanner uses high-confidence patterns only — it does not use
+entropy-based detection to avoid false positives in code-aware
+knowledge that legitimately discusses hashes, UUIDs, and encoded data.

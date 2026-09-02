@@ -33,6 +33,10 @@ pub struct ModelEntry {
     pub dim: usize,
     /// Model size in MB (for progress reporting).
     pub size_mb: usize,
+    /// Query prefix for instruction-aware models. CodeRankEmbed requires
+    /// "Represent this query for searching relevant code: " prepended to
+    /// search queries. Empty string for models that don't need a prefix.
+    pub query_prefix: &'static str,
 }
 
 /// The logical model kind — determines which registry entry to use.
@@ -76,6 +80,7 @@ pub fn lookup(model_id: &str) -> Option<ModelEntry> {
             onnx_layout: OnnxLayout::OnnxSubdir,
             dim: 768,
             size_mb: 139,
+            query_prefix: "Represent this query for searching relevant code: ",
         }),
 
         // Code: full-precision CodeRankEmbed — 548MB, 768d.
@@ -84,6 +89,7 @@ pub fn lookup(model_id: &str) -> Option<ModelEntry> {
             onnx_layout: OnnxLayout::OnnxSubdir,
             dim: 768,
             size_mb: 548,
+            query_prefix: "Represent this query for searching relevant code: ",
         }),
 
         // Knowledge: Qdrant's graph-optimized bge-base — 210MB, 768d.
@@ -93,6 +99,7 @@ pub fn lookup(model_id: &str) -> Option<ModelEntry> {
             onnx_layout: OnnxLayout::RootOptimized,
             dim: 768,
             size_mb: 210,
+            query_prefix: "",
         }),
 
         // Knowledge: Qdrant's bge-small — 64MB, 384d. Lighter alternative.
@@ -101,6 +108,7 @@ pub fn lookup(model_id: &str) -> Option<ModelEntry> {
             onnx_layout: OnnxLayout::RootOptimized,
             dim: 384,
             size_mb: 64,
+            query_prefix: "",
         }),
 
         // NLI: cross-encoder deberta-v3-xsmall — 284MB full, 87MB quantized.
@@ -110,6 +118,7 @@ pub fn lookup(model_id: &str) -> Option<ModelEntry> {
             onnx_layout: OnnxLayout::OnnxSubdirQuantizedAvx2,
             dim: 768,
             size_mb: 87,
+            query_prefix: "",
         }),
 
         // Fallback: Xenova NLI export (if someone has it cached).
@@ -118,6 +127,7 @@ pub fn lookup(model_id: &str) -> Option<ModelEntry> {
             onnx_layout: OnnxLayout::OnnxSubdir,
             dim: 768,
             size_mb: 284,
+            query_prefix: "",
         }),
 
         _ => None,
@@ -137,6 +147,12 @@ pub fn resolve_source(model_id: &str) -> (&'static str, OnnxLayout) {
         let leaked: &'static str = Box::leak(model_id.to_string().into_boxed_str());
         (leaked, OnnxLayout::OnnxSubdir)
     }
+}
+
+/// Look up the query prefix for a model ID. Returns the prefix
+/// string (empty for models that don't need one).
+pub fn query_prefix_for(model_id: &str) -> &'static str {
+    lookup(model_id).map(|e| e.query_prefix).unwrap_or("")
 }
 
 /// The ONNX filename to download for a given layout.

@@ -14,8 +14,14 @@ use crate::storage::graph::get_edges_involving_batch;
 use crate::storage::status::transition_status;
 use crate::storage::{self, Storage};
 
-/// Find entities with `references` edges to any of the changed code
-/// entity IDs. Returns the referencing entity IDs (deduplicated).
+/// Find entities with `references` or `auto_references` edges to any
+/// of the changed code entity IDs. Returns the referencing entity IDs
+/// (deduplicated).
+///
+/// `auto_references` edges are created by `auto_link::sync_auto_links`
+/// from knowledge content scanning. They must be covered here so that
+/// auto-linked knowledge is also flagged stale when its target code
+/// changes — otherwise stale auto-links silently remain `active`.
 ///
 /// Only `active` entities are considered — already-stale, rejected, or
 /// superseded entities are not touched.
@@ -41,7 +47,7 @@ fn find_referencing_entities(
     let mut seen: HashSet<String> = HashSet::new();
 
     for (source_id, target_id, edge_type) in &edges {
-        if edge_type == "references"
+        if (edge_type == "references" || edge_type == "auto_references")
             && changed_set.contains(target_id.as_str())
             && seen.insert(source_id.clone())
         {
@@ -369,5 +375,42 @@ mod tests {
 
         let count = flag_stale_knowledge(&storage, &cogz_dir, &["code-uuid-4".to_string()]);
         assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn flags_auto_references_edges() {
+        // auto_references edges (created by auto_link) must also trigger
+        // stale flagging when the target code entity changes. Without
+        // this, auto-linked knowledge silently remains active.
+        let (dir, storage) = setup();
+        let cogz_dir = dir.path().join(".cogz");
+
+        let conn = storage.conn();
+        let code_entity = Entity::new("code-auto-1", "function", "auto_func", "fn auto_func() {}");
+        insert_entity(&conn, &code_entity).unwrap();
+
+        // Observation linked via auto_references (not manual references).
+        make_observation(&cogz_dir, "obs-auto-1", "Note about auto_func", "content");
+        let obs_entity = make_db_observation("obs-auto-1", "Note about auto_func", "content");
+        insert_entity(&conn, &obs_entity).unwrap();
+        insert_edge(
+            &conn,
+            &Edge {
+                source_id: "obs-auto-1".to_string(),
+                target_id: "code-auto-1".to_string(),
+                edge_type: "auto_references".to_string(),
+                weight: 1.0,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .unwrap();
+        drop(conn);
+
+        let count = flag_stale_knowledge(&storage, &cogz_dir, &["code-auto-1".to_string()]);
+        assert_eq!(count, 1);
+
+        let conn = storage.conn();
+        let entity = storage::crud::get_entity(&conn, "obs-auto-1").unwrap();
+        assert_eq!(entity.status, "stale");
     }
 }

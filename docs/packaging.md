@@ -471,24 +471,142 @@ agent session ends, the MCP server exits and models are unloaded.
 
 ### Hook integration
 
-Hooks capture lifecycle events and inject context:
+CogZ integrates with any agent system that supports command-based
+lifecycle hooks (Devin, Claude Code, and compatible systems). The
+binary is the hook handler — no wrapper scripts needed.
+
+#### `cogz capture-event` flags
+
+| Flag | Purpose |
+|------|---------|
+| `--hook-json` | Wrap output as `{"hookSpecificOutput": {...}}` for agent injection. Silent skip if no `.cogz/` found. Reads stdin for hook payload fields. |
+| `--fts-only` | Skip ONNX model loading. Uses FTS-only search (~0.5s vs ~40s with models). Recommended for hooks. |
+| `--repo <PATH>` | Repository root. Defaults to current directory. |
+| `--prompt <TEXT>` | Prompt text (for `prompt_submit`). Also read from stdin. |
+| `--tool-name <NAME>` | Tool name (for `post_tool_use`). Also read from stdin. |
+| `--file-path <PATH>` | Saved file path (for `file_save`). Also read from stdin. |
+
+#### Supported events
+
+| Event | What CogZ does |
+|-------|---------------|
+| `session_start` | Records event, assembles cold-start context pack, prints it for agent injection |
+| `prompt_submit` | Records event, assembles task-scoped context pack from the prompt, prints it |
+| `post_tool_use` | Records event, optionally records an observation when tool_name and tool_result are available |
+| `file_save` | Records event, triggers incremental code reindex for source files (.rs, .py) |
+| `session_end` | Records event, runs consolidation (promotion + merge) |
+| `stop` | Records event (no side effects) |
+
+#### Devin / Claude Code configuration
+
+Add entries to your agent's hook config. The `--hook-json` flag makes
+`cogz capture-event` read stdin for event fields and output JSON in
+the format these systems expect:
 
 ```json
 {
   "hooks": {
-    "session_start": "cogz capture-event session_start",
-    "prompt_submit": "cogz capture-event prompt_submit --prompt-file $PROMPT_FILE"
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cogz capture-event session_start --hook-json --fts-only",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cogz capture-event prompt_submit --hook-json --fts-only",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cogz capture-event post_tool_use --hook-json --fts-only",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "edit|write|notebook_edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cogz capture-event file_save --hook-json --fts-only",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cogz capture-event stop --hook-json --fts-only",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cogz capture-event session_end --hook-json --fts-only",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostCompaction": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cogz capture-event session_start --hook-json --fts-only",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
 ```
 
-The hook scripts call `cogz capture-event`, which:
-1. Records the event in the DB
-2. For `session_start`: generates a cold_start context pack and prints it to stdout (the agent reads this as injected context)
-3. For `prompt_submit`: generates a task context pack and prints it
+#### How it works
 
-Hooks are lightweight — they call the binary, which does the work.
-No daemon, no long-running process.
+When `--hook-json` is set:
+1. CogZ reads stdin for the agent's JSON payload (prompt, tool_name, tool_response, etc.)
+2. If no `.cogz/` directory exists in the current repo, prints `{}` and exits (silent skip — safe for non-CogZ projects)
+3. For `session_start` and `prompt_submit`: assembles a context pack and wraps it in `{"hookSpecificOutput": {"hookEventName": "...", "additionalContext": "..."}}`
+4. For other events: records the event, prints `{}`
+
+When `--fts-only` is set:
+- ONNX model loading is skipped entirely (no ~40s startup)
+- Context assembly uses FTS-only search (fast, ~0.5s)
+- The MCP server (which keeps models warm) is the preferred path for vector search
+
+Hooks are lightweight — each call is a fresh process that opens the
+DB, does its work, and exits. No daemon, no long-running process.
 
 ---
 

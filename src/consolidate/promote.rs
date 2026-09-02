@@ -10,10 +10,10 @@ use std::path::Path;
 
 use crate::config::ConsolidationConfig;
 use crate::files::frontmatter::{FmValue, Frontmatter};
+use crate::files::refs::sync_references;
 use crate::files::{EntityFile, FileEntityType, write_entity_file};
 use crate::storage::StorageError;
 use crate::storage::crud::Entity;
-use crate::storage::edges::{Edge, insert_edge};
 use crate::storage::events::{EventType, record_event};
 use crate::storage::query::get_entities_by_type;
 
@@ -80,31 +80,56 @@ fn find_promotion_candidates(
     storage: &crate::storage::Storage,
     config: &ConsolidationConfig,
 ) -> Result<Vec<PromotionCandidate>, StorageError> {
-    use crate::storage::edges::get_edges_to;
+    use crate::storage::graph::get_edges_involving_batch;
 
     let observations = {
         let conn = storage.conn();
         get_entities_by_type(&conn, "observation", Some("active"), 500)?
     };
 
+    if observations.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Batch-fetch all edges involving these observations in a single
+    // query set, instead of one get_edges_to call per observation.
+    let obs_ids: Vec<String> = observations.iter().map(|o| o.id.clone()).collect();
+    let all_edges = {
+        let conn = storage.conn();
+        get_edges_involving_batch(&conn, &obs_ids)?
+    };
+
+    // Group edges by target_id (observations receive edges as targets).
+    use std::collections::HashMap;
+    let mut edges_by_target: HashMap<String, Vec<(String, String, String)>> = HashMap::new();
+    for (source_id, target_id, edge_type) in &all_edges {
+        edges_by_target.entry(target_id.clone()).or_default().push((
+            source_id.clone(),
+            target_id.clone(),
+            edge_type.clone(),
+        ));
+    }
+
     let mut candidates = Vec::new();
     for obs in &observations {
-        let conn = storage.conn();
-        let edges = get_edges_to(&conn, &obs.id)?;
+        let edges = edges_by_target
+            .get(&obs.id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
 
         // Skip if already promoted — a derived_from edge from a rule
         // means this observation was already promoted.
         let already_promoted = edges
             .iter()
-            .any(|e| e.edge_type == "derived_from" && e.source_id != obs.id);
+            .any(|(source_id, _, edge_type)| edge_type == "derived_from" && source_id != &obs.id);
         if already_promoted {
             continue;
         }
 
         let supporting_ids: Vec<String> = edges
             .iter()
-            .filter(|e| e.edge_type == "supports")
-            .map(|e| e.source_id.clone())
+            .filter(|(_, _, edge_type)| edge_type == "supports")
+            .map(|(source_id, _, _)| source_id.clone())
             .collect();
         if supporting_ids.len() >= config.promotion_threshold as usize {
             candidates.push(PromotionCandidate {
@@ -156,8 +181,22 @@ fn promote_one(
         EntityFile::new(title, FileEntityType::Rule, &candidate.observation.content);
     rule_file.frontmatter = fm;
 
-    // Write the file first (file-first invariant).
-    let file_path = rule_file.file_path(cogz_dir);
+    // Scan for secrets before writing. Rules are committed to git.
+    if let Some(scan) = crate::security::scan_content(&rule_file.title, &rule_file.body) {
+        tracing::warn!(
+            "skipping promotion of observation {}: content contains a suspected {}",
+            candidate.observation.id,
+            scan.kind
+        );
+        return Err(StorageError::File(format!(
+            "observation {} contains a suspected {} — not promoting to a committed rule file",
+            candidate.observation.id, scan.kind
+        )));
+    }
+
+    // Write the file first (file-first invariant). Use file_path_safe
+    // to avoid collisions with existing rules.
+    let file_path = rule_file.file_path_safe(cogz_dir);
     write_entity_file(&file_path, &rule_file)
         .map_err(|e| StorageError::File(format!("{}: {}", file_path.display(), e)))?;
 
@@ -196,19 +235,13 @@ fn promote_one(
     };
     crate::storage::crud::insert_entity(&conn, &entity)?;
 
-    // Create derived_from edge: new rule → source observation.
-    // This edge is also file-backed via the derived_from frontmatter
-    // field, so it survives DB rebuilds.
-    insert_edge(
-        &conn,
-        &Edge {
-            source_id: rule_id.clone(),
-            target_id: candidate.observation.id.clone(),
-            edge_type: "derived_from".to_string(),
-            weight: 1.0,
-            created_at: chrono::Utc::now().to_rfc3339(),
-        },
-    )?;
+    // Sync all file-backed edges from frontmatter (references, supports,
+    // contradicts, derived_from). This creates the supports edges from
+    // supporting_ids and the derived_from edge — both are in the rule
+    // file's frontmatter. Using sync_references (the same function
+    // sync.rs uses) ensures the DB edges match the file and survive
+    // incremental reindexes.
+    sync_references(&conn, &rule_file)?;
 
     // Record the promotion event.
     let payload = serde_json::json!({

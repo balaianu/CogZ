@@ -4,8 +4,6 @@
 //! tree-sitter, sync code entities to DB, extract structural edges,
 //! verify search finds code entities, and verify rebuildability.
 
-use std::path::Path;
-
 use cogz::config::Config;
 use cogz::index::{self, gitignore::ScanConfig, tree_sitter::Language};
 use cogz::storage::{self, Storage, crud::EntityType};
@@ -15,8 +13,17 @@ fn default_config() -> Config {
 }
 
 fn sync_code(storage: &Storage, files: &[(std::path::PathBuf, String, Language)]) {
-    let result = cogz::index::sync::sync_code_entities(storage, Path::new("."), files);
-    cogz::index::code_graph::sync_code_edges(storage, Path::new("."), files);
+    use cogz::index::tree_sitter::extract_all;
+    let mut entities_by_file = Vec::new();
+    let mut raw_edges_by_file = Vec::new();
+    for (path, source, lang) in files {
+        let (entities, raw_edges) = extract_all(path, source, *lang);
+        let path_str = path.to_string_lossy().to_string();
+        entities_by_file.push((path_str.clone(), entities));
+        raw_edges_by_file.push((path_str, raw_edges));
+    }
+    let result = cogz::index::sync::sync_code_entities(storage, &entities_by_file);
+    cogz::index::code_graph::sync_code_edges(storage, &entities_by_file, &raw_edges_by_file);
     // Record counts for debugging
     tracing::debug!(
         "sync: {} created, {} updated, {} stale, {} skipped",

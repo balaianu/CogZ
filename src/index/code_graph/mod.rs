@@ -1,22 +1,17 @@
-//! Structural edge extraction — calls, imports, extends.
+//! Structural edge resolution and sync — calls, imports, extends, contains.
 //!
-//! Walks the tree-sitter AST a second time after entity sync to
-//! extract structural relationships between code entities. Edges are
-//! matched by name to the deterministic UUIDs assigned during sync.
+//! Resolves raw edges (name-based references from the single-pass AST
+//! walk) to UUID-based `CodeEdge` values using the global name→UUID
+//! map built from all parsed entities, then syncs them to the DB.
 
 mod incremental;
-pub(crate) mod python;
 #[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
-use std::path::Path;
-
-use tree_sitter::{Node, Parser};
-use tree_sitter_language::LanguageFn;
 
 use crate::index::sync::code_entity_uuid;
-use crate::index::tree_sitter::Language;
+use crate::index::tree_sitter::{CodeEntity, RawEdge};
 use crate::storage;
 use crate::storage::edges::Edge;
 
@@ -30,34 +25,19 @@ pub struct CodeEdge {
 
 pub use incremental::sync_code_edges_incremental;
 
-/// Extract and sync structural edges for a set of source files.
+/// Build the global name → UUID map from parsed entities.
 ///
-/// Must be called after `sync_code_entities` so that all entities
-/// exist in the DB for FK constraints.
-///
-/// **Full scan only.** This function deletes ALL structural edges
-/// and rebuilds from the given source files. For incremental reindex,
-/// use `sync_code_edges_incremental` instead.
-pub fn sync_code_edges(
-    storage: &storage::Storage,
-    repo_root: &Path,
-    source_files: &[(std::path::PathBuf, String, Language)],
-) {
-    // Build a name → UUID lookup for each file.
-    // Key: (file_path, entity_type, qualified_name)
-    // We also build a global name → UUID map for cross-file calls.
+/// Maps both qualified names and simple names (last segment after
+/// `::` or `.`) so that cross-file calls can be resolved by either
+/// the full path or the short name.
+pub fn build_name_map(
+    entities_by_file: &[(String, Vec<CodeEntity>)],
+) -> (HashMap<String, String>, HashMap<String, Vec<String>>) {
     let mut name_to_uuid: HashMap<String, String> = HashMap::new();
-    // Build file → children UUIDs for `contains` edges.
     let mut file_to_children: HashMap<String, Vec<String>> = HashMap::new();
 
-    for (rel_path, source, language) in source_files {
-        let abs_path = repo_root.join(rel_path);
-        let entities = crate::index::tree_sitter::extract_entities(&abs_path, source, *language);
-
-        let file_path_str = rel_path.to_string_lossy().to_string();
+    for (file_path_str, entities) in entities_by_file {
         for ce in entities {
-            // File entities use the full path as qualified_name (same
-            // as sync_code_entities) so UUIDs match across phases.
             let qualified_name = if ce.entity_type == "file" {
                 file_path_str.clone()
             } else {
@@ -69,18 +49,21 @@ pub fn sync_code_edges(
                     .to_string()
             };
 
-            let id = code_entity_uuid(&file_path_str, ce.entity_type, &qualified_name);
+            let id = code_entity_uuid(file_path_str, ce.entity_type, &qualified_name);
 
-            // Map both the qualified name and the simple name.
-            // For "Point::new", map both "Point::new" and "new".
             name_to_uuid.insert(qualified_name.clone(), id.clone());
             if let Some(simple) = qualified_name.rsplit("::").next() {
                 name_to_uuid
                     .entry(simple.to_string())
                     .or_insert_with(|| id.clone());
             }
+            // Python uses dot separators in qualified names.
+            if let Some(simple) = qualified_name.rsplit('.').next() {
+                name_to_uuid
+                    .entry(simple.to_string())
+                    .or_insert_with(|| id.clone());
+            }
 
-            // Track file → function/class for `contains` edges.
             if ce.entity_type == "function" || ce.entity_type == "class" {
                 file_to_children
                     .entry(file_path_str.clone())
@@ -90,44 +73,50 @@ pub fn sync_code_edges(
         }
     }
 
-    // Phase 2: extract edges from AST.
-    let mut edges: Vec<CodeEdge> = Vec::new();
+    (name_to_uuid, file_to_children)
+}
 
-    for (rel_path, source, language) in source_files {
-        let file_path_str = rel_path.to_string_lossy().to_string();
-        let mut parser = Parser::new();
-        let lang_fn: LanguageFn = language.tree_sitter_language();
-        if parser.set_language(&lang_fn.into()).is_err() {
-            continue;
-        }
-        let tree = match parser.parse(source.as_bytes(), None) {
-            Some(t) => t,
-            None => continue,
-        };
-        let root = tree.root_node();
-        let source_bytes = source.as_bytes();
+/// Resolve raw edges to UUID-based CodeEdges using the name map.
+///
+/// Tries the full target name first, then the last segment (after
+/// `::` or `.`) as a fallback. Unresolved edges are silently dropped.
+pub fn resolve_edges(
+    raw_edges: &[RawEdge],
+    name_to_uuid: &HashMap<String, String>,
+) -> Vec<CodeEdge> {
+    let mut edges = Vec::new();
+    for raw in raw_edges {
+        let source_id = name_to_uuid.get(&raw.source_name);
+        let target_id = name_to_uuid
+            .get(&raw.target_name)
+            .or_else(|| {
+                raw.target_name
+                    .rsplit("::")
+                    .next()
+                    .and_then(|last| name_to_uuid.get(last))
+            })
+            .or_else(|| {
+                raw.target_name
+                    .rsplit('.')
+                    .next()
+                    .and_then(|last| name_to_uuid.get(last))
+            });
 
-        match language {
-            Language::Rust => extract_rust_edges(
-                &root,
-                source_bytes,
-                &file_path_str,
-                &name_to_uuid,
-                &mut edges,
-            ),
-            Language::Python => python::extract_python_edges(
-                &root,
-                source_bytes,
-                &file_path_str,
-                &name_to_uuid,
-                &mut edges,
-            ),
+        if let (Some(src), Some(tgt)) = (source_id, target_id) {
+            edges.push(CodeEdge {
+                source_id: src.clone(),
+                target_id: tgt.clone(),
+                edge_type: raw.edge_type,
+            });
         }
     }
+    edges
+}
 
-    // Phase 2b: build `contains` edges from file entities to their
-    // functions and classes.
-    for (file_path, children) in &file_to_children {
+/// Build `contains` edges from file entities to their functions/classes.
+pub fn build_contains_edges(file_to_children: &HashMap<String, Vec<String>>) -> Vec<CodeEdge> {
+    let mut edges = Vec::new();
+    for (file_path, children) in file_to_children {
         let file_uuid = code_entity_uuid(file_path, "file", file_path);
         for child_id in children {
             edges.push(CodeEdge {
@@ -137,13 +126,37 @@ pub fn sync_code_edges(
             });
         }
     }
+    edges
+}
+
+/// Sync structural edges from pre-parsed entities and raw edges.
+///
+/// Must be called after `sync_code_entities` so that all entities
+/// exist in the DB for FK constraints.
+///
+/// **Full scan only.** This function deletes ALL structural edges
+/// and rebuilds from the given data. For incremental reindex,
+/// use `sync_code_edges_incremental` instead.
+pub fn sync_code_edges(
+    storage: &storage::Storage,
+    entities_by_file: &[(String, Vec<CodeEntity>)],
+    raw_edges_by_file: &[(String, Vec<RawEdge>)],
+) {
+    // Phase 1: build name → UUID map and file → children map.
+    let (name_to_uuid, file_to_children) = build_name_map(entities_by_file);
+
+    // Phase 2: resolve raw edges to UUID-based edges.
+    let mut edges: Vec<CodeEdge> = Vec::new();
+    for (_, raw_edges) in raw_edges_by_file {
+        edges.extend(resolve_edges(raw_edges, &name_to_uuid));
+    }
+
+    // Phase 2b: build `contains` edges.
+    edges.extend(build_contains_edges(&file_to_children));
 
     // Phase 3: sync edges to DB.
     let conn = storage.conn();
 
-    // Clear existing structural edges before re-inserting. Edges are
-    // fully derived from source code, so a delete+rebuild is correct
-    // and prevents stale edges from accumulating when code changes.
     if let Err(e) =
         storage::edges::delete_edges_by_type(&conn, &["calls", "imports", "extends", "contains"])
     {
@@ -152,9 +165,6 @@ pub fn sync_code_edges(
 
     let now = chrono::Utc::now().to_rfc3339();
 
-    // Batch all edge inserts in a single transaction to avoid one
-    // fsync per edge. On a codebase with 3000+ structural edges this
-    // reduces the edge sync phase from ~30s to <1s.
     if let Err(e) = conn.execute_batch("BEGIN") {
         tracing::warn!(
             "failed to begin edge transaction: {} — falling back to autocommit",
@@ -170,8 +180,6 @@ pub fn sync_code_edges(
             weight: 1.0,
             created_at: now.clone(),
         };
-        // Use skip_fk_violation in case target entity doesn't exist
-        // (e.g. external function not indexed).
         if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, &db_edge) {
             tracing::debug!("skipped edge {}: {}", edge.edge_type, e);
         }
@@ -179,171 +187,5 @@ pub fn sync_code_edges(
 
     if let Err(e) = conn.execute_batch("COMMIT") {
         tracing::warn!("failed to commit edge transaction: {}", e);
-    }
-}
-
-// ── Rust edge extraction ──────────────────────────────────────────
-
-pub(crate) fn extract_rust_edges(
-    root: &Node,
-    source: &[u8],
-    file_path: &str,
-    name_to_uuid: &HashMap<String, String>,
-    edges: &mut Vec<CodeEdge>,
-) {
-    // Get the file entity UUID for imports edges.
-    let file_uuid = code_entity_uuid(file_path, "file", file_path);
-
-    let mut cursor = root.walk();
-    for node in root.named_children(&mut cursor) {
-        match node.kind() {
-            "use_declaration" => {
-                extract_rust_import(&node, source, &file_uuid, name_to_uuid, edges);
-            }
-            "function_item" => {
-                let func_name = node
-                    .child_by_field_name("name")
-                    .and_then(|n| node_text(&n, source))
-                    .unwrap_or_default();
-                let source_id = code_entity_uuid(file_path, "function", &func_name);
-                extract_rust_calls_in_node(&node, source, &source_id, name_to_uuid, edges);
-            }
-            "impl_item" => {
-                extract_rust_extends_in_impl(&node, source, name_to_uuid, edges);
-                // Also extract calls from methods inside impl.
-                let mut impl_cursor = node.walk();
-                for child in node.named_children(&mut impl_cursor) {
-                    if child.kind() == "function_item" {
-                        let method_name = child
-                            .child_by_field_name("name")
-                            .and_then(|n| node_text(&n, source))
-                            .unwrap_or_default();
-                        // For methods, the qualified_name is Type::method
-                        let type_name = node
-                            .child_by_field_name("type")
-                            .and_then(|n| node_text(&n, source))
-                            .unwrap_or_default();
-                        let qualified = format!("{type_name}::{method_name}");
-                        let source_id = code_entity_uuid(file_path, "function", &qualified);
-                        extract_rust_calls_in_node(&child, source, &source_id, name_to_uuid, edges);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn extract_rust_import(
-    node: &Node,
-    source: &[u8],
-    file_uuid: &str,
-    name_to_uuid: &HashMap<String, String>,
-    edges: &mut Vec<CodeEdge>,
-) {
-    // The `argument` field contains the imported path.
-    if let Some(arg) = node.child_by_field_name("argument") {
-        let import_text = node_text(&arg, source).unwrap_or_default();
-        // Try to match the full path or the last segment.
-        if let Some(target_id) = name_to_uuid.get(&import_text) {
-            edges.push(CodeEdge {
-                source_id: file_uuid.to_string(),
-                target_id: target_id.clone(),
-                edge_type: "imports",
-            });
-        } else if let Some(last) = import_text.rsplit("::").next()
-            && let Some(target_id) = name_to_uuid.get(last)
-        {
-            edges.push(CodeEdge {
-                source_id: file_uuid.to_string(),
-                target_id: target_id.clone(),
-                edge_type: "imports",
-            });
-        }
-    }
-}
-
-fn extract_rust_calls_in_node(
-    node: &Node,
-    source: &[u8],
-    source_id: &str,
-    name_to_uuid: &HashMap<String, String>,
-    edges: &mut Vec<CodeEdge>,
-) {
-    // Walk all descendants looking for call_expression nodes.
-    let mut f = |desc: &Node| {
-        if desc.kind() == "call_expression"
-            && let Some(func_node) = desc.child_by_field_name("function")
-        {
-            let call_name = node_text(&func_node, source).unwrap_or_default();
-            // Try full path, then last segment.
-            if let Some(target_id) = name_to_uuid.get(&call_name) {
-                edges.push(CodeEdge {
-                    source_id: source_id.to_string(),
-                    target_id: target_id.clone(),
-                    edge_type: "calls",
-                });
-            } else if let Some(last) = call_name.rsplit("::").next()
-                && let Some(target_id) = name_to_uuid.get(last)
-            {
-                edges.push(CodeEdge {
-                    source_id: source_id.to_string(),
-                    target_id: target_id.clone(),
-                    edge_type: "calls",
-                });
-            }
-        }
-        true
-    };
-    walk_descendants(node, &mut f);
-}
-
-fn extract_rust_extends_in_impl(
-    node: &Node,
-    source: &[u8],
-    name_to_uuid: &HashMap<String, String>,
-    edges: &mut Vec<CodeEdge>,
-) {
-    // impl Trait for Type → extends edge from Type to Trait
-    let type_node = node.child_by_field_name("type");
-    let trait_node = node.child_by_field_name("trait");
-
-    if let (Some(type_n), Some(trait_n)) = (type_node, trait_node) {
-        let type_name = node_text(&type_n, source).unwrap_or_default();
-        let trait_name = node_text(&trait_n, source).unwrap_or_default();
-
-        let type_id = name_to_uuid.get(&type_name);
-        let trait_id = name_to_uuid.get(&trait_name);
-
-        if let (Some(source_id), Some(target_id)) = (type_id, trait_id) {
-            edges.push(CodeEdge {
-                source_id: source_id.clone(),
-                target_id: target_id.clone(),
-                edge_type: "extends",
-            });
-        }
-    }
-}
-
-// ── Utilities ─────────────────────────────────────────────────────
-
-pub(super) fn node_text(node: &Node, source: &[u8]) -> Option<String> {
-    node.utf8_text(source).ok().map(|s| s.to_string())
-}
-
-/// Recursively walk all named descendants of a node, calling `f` on
-/// each. If `f` returns false, the walk stops.
-pub(super) fn walk_descendants<F>(node: &Node, f: &mut F)
-where
-    F: FnMut(&Node) -> bool,
-{
-    let num_named = node.named_child_count();
-    for i in 0..num_named {
-        if let Some(child) = node.named_child(i) {
-            if !f(&child) {
-                return;
-            }
-            walk_descendants(&child, f);
-        }
     }
 }

@@ -34,6 +34,12 @@ pub enum IssueKind {
     OrphanedSupersede,
     /// Two knowledge entries have embedding similarity > 0.80.
     NearDuplicate,
+    /// vec0 table dimension doesn't match configured embedding dimension.
+    DimensionMismatch,
+    /// Entity properties or event payload JSON is corrupt.
+    CorruptJson,
+    /// Embedding blob could not be read or parsed.
+    CorruptEmbedding,
 }
 
 impl std::fmt::Display for IssueKind {
@@ -47,6 +53,9 @@ impl std::fmt::Display for IssueKind {
             Self::IllegalStatusTransition => write!(f, "illegal_status_transition"),
             Self::OrphanedSupersede => write!(f, "orphaned_supersede"),
             Self::NearDuplicate => write!(f, "near_duplicate"),
+            Self::DimensionMismatch => write!(f, "dimension_mismatch"),
+            Self::CorruptJson => write!(f, "corrupt_json"),
+            Self::CorruptEmbedding => write!(f, "corrupt_embedding"),
         }
     }
 }
@@ -93,6 +102,12 @@ pub fn run_doctor(
 
     // Near-duplicate knowledge (requires embeddings)
     check_near_duplicates(&conn, &mut report);
+
+    // vec0 dimension mismatch (detects config changes after DB creation)
+    check_vec_dimensions(&conn, config, &mut report);
+
+    // Corrupt entity properties or event payloads
+    check_corrupt_json(&conn, &mut report);
 
     report
 }
@@ -241,36 +256,31 @@ fn check_observation_edits(conn: &Connection, cogz_dir: &Path, report: &mut Doct
 }
 
 fn check_orphaned_supersedes(conn: &Connection, report: &mut DoctorReport) {
-    // A superseded entity should have a `supersedes` or `superseded_by`
-    // edge pointing to the entity that replaced it. If no such edge
-    // exists, it's an orphaned supersede.
-    let sql = "SELECT id, type FROM entities WHERE status = 'superseded'";
+    // A superseded entity should have a `superseded_by` property
+    // pointing to the entity that replaced it. Merge stores this as a
+    // JSON property (and in frontmatter), not as an edge — all edges
+    // are redirected to the survivor. If the property is missing, it's
+    // an orphaned supersede.
+    let sql = "SELECT id, type, properties FROM entities WHERE status = 'superseded'";
     if let Ok(mut stmt) = conn.prepare(sql)
         && let Ok(rows) = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let etype: String = row.get(1)?;
-            Ok((id, etype))
+            let props: String = row.get(2)?;
+            Ok((id, etype, props))
         })
     {
         for row in rows.flatten() {
-            let (id, etype) = row;
-            // Check for any edge connecting this entity to another
-            // via supersedes/superseded_by/derived_from.
-            let has_edge: bool = conn
-                    .query_row(
-                        "SELECT 1 FROM edges WHERE (source_id = ?1 OR target_id = ?1) AND edge_type IN ('supersedes', 'superseded_by', 'derived_from') LIMIT 1",
-                        [&id],
-                        |_| Ok(true),
-                    )
-                    .unwrap_or(false);
-            if !has_edge {
+            let (id, etype, props) = row;
+            let has_superseded_by = serde_json::from_str::<serde_json::Value>(&props)
+                .ok()
+                .and_then(|v| v.get("superseded_by").cloned())
+                .is_some_and(|v| !v.is_null());
+            if !has_superseded_by {
                 report.issues.push(Issue {
                     kind: IssueKind::OrphanedSupersede,
                     entity_id: Some(id),
-                    message: format!(
-                        "{} is superseded but has no supersede/derived_from edge",
-                        etype
-                    ),
+                    message: format!("{} is superseded but has no superseded_by property", etype),
                 });
             }
         }
@@ -303,7 +313,17 @@ fn check_near_duplicates(conn: &Connection, report: &mut DoctorReport) {
 
     // Batch-fetch all embeddings for knowledge entities in one query.
     // vec0 supports WHERE entity_id IN (...) filtering.
-    let embeddings = fetch_embeddings_batch(conn, &knowledge_ids);
+    let (embeddings, failed_count) = fetch_embeddings_batch(conn, &knowledge_ids);
+    if failed_count > 0 {
+        report.issues.push(Issue {
+            kind: IssueKind::CorruptEmbedding,
+            entity_id: None,
+            message: format!(
+                "{failed_count} knowledge embedding{} could not be read and were skipped",
+                if failed_count == 1 { "" } else { "s" }
+            ),
+        });
+    }
     if embeddings.len() < 2 {
         return;
     }
@@ -327,17 +347,24 @@ fn check_near_duplicates(conn: &Connection, report: &mut DoctorReport) {
     }
 }
 
-/// Fetch embeddings for multiple entity IDs in a single query.
-/// Returns (entity_id, embedding) pairs. Chunked to respect SQLite
-/// variable limits.
-fn fetch_embeddings_batch(conn: &Connection, ids: &[String]) -> Vec<(String, Vec<f32>)> {
+/// Fetch embeddings for multiple entity IDs from the knowledge
+/// embedding table. Returns `(embeddings, failed_count)` where
+/// `failed_count` is the number of rows that could not be parsed
+/// (corrupt blobs). Chunked to respect SQLite variable limits.
+///
+/// Only queries `knowledge_embeddings` — the caller (`check_near_duplicates`)
+/// only passes knowledge entity IDs. The old `entity_embeddings` table
+/// was split into `code_embeddings` and `knowledge_embeddings` in
+/// schema migration v3 and no longer exists.
+fn fetch_embeddings_batch(conn: &Connection, ids: &[String]) -> (Vec<(String, Vec<f32>)>, usize) {
     let chunk_size = 998; // SQLITE_MAX_VARIABLE_NUMBER / 1 param per row
     let mut result = Vec::new();
+    let mut failed = 0usize;
 
     for chunk in ids.chunks(chunk_size) {
         let placeholders: Vec<&str> = (0..chunk.len()).map(|_| "?").collect();
         let sql = format!(
-            "SELECT entity_id, embedding FROM entity_embeddings WHERE entity_id IN ({})",
+            "SELECT entity_id, embedding FROM knowledge_embeddings WHERE entity_id IN ({})",
             placeholders.join(",")
         );
         let params: Vec<&dyn rusqlite::ToSql> =
@@ -356,13 +383,19 @@ fn fetch_embeddings_batch(conn: &Connection, ids: &[String]) -> Vec<(String, Vec
                 Ok((entity_id, floats))
             })
         {
-            for row in rows.flatten() {
-                result.push(row);
+            for row in rows {
+                match row {
+                    Ok(entry) => result.push(entry),
+                    Err(e) => {
+                        tracing::warn!("failed to read embedding row: {}", e);
+                        failed += 1;
+                    }
+                }
             }
         }
     }
 
-    result
+    (result, failed)
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -373,4 +406,88 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         return 0.0;
     }
     dot / (norm_a * norm_b)
+}
+
+/// Check that vec0 tables' declared dimensions match the configured
+/// embedding dimension. Reads the stored DDL from sqlite_master since
+/// vec0 doesn't expose introspection via PRAGMA. Detects silent
+/// mismatches from config changes after DB creation.
+fn check_vec_dimensions(conn: &Connection, config: &Config, report: &mut DoctorReport) {
+    for table in ["code_embeddings", "knowledge_embeddings"] {
+        let ddl: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name = ?1",
+                rusqlite::params![table],
+                |r| r.get(0),
+            )
+            .ok();
+
+        let Some(ddl) = ddl else { continue };
+
+        // Extract the dimension from the DDL: "embedding FLOAT[N]"
+        let dim = extract_vec0_dim(&ddl);
+        if let Some(stored_dim) = dim
+            && stored_dim != config.embedding.dimension
+        {
+            report.issues.push(Issue {
+                kind: IssueKind::DimensionMismatch,
+                entity_id: None,
+                message: format!(
+                    "{} vec0 table is {}-dim but config dimension is {}. \
+                     Run `cogz reset` + `cogz index` to rebuild at the new dimension.",
+                    table, stored_dim, config.embedding.dimension
+                ),
+            });
+        }
+    }
+}
+
+/// Extract the dimension from a vec0 DDL string like
+/// "CREATE VIRTUAL TABLE ... embedding FLOAT[768] ...".
+fn extract_vec0_dim(ddl: &str) -> Option<usize> {
+    let open = ddl.find('[')?;
+    let close = ddl[open..].find(']')?;
+    let num_str = &ddl[open + 1..open + close];
+    num_str.parse().ok()
+}
+
+/// Check for entities with corrupt properties JSON (marked by
+/// `_corrupt_properties` key during row parsing) and events with
+/// corrupt payload JSON (marked by `_corrupt_payload` key).
+fn check_corrupt_json(conn: &Connection, report: &mut DoctorReport) {
+    let corrupt_entities: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM entities WHERE properties LIKE '%_corrupt_properties%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if corrupt_entities > 0 {
+        report.issues.push(Issue {
+            kind: IssueKind::CorruptJson,
+            entity_id: None,
+            message: format!(
+                "{corrupt_entities} entit{} with corrupt properties JSON (raw preserved in _corrupt_properties)",
+                if corrupt_entities == 1 { "y" } else { "ies" }
+            ),
+        });
+    }
+
+    let corrupt_events: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE payload LIKE '%_corrupt_payload%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if corrupt_events > 0 {
+        report.issues.push(Issue {
+            kind: IssueKind::CorruptJson,
+            entity_id: None,
+            message: format!(
+                "{corrupt_events} event{} with corrupt payload JSON (raw preserved in _corrupt_payload)",
+                if corrupt_events == 1 { "" } else { "s" }
+            ),
+        });
+    }
 }

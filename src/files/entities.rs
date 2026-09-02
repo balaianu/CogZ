@@ -279,6 +279,46 @@ impl EntityFile {
             }
         }
     }
+
+    /// Compute the file path, appending a short hash suffix if a
+    /// different entity already owns the slug-based path. This
+    /// prevents silent overwrites when two knowledge entries or rules
+    /// have titles that slugify identically.
+    ///
+    /// Observations use UUID-based filenames and never collide.
+    pub fn file_path_safe(&self, cogz_dir: &Path) -> PathBuf {
+        let path = self.file_path(cogz_dir);
+        if self.entity_type == FileEntityType::Observation {
+            return path;
+        }
+        if !path.exists() {
+            return path;
+        }
+        // File exists — check if it belongs to this entity already.
+        if let Ok(existing) = read_entity_file(&path)
+            && existing.id == self.id
+        {
+            return path; // Same entity, safe to overwrite.
+        }
+        // Collision: a different entity owns this path. Use slug + hash.
+        let slug = slugify(&self.title);
+        let hashed = slug_with_hash(&slug, &self.id);
+        match self.entity_type {
+            FileEntityType::Knowledge => {
+                let category = self
+                    .frontmatter
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("uncategorized");
+                cogz_dir
+                    .join("knowledge")
+                    .join(category)
+                    .join(format!("{}.md", hashed))
+            }
+            FileEntityType::Rule => cogz_dir.join("rules").join(format!("{}.md", hashed)),
+            FileEntityType::Observation => path, // unreachable
+        }
+    }
 }
 
 /// Read an entity file from disk.

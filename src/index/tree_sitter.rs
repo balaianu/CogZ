@@ -1,10 +1,15 @@
-//! Tree-sitter AST parsing and code entity extraction.
+//! Tree-sitter AST parsing and code entity + edge extraction.
 //!
-//! Parses source files with tree-sitter and extracts code entities
-//! (functions, classes, files, modules) with their properties.
+//! Parses source files with tree-sitter in a single pass and extracts
+//! code entities (functions, classes, files, modules) with their
+//! properties, plus raw structural edges (calls, imports, extends)
+//! with name-based references that are resolved to UUIDs by the
+//! code_graph module after all files are parsed.
+//!
 //! Supports Rust and Python via per-language extractors.
 
 mod python;
+mod raw_edges;
 #[cfg(test)]
 mod tests;
 
@@ -23,6 +28,23 @@ pub struct CodeEntity {
     pub title: String,
     pub content: String,
     pub properties: serde_json::Value,
+}
+
+/// A structural edge with unresolved name references.
+///
+/// Produced during the single-pass AST walk alongside entities.
+/// The `code_graph` module resolves `target_name` to a UUID using
+/// the global name→UUID map built from all parsed entities.
+#[derive(Debug, Clone)]
+pub struct RawEdge {
+    /// Entity type of the source: "function", "file", "class".
+    pub source_type: &'static str,
+    /// Qualified name of the source entity (for UUID lookup).
+    pub source_name: String,
+    /// Unresolved name of the target entity.
+    pub target_name: String,
+    /// Edge type: "calls", "imports", "extends".
+    pub edge_type: &'static str,
 }
 
 /// Supported source languages for code indexing.
@@ -110,7 +132,73 @@ pub fn extract_entities(file_path: &Path, source: &str, language: Language) -> V
     entities
 }
 
-fn node_text(node: &Node, source: &[u8]) -> Option<String> {
+/// Parse a source file once and extract both entities and raw edges.
+///
+/// This is the single-pass version that avoids re-parsing for edge
+/// extraction. Returns the same entities as `extract_entities` plus
+/// `RawEdge` values with unresolved name references.
+pub fn extract_all(
+    file_path: &Path,
+    source: &str,
+    language: Language,
+) -> (Vec<CodeEntity>, Vec<RawEdge>) {
+    let mut parser = Parser::new();
+    if parser
+        .set_language(&language.tree_sitter_language().into())
+        .is_err()
+    {
+        tracing::warn!(
+            "failed to set tree-sitter language for {}",
+            file_path.display()
+        );
+        return (Vec::new(), Vec::new());
+    }
+
+    let tree = match parser.parse(source.as_bytes(), None) {
+        Some(t) => t,
+        None => {
+            tracing::warn!("failed to parse {}", file_path.display());
+            return (Vec::new(), Vec::new());
+        }
+    };
+
+    let path_str = file_path.to_string_lossy().to_string();
+    let root = tree.root_node();
+    let source_bytes = source.as_bytes();
+
+    let mut entities = Vec::new();
+    let mut edges = Vec::new();
+
+    // File entity — always present
+    entities.push(CodeEntity {
+        entity_type: "file",
+        title: file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path_str.clone()),
+        content: source.to_string(),
+        properties: json!({
+            "file_path": path_str,
+            "language": language.as_str(),
+            "line_count": source.lines().count(),
+        }),
+    });
+
+    match language {
+        Language::Rust => {
+            extract_rust(&root, source_bytes, &path_str, &mut entities);
+            raw_edges::extract_rust_raw_edges(&root, source_bytes, &path_str, &mut edges);
+        }
+        Language::Python => {
+            python::extract_python(&root, source_bytes, &path_str, &mut entities);
+            python::extract_python_raw_edges(&root, source_bytes, &path_str, &mut edges);
+        }
+    }
+
+    (entities, edges)
+}
+
+pub(super) fn node_text(node: &Node, source: &[u8]) -> Option<String> {
     node.utf8_text(source).ok().map(|s| s.to_string())
 }
 
@@ -283,4 +371,19 @@ fn extract_rust_module(node: &Node, source: &[u8], file_path: &str) -> Option<Co
             "module_path": name,
         }),
     })
+}
+
+pub(super) fn walk_descendants<F>(node: &Node, f: &mut F)
+where
+    F: FnMut(&Node) -> bool,
+{
+    let num_named = node.named_child_count();
+    for i in 0..num_named {
+        if let Some(child) = node.named_child(i) {
+            if !f(&child) {
+                return;
+            }
+            walk_descendants(&child, f);
+        }
+    }
 }

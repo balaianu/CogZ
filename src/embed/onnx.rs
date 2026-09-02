@@ -55,6 +55,24 @@ impl OnnxEmbeddingModel {
         }
     }
 
+    /// Create a model that will never load — `is_available()` always
+    /// returns false. Used for FTS-only mode where model loading
+    /// overhead should be avoided entirely.
+    pub fn unavailable() -> Self {
+        Self {
+            model_type: ModelType::Knowledge,
+            model_dir: PathBuf::new(),
+            model_id: String::new(),
+            dimension: 0,
+            session: Mutex::new(None),
+            tokenizer: Mutex::new(None),
+            available: Mutex::new(false),
+            has_token_type_ids: Mutex::new(true),
+            idle_tracker: super::resources::IdleTracker::new(0),
+            min_free_mb: 0,
+        }
+    }
+
     /// Create a new ONNX embedding model with a config-specified model ID.
     ///
     /// When `model_id` is non-empty, the model directory is
@@ -103,14 +121,23 @@ impl OnnxEmbeddingModel {
 
     /// Try to load the model and tokenizer.
     fn try_load(&self) -> EmbeddingResult<()> {
-        // Unload idle model to free memory before reloading.
-        if self.idle_tracker.is_idle() {
-            self.unload();
-        }
-
+        // Fast path: model already loaded.
         if self.session.lock().unwrap().is_some() {
             self.idle_tracker.touch();
             return Ok(());
+        }
+
+        // Fast path: no model configured (FTS-only mode). Skip ONNX
+        // Runtime initialization entirely — it's the slow part.
+        if self.model_dir.as_os_str().is_empty() {
+            return Err(EmbeddingError::ModelUnavailable(
+                "no model configured (FTS-only mode)".to_string(),
+            ));
+        }
+
+        // Unload idle model to free memory before reloading.
+        if self.idle_tracker.is_idle() {
+            self.unload();
         }
 
         if !super::resources::has_enough_memory(self.min_free_mb) {
@@ -249,13 +276,10 @@ impl OnnxEmbeddingModel {
     /// The query prefix for instruction-aware models. CodeRankEmbed
     /// requires "Represent this query for searching relevant code: "
     /// prepended to search queries (not documents). Other models
-    /// return an empty string.
+    /// return an empty string. Determined by the registry, not string
+    /// matching on the model ID.
     fn query_prefix(&self) -> &str {
-        if self.model_id.contains("CodeRankEmbed") {
-            "Represent this query for searching relevant code: "
-        } else {
-            ""
-        }
+        super::registry::query_prefix_for(&self.model_id)
     }
 }
 

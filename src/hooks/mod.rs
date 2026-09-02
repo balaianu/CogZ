@@ -11,5 +11,5 @@ pub mod capture;
 pub mod handlers;
 pub mod lifecycle;
 
-pub use capture::{CaptureError, CaptureResult, run_capture_event};
+pub use capture::{CaptureError, CaptureInput, CaptureResult, run_capture_event};
 pub use lifecycle::{LifecycleEvent, handle_lifecycle_event};
