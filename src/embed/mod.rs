@@ -6,7 +6,9 @@
 
 pub mod cache;
 pub mod download;
+pub mod inference;
 pub mod model;
+pub mod model_type;
 pub mod nli;
 pub mod onnx;
 pub mod pooling;
@@ -22,8 +24,9 @@ pub use model::{
     EmbeddingModel, EmbeddingResult, MockEmbeddingModel, MockNliModel, NliLabel, NliModel,
     NliProbabilities,
 };
+pub use model_type::ModelType;
 pub use nli::OnnxNliModel;
-pub use onnx::{ModelType, OnnxEmbeddingModel};
+pub use onnx::OnnxEmbeddingModel;
 pub use registry::{ModelKind, lookup, onnx_filename, onnx_relative_path, resolve_source};
 pub use runtime::ensure_ort;
 

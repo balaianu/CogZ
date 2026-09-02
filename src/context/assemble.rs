@@ -8,6 +8,7 @@ use crate::search::{self, QueryEmbeddings, SearchMode, SearchParams, SearchResul
 use crate::storage::crud::Entity;
 use crate::storage::query::get_entities_by_type;
 
+use super::code_map::code_map_sections;
 use super::compress::{fit_budget, section_tokens, sort_by_priority};
 use super::modes::ContextMode;
 use super::{ContextPack, ContextSection, PackMetadata};
@@ -58,9 +59,11 @@ pub fn assemble_context(
     params: &AssembleParams<'_>,
     config: &Config,
 ) -> Result<ContextPack, AssembleError> {
-    let token_budget = params
-        .max_tokens
-        .unwrap_or(config.context.default_token_budget);
+    let token_budget = params.max_tokens.unwrap_or(match params.mode {
+        ContextMode::ColdStart => config.context.default_token_budget,
+        ContextMode::Task => config.context.task_token_budget,
+        ContextMode::Escalation => config.context.escalation_token_budget,
+    });
     // For cold_start: None means no filter (all statuses), Some("active") filters to active.
     // For search: the resolve_status_filter function maps None → active, "all" → no filter.
     let cold_start_status = if params.include_stale {
@@ -108,7 +111,7 @@ pub fn assemble_context(
     };
 
     let mut sections = sections;
-    sort_by_priority(&mut sections);
+    sort_by_priority(&mut sections, params.mode);
     let (kept, dropped) = fit_budget(sections, token_budget);
 
     let size_tokens = kept.iter().map(section_tokens).sum();
@@ -160,10 +163,11 @@ fn cold_start_sections(
         content: format!("Project: {}", config.project.name),
         relevance: 0.0,
         graph_path: vec![],
+        graph_path_description: String::new(),
     });
 
     // 2. Code map summary — top modules and files by connectivity.
-    sections.extend(code_map_sections(conn, config));
+    sections.extend(code_map_sections(conn));
 
     // 3. Scored rules — selected by composite score, not just recency.
     let rules = get_entities_by_type(conn, "rule", status, 1000)?;
@@ -181,15 +185,16 @@ fn cold_start_sections(
         .collect();
     scored_rules.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
-    for (_, entity) in scored_rules.iter().take(config.context.cold_start_rules) {
+    for (score, entity) in scored_rules.iter().take(config.context.cold_start_rules) {
         let id = entity.id.clone();
         sections.push(ContextSection {
             source: "rule".to_string(),
             entity_id: id.clone(),
             title: entity.title.clone().unwrap_or_default(),
             content: entity.content.clone(),
-            relevance: 0.0,
+            relevance: *score as f32,
             graph_path: vec![id],
+            graph_path_description: String::new(),
         });
     }
 
@@ -211,15 +216,16 @@ fn cold_start_sections(
     scored_knowledge.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     // Full content for top entry, titles only for the rest.
-    if let Some((_, top)) = scored_knowledge.first() {
+    if let Some((score, top)) = scored_knowledge.first() {
         let id = top.id.clone();
         sections.push(ContextSection {
             source: "knowledge".to_string(),
             entity_id: id.clone(),
             title: top.title.clone().unwrap_or_default(),
             content: top.content.clone(),
-            relevance: 0.0,
+            relevance: *score as f32,
             graph_path: vec![id],
+            graph_path_description: String::new(),
         });
     }
 
@@ -237,84 +243,23 @@ fn cold_start_sections(
             content: remaining.join("\n"),
             relevance: 0.0,
             graph_path: vec![],
+            graph_path_description: String::new(),
         });
+    }
+
+    // Increment access counts for included rules and knowledge so the
+    // frequency component of composite scoring reflects cold-start
+    // usage, not just search usage.
+    let accessed: Vec<String> = sections
+        .iter()
+        .filter(|s| s.source == "rule" || s.source == "knowledge")
+        .map(|s| s.entity_id.clone())
+        .collect();
+    if !accessed.is_empty() {
+        let _ = crate::storage::access::increment_access_batch(conn, &accessed);
     }
 
     Ok(sections)
-}
-
-/// Build a bounded code map summary: top modules and key files.
-fn code_map_sections(conn: &Connection, _config: &Config) -> Vec<ContextSection> {
-    let mut sections = Vec::new();
-
-    // Top modules by entity count.
-    let modules = get_entities_by_type(conn, "module", Some("active"), 20).unwrap_or_default();
-    if !modules.is_empty() {
-        let module_list: Vec<String> = modules
-            .iter()
-            .map(|m| {
-                format!(
-                    "- {} ({})",
-                    m.title.as_deref().unwrap_or("(unnamed)"),
-                    m.file_path.as_deref().unwrap_or("?")
-                )
-            })
-            .collect();
-        sections.push(ContextSection {
-            source: "code_map".to_string(),
-            entity_id: "modules".to_string(),
-            title: "Code Map — Modules".to_string(),
-            content: module_list.join("\n"),
-            relevance: 0.0,
-            graph_path: vec![],
-        });
-    }
-
-    // Key files — those with the most contains edges (high connectivity).
-    let key_files: Vec<(String, String, i64)> = {
-        let mut stmt = match conn.prepare(
-            "SELECT e.title, e.file_path, COUNT(*) as edge_count
-             FROM edges ed
-             JOIN entities e ON ed.source_id = e.id
-             WHERE ed.edge_type = 'contains' AND e.type = 'file'
-             GROUP BY e.id
-             ORDER BY edge_count DESC
-             LIMIT 15",
-        ) {
-            Ok(s) => s,
-            Err(_) => return sections,
-        };
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })
-            .ok();
-        match rows {
-            Some(rows) => rows.filter_map(|r| r.ok()).collect(),
-            None => return sections,
-        }
-    };
-
-    if !key_files.is_empty() {
-        let file_list: Vec<String> = key_files
-            .iter()
-            .map(|(title, path, count)| format!("- {title} ({path}) — {count} symbols"))
-            .collect();
-        sections.push(ContextSection {
-            source: "code_map".to_string(),
-            entity_id: "key_files".to_string(),
-            title: "Code Map — Key Files".to_string(),
-            content: file_list.join("\n"),
-            relevance: 0.0,
-            graph_path: vec![],
-        });
-    }
-
-    sections
 }
 
 /// Build sections from search results (task and escalation modes).
@@ -363,5 +308,6 @@ fn search_result_to_section(result: SearchResult) -> ContextSection {
         content: result.entity.content,
         relevance: result.relevance,
         graph_path: result.graph_path,
+        graph_path_description: result.graph_path_description,
     }
 }

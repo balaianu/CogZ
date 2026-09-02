@@ -982,7 +982,9 @@ promotion_threshold = 3          # min supporting observations to promote
 allow = []                       # explicit gitignore overrides (paths to index despite being gitignored)
 
 [context]
-default_token_budget = 4096      # default token budget for context packs
+default_token_budget = 4096      # token budget for cold_start mode
+task_token_budget = 8192         # token budget for task mode (larger for code)
+escalation_token_budget = 8192   # token budget for escalation mode
 cold_start_rules = 5             # recent rules in cold_start mode
 cold_start_observations = 5      # recent observations in cold_start mode
 task_max_results = 10            # max search results in task mode

@@ -23,7 +23,8 @@ use crate::storage::crud::Entity;
 #[derive(Debug, Clone)]
 pub struct SearchResult {
     pub entity: Entity,
-    /// Fused relevance score from RRF (0.0 for graph-expanded results).
+    /// Fused relevance score from RRF. Graph-expanded results get a
+    /// decayed score: `seed_relevance * 0.5^hops`.
     pub relevance: f32,
     /// Entity IDs tracing from the matched entity to this result.
     /// For direct matches: `[entity_id]`. For expanded results: the

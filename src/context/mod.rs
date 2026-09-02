@@ -6,6 +6,7 @@
 //! and token budgeting to produce a `ContextPack`.
 
 pub mod assemble;
+pub mod code_map;
 pub mod compress;
 pub mod modes;
 
@@ -32,11 +33,18 @@ pub struct ContextSection {
     pub title: String,
     /// Entity content (possibly truncated to fit token budget).
     pub content: String,
-    /// Relevance score from search (0.0 for cold_start entries).
+    /// Relevance score. For task/escalation: RRF score (or decayed
+    /// seed score for graph-expanded entities). For cold_start:
+    /// composite score (confidence + access + recency). 0.0 for
+    /// structural sections (identity, code map, knowledge index).
     pub relevance: f32,
     /// Entity IDs tracing from the seed entity to this one.
     /// For direct matches: `[entity_id]`. For expanded: the full path.
     pub graph_path: Vec<String>,
+    /// Human-readable description of the graph path (e.g.
+    /// "Search pipeline → hybrid.rs → fuse"). Empty for direct
+    /// matches and cold-start sections.
+    pub graph_path_description: String,
 }
 
 /// Metadata about a context pack's construction.

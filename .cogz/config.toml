@@ -34,6 +34,8 @@ allow = []
 
 [context]
 default_token_budget = 4096
+task_token_budget = 8192
+escalation_token_budget = 8192
 cold_start_rules = 5
 cold_start_observations = 5
 task_max_results = 10

@@ -233,6 +233,16 @@ fn sync_entities_to_db(
             .map(|e| (e.id.clone(), e))
             .collect();
 
+    // Wrap all inserts/updates in a single transaction to avoid
+    // one fsync per row. On a 1000+ entity codebase this reduces
+    // the DB sync phase from minutes to seconds.
+    if let Err(e) = conn.execute_batch("BEGIN") {
+        tracing::warn!(
+            "failed to begin transaction: {} — falling back to autocommit",
+            e
+        );
+    }
+
     for (id, entity) in all_entities {
         match existing_map.get(id) {
             Some(existing) => {
@@ -273,6 +283,10 @@ fn sync_entities_to_db(
                 result.synced_entity_ids.push(id.clone());
             }
         }
+    }
+
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        tracing::warn!("failed to commit entity transaction: {}", e);
     }
 }
 

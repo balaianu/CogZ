@@ -134,8 +134,16 @@ pub struct RetentionConfig {
 /// Context assembly configuration.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextConfig {
-    /// Default token budget for context packs.
+    /// Default token budget for cold_start context packs.
     pub default_token_budget: usize,
+    /// Token budget for task context packs. Larger than cold_start
+    /// to accommodate code entities alongside knowledge entries.
+    #[serde(default = "default_task_token_budget")]
+    pub task_token_budget: usize,
+    /// Token budget for escalation context packs. Same as task by
+    /// default — escalation widens search depth, not just budget.
+    #[serde(default = "default_escalation_token_budget")]
+    pub escalation_token_budget: usize,
     /// Number of recent rules to include in cold_start mode.
     pub cold_start_rules: usize,
     /// Number of recent observations to include in cold_start mode.
@@ -150,10 +158,20 @@ pub struct ContextConfig {
     pub escalation_max_hops: usize,
 }
 
+fn default_task_token_budget() -> usize {
+    8192
+}
+
+fn default_escalation_token_budget() -> usize {
+    8192
+}
+
 impl Default for ContextConfig {
     fn default() -> Self {
         Self {
             default_token_budget: 4096,
+            task_token_budget: 8192,
+            escalation_token_budget: 8192,
             cold_start_rules: 5,
             cold_start_observations: 5,
             task_max_results: 10,
@@ -254,6 +272,16 @@ impl Config {
                 "context.default_token_budget must be greater than 0".to_string(),
             ));
         }
+        if self.context.task_token_budget == 0 {
+            return Err(super::ConfigError::Validation(
+                "context.task_token_budget must be greater than 0".to_string(),
+            ));
+        }
+        if self.context.escalation_token_budget == 0 {
+            return Err(super::ConfigError::Validation(
+                "context.escalation_token_budget must be greater than 0".to_string(),
+            ));
+        }
         Ok(())
     }
 }
@@ -304,5 +332,53 @@ tombstone_max_count = 1000
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.index.allow.is_empty());
         assert_eq!(config.context, ContextConfig::default());
+    }
+
+    #[test]
+    fn old_config_without_per_mode_token_budgets_uses_serde_defaults() {
+        let toml_str = r#"
+[project]
+name = "test"
+
+[storage]
+db_path = ".cogz/cogz.db"
+
+[embedding]
+code_model = "test"
+knowledge_model = "test"
+dimension = 384
+
+[search]
+fts_weight = 0.4
+vec_weight = 0.6
+rrf_k = 60
+max_results = 20
+
+[consolidation]
+dedup_threshold = 0.92
+title_match_threshold = 0.85
+contradiction_check = true
+promotion_threshold = 3
+
+[context]
+default_token_budget = 4096
+cold_start_rules = 5
+cold_start_observations = 5
+task_max_results = 10
+task_max_hops = 2
+escalation_max_results = 20
+escalation_max_hops = 3
+
+[retention]
+observation_prune_after_days = 90
+tombstone_max_count = 1000
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        // Old configs without task/escalation token budget fields
+        // must fall back to serde defaults, not fail or panic.
+        assert_eq!(config.context.default_token_budget, 4096);
+        assert_eq!(config.context.task_token_budget, 8192);
+        assert_eq!(config.context.escalation_token_budget, 8192);
+        assert!(config.validate().is_ok());
     }
 }

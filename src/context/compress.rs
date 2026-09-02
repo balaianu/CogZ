@@ -6,6 +6,7 @@
 //! without changing the rest of the system.
 
 use super::ContextSection;
+use super::modes::ContextMode;
 
 /// Estimate token count using the chars/4 heuristic.
 /// Overestimates for code (safe — packs come in under budget).
@@ -35,19 +36,38 @@ fn source_priority(source: &str) -> u8 {
     }
 }
 
-/// Sort sections by priority (source type), then by relevance
-/// (descending). This determines which sections are kept when
-/// the token budget is tight.
-pub fn sort_by_priority(sections: &mut [ContextSection]) {
-    sections.sort_by(|a, b| {
-        source_priority(&a.source)
-            .cmp(&source_priority(&b.source))
-            .then_with(|| {
+/// Sort sections for token budget fitting.
+///
+/// For cold_start: sort by type priority (identity, rules, knowledge,
+/// code, observations), then by composite score. This ensures the
+/// compact structural sections come first.
+///
+/// For task/escalation: sort by relevance (search score) descending,
+/// with type priority as a tiebreaker. The search already ranked
+/// results by relevance — respecting that ranking means code entities
+/// that matched the query get budget ahead of less-relevant rules.
+pub fn sort_by_priority(sections: &mut [ContextSection], mode: ContextMode) {
+    match mode {
+        ContextMode::Task | ContextMode::Escalation => {
+            sections.sort_by(|a, b| {
                 b.relevance
                     .partial_cmp(&a.relevance)
                     .unwrap_or(std::cmp::Ordering::Equal)
-            })
-    });
+                    .then_with(|| source_priority(&a.source).cmp(&source_priority(&b.source)))
+            });
+        }
+        ContextMode::ColdStart => {
+            sections.sort_by(|a, b| {
+                source_priority(&a.source)
+                    .cmp(&source_priority(&b.source))
+                    .then_with(|| {
+                        b.relevance
+                            .partial_cmp(&a.relevance)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+            });
+        }
+    }
 }
 
 /// Fit sections into a token budget. Returns the sections that fit
@@ -119,6 +139,7 @@ mod tests {
             content: content.to_string(),
             relevance,
             graph_path: vec!["test-id".to_string()],
+            graph_path_description: String::new(),
         }
     }
 
@@ -138,18 +159,32 @@ mod tests {
     }
 
     #[test]
-    fn sort_prioritizes_rules_then_knowledge_then_code() {
+    fn cold_start_sort_prioritizes_by_type_then_score() {
         let mut sections = vec![
             section("knowledge", "K", "c", 0.9),
             section("observation", "O", "c", 0.5),
             section("rule", "R", "c", 0.3),
             section("function", "F", "c", 0.8),
         ];
-        sort_by_priority(&mut sections);
+        sort_by_priority(&mut sections, ContextMode::ColdStart);
         assert_eq!(sections[0].source, "rule");
         assert_eq!(sections[1].source, "knowledge");
         assert_eq!(sections[2].source, "function");
         assert_eq!(sections[3].source, "observation");
+    }
+
+    #[test]
+    fn task_mode_sort_prioritizes_by_relevance() {
+        let mut sections = vec![
+            section("rule", "R", "c", 0.3),
+            section("function", "F", "c", 0.8),
+            section("knowledge", "K", "c", 0.5),
+        ];
+        sort_by_priority(&mut sections, ContextMode::Task);
+        // Highest relevance first, regardless of type
+        assert_eq!(sections[0].source, "function");
+        assert_eq!(sections[1].source, "knowledge");
+        assert_eq!(sections[2].source, "rule");
     }
 
     #[test]
@@ -158,7 +193,7 @@ mod tests {
             section("rule", "R1", "c", 0.3),
             section("rule", "R2", "c", 0.8),
         ];
-        sort_by_priority(&mut sections);
+        sort_by_priority(&mut sections, ContextMode::ColdStart);
         assert_eq!(sections[0].title, "R2"); // higher relevance first
     }
 

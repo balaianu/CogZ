@@ -106,7 +106,6 @@ mod tests {
     #[test]
     fn cold_start_score_prefers_rules_over_observations() {
         let now = chrono::Utc::now();
-        let ts = now.to_rfc3339();
         let weights = ScoreWeights::default();
 
         let rule = Entity::new("r1", "rule", "T", "c");
@@ -124,7 +123,6 @@ mod tests {
     #[test]
     fn cold_start_score_boosts_frequently_accessed() {
         let now = chrono::Utc::now();
-        let ts = now.to_rfc3339();
         let weights = ScoreWeights::default();
 
         let entity = Entity::new("e1", "knowledge", "T", "c");

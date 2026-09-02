@@ -126,11 +126,18 @@ pub fn run_capture_event(
 /// Print a context pack in a format suitable for agent injection.
 /// No human-readable summary header — just the sections.
 fn print_context_pack(pack: &crate::context::ContextPack) {
+    if !pack.metadata.dropped_sources.is_empty() {
+        eprintln!(
+            "Dropped: {} sections over token budget",
+            pack.metadata.dropped_sources.len()
+        );
+    }
+
     for (i, section) in pack.sections.iter().enumerate() {
         let relevance = if section.relevance > 0.0 {
             format!("{:.4}", section.relevance)
         } else {
-            "recent".to_string()
+            "—".to_string()
         };
 
         println!(
@@ -142,11 +149,15 @@ fn print_context_pack(pack: &crate::context::ContextPack) {
         );
 
         if section.graph_path.len() > 1 {
-            println!(
-                "  graph path: {} -> {}\n",
-                section.graph_path.first().unwrap_or(&section.entity_id),
-                section.entity_id
-            );
+            if !section.graph_path_description.is_empty() {
+                println!("  graph path: {}\n", section.graph_path_description);
+            } else {
+                println!(
+                    "  graph path: {} -> {}\n",
+                    section.graph_path.first().unwrap_or(&section.entity_id),
+                    section.entity_id
+                );
+            }
         }
 
         println!("{}\n", section.content);

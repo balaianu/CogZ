@@ -129,10 +129,20 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
     edges.dedup_by(|a, b| a.source_id == b.source_id && a.target_id == b.target_id);
 
     let count = edges.len();
+
+    if let Err(e) = conn.execute_batch("BEGIN") {
+        tracing::warn!(
+            "failed to begin auto-link transaction: {} — falling back to autocommit",
+            e
+        );
+    }
     for edge in &edges {
         if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, edge) {
             tracing::debug!("skipped auto-link edge: {}", e);
         }
+    }
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        tracing::warn!("failed to commit auto-link transaction: {}", e);
     }
 
     count

@@ -185,12 +185,9 @@ pub fn run_context(
 
     if !pack.metadata.dropped_sources.is_empty() {
         println!(
-            "\nDropped sources ({}):",
+            "\nDropped: {} sections over token budget",
             pack.metadata.dropped_sources.len()
         );
-        for src in &pack.metadata.dropped_sources {
-            println!("  - {}", src);
-        }
     }
 
     println!("\n---\n");
@@ -198,7 +195,7 @@ pub fn run_context(
         let relevance = if section.relevance > 0.0 {
             format!("{:.4}", section.relevance)
         } else {
-            "recent".to_string()
+            "—".to_string()
         };
 
         println!(
@@ -210,11 +207,15 @@ pub fn run_context(
         );
 
         if section.graph_path.len() > 1 {
-            println!(
-                "  graph path: {} -> {}\n",
-                section.graph_path.first().unwrap_or(&section.entity_id),
-                section.entity_id
-            );
+            if !section.graph_path_description.is_empty() {
+                println!("  graph path: {}\n", section.graph_path_description);
+            } else {
+                println!(
+                    "  graph path: {} -> {}\n",
+                    section.graph_path.first().unwrap_or(&section.entity_id),
+                    section.entity_id
+                );
+            }
         }
 
         println!("{}\n", section.content);

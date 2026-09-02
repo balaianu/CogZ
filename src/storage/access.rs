@@ -127,7 +127,7 @@ mod tests {
             insert_entity(&conn, &Entity::new(&id, "observation", "T", "c")).unwrap();
             // Access e0 once, e1 twice, etc.
             for _ in 0..=i {
-                increment_access_batch(&conn, &[id.clone()]).unwrap();
+                increment_access_batch(&conn, std::slice::from_ref(&id)).unwrap();
             }
         }
 

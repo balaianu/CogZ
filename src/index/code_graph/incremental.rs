@@ -132,6 +132,13 @@ pub fn sync_code_edges_incremental(
     }
 
     let now = chrono::Utc::now().to_rfc3339();
+
+    if let Err(e) = conn.execute_batch("BEGIN") {
+        tracing::warn!(
+            "failed to begin edge transaction: {} — falling back to autocommit",
+            e
+        );
+    }
     for edge in &edges {
         let db_edge = Edge {
             source_id: edge.source_id.clone(),
@@ -143,5 +150,8 @@ pub fn sync_code_edges_incremental(
         if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, &db_edge) {
             tracing::debug!("skipped edge {}: {}", edge.edge_type, e);
         }
+    }
+    if let Err(e) = conn.execute_batch("COMMIT") {
+        tracing::warn!("failed to commit edge transaction: {}", e);
     }
 }

@@ -217,7 +217,11 @@ mod tests {
             .iter()
             .filter(|c| c.change == ChangeType::Added)
             .collect();
-        assert!(added.iter().any(|c| c.path == PathBuf::from("src/lib.rs")));
+        assert!(
+            added
+                .iter()
+                .any(|c| c.path == std::path::Path::new("src/lib.rs"))
+        );
     }
 
     #[test]
@@ -239,7 +243,7 @@ mod tests {
         assert!(
             deleted
                 .iter()
-                .any(|c| c.path == PathBuf::from("src/lib.rs"))
+                .any(|c| c.path == std::path::Path::new("src/lib.rs"))
         );
     }
 

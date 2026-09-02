@@ -101,6 +101,7 @@ pub fn context_response_ref(pack: &crate::context::ContextPack) -> serde_json::V
                 "content": s.content,
                 "relevance": s.relevance,
                 "graph_path": s.graph_path,
+                "graph_path_description": s.graph_path_description,
             })
         })
         .collect();
