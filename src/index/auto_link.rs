@@ -66,7 +66,6 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
             }
         }
     }
-
     // Scan knowledge entities for references.
     // Use Aho-Corasick to search all patterns in a single pass per
     // entity, reducing complexity from O(k × (p + n)) substring scans
@@ -89,20 +88,25 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
         pattern_is_name.push(false);
     }
     for (name, id) in &unique_names {
-        // Minimum length filters out short generic names. Modules get
-        // a higher threshold (8) because module names like "storage",
-        // "query", "model" are common English words. Functions and
-        // classes get 4 — their names are usually more specific
-        // (e.g. "knn_search", "build_sql").
-        let min_len = 8; // Conservative: applies to all name-based matches
-        if name.len() >= min_len && !is_stopword(name) {
-            patterns.push(name.clone());
-            pattern_to_id.push(id.clone());
-            pattern_is_name.push(true);
-        }
+        // unique_names already filtered to count == 1 — the name
+        // appears exactly once in the codebase. A match in knowledge
+        // content is therefore almost certainly a reference to this
+        // entity. The word boundary check handles substring false
+        // positives (e.g. "fuse" inside "fused"). No stopword or
+        // min_len filter needed for unique names.
+        patterns.push(name.clone());
+        pattern_to_id.push(id.clone());
+        pattern_is_name.push(true);
     }
 
-    let ac = match aho_corasick::AhoCorasick::new(&patterns) {
+    // LeftmostLongest ensures path patterns (e.g. "src/search/hybrid.rs")
+    // take priority over name patterns (e.g. "hybrid") that are substrings
+    // of the path. Without this, the shorter name match prevents the path
+    // match, and file entities never get auto-linked.
+    let ac = match aho_corasick::AhoCorasick::builder()
+        .match_kind(aho_corasick::MatchKind::LeftmostLongest)
+        .build(&patterns)
+    {
         Ok(ac) => ac,
         Err(e) => {
             tracing::warn!("failed to build Aho-Corasick automaton: {}", e);
@@ -183,173 +187,6 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
     count
 }
 
-/// Common English words that are also common code entity names.
-/// These are excluded from name-based auto-linking because they
-/// produce false positives in almost every knowledge entry.
-fn is_stopword(name: &str) -> bool {
-    const STOPWORDS: &[&str] = &[
-        "access",
-        "action",
-        "add",
-        "assemble",
-        "batch",
-        "block",
-        "budget",
-        "buffer",
-        "build",
-        "byte",
-        "cache",
-        "channel",
-        "char",
-        "check",
-        "chunk",
-        "clear",
-        "client",
-        "clone",
-        "close",
-        "code",
-        "commands",
-        "compress",
-        "config",
-        "content",
-        "context",
-        "copy",
-        "count",
-        "create",
-        "crud",
-        "cursor",
-        "data",
-        "date",
-        "debug",
-        "decay",
-        "delete",
-        "describe",
-        "doctor",
-        "download",
-        "drop",
-        "edge",
-        "embeddings",
-        "entities",
-        "entry",
-        "error",
-        "event",
-        "events",
-        "exec",
-        "expansion",
-        "fetch",
-        "field",
-        "file",
-        "file_path",
-        "files",
-        "filter",
-        "find",
-        "format",
-        "frontmatter",
-        "fusion",
-        "get",
-        "graph",
-        "handle",
-        "handlers",
-        "hash",
-        "hooks",
-        "hop",
-        "incremental",
-        "index",
-        "inference",
-        "info",
-        "init",
-        "input",
-        "insert",
-        "issue",
-        "item",
-        "join",
-        "json",
-        "knowledge",
-        "leaf",
-        "limit",
-        "line",
-        "list",
-        "load",
-        "main",
-        "match",
-        "merge",
-        "message",
-        "migrations",
-        "model",
-        "name",
-        "node",
-        "offset",
-        "open",
-        "output",
-        "pack",
-        "page",
-        "panic",
-        "parse",
-        "path",
-        "print",
-        "priority",
-        "process",
-        "query",
-        "rank",
-        "read",
-        "record",
-        "registry",
-        "relevance",
-        "remove",
-        "report",
-        "request",
-        "reset",
-        "response",
-        "result",
-        "root",
-        "run",
-        "save",
-        "scanner",
-        "schema",
-        "score",
-        "search",
-        "section",
-        "seed",
-        "server",
-        "service",
-        "set",
-        "settings",
-        "size",
-        "sort",
-        "source",
-        "split",
-        "start",
-        "state",
-        "status",
-        "stop",
-        "storage",
-        "store",
-        "stream",
-        "summary",
-        "sync",
-        "table",
-        "target",
-        "test",
-        "text",
-        "time",
-        "token",
-        "tools",
-        "total",
-        "trace",
-        "tree",
-        "type",
-        "unavailable",
-        "update",
-        "uuid",
-        "value",
-        "warn",
-        "word",
-        "write",
-    ];
-    let lower = name.to_ascii_lowercase();
-    STOPWORDS.contains(&lower.as_str())
-}
-
 /// Check if a match at [start, end) in `content` is bounded by word
 /// boundaries on both sides. A word boundary is the start/end of the
 /// string or a non-alphanumeric character (including `_`).
@@ -370,23 +207,6 @@ fn is_word_char(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stopword_filters_generic_names() {
-        assert!(is_stopword("storage"));
-        assert!(is_stopword("query"));
-        assert!(is_stopword("model"));
-        assert!(is_stopword("STORAGE"));
-        assert!(is_stopword("entities"));
-        assert!(is_stopword("knowledge"));
-        assert!(is_stopword("embeddings"));
-        assert!(is_stopword("frontmatter"));
-        assert!(!is_stopword("knn_search"));
-        assert!(!is_stopword("build_sql"));
-        assert!(!is_stopword("assemble_context"));
-        assert!(!is_stopword("tree_sitter"));
-        assert!(!is_stopword("code_graph"));
-    }
 
     #[test]
     fn word_boundary_rejects_substring_matches() {

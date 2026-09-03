@@ -181,7 +181,7 @@ impl Default for ContextConfig {
             task_token_budget: 8192,
             escalation_token_budget: 8192,
             cold_start_rules: 5,
-            task_max_results: 10,
+            task_max_results: 25,
             task_max_hops: 2,
             escalation_max_results: 20,
             escalation_max_hops: 3,
@@ -387,7 +387,7 @@ promotion_threshold = 3
 [context]
 default_token_budget = 4096
 cold_start_rules = 5
-task_max_results = 10
+task_max_results = 25
 task_max_hops = 2
 escalation_max_results = 20
 escalation_max_hops = 3

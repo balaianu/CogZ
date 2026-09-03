@@ -66,27 +66,38 @@ pub fn code_map_sections(conn: &Connection, status: Option<&str>) -> Vec<Context
         });
     }
 
-    // Key files — ranked by incoming edge count (structural importance:
-    // how many other entities reference or import this file).
-    // Apply the same status filter as modules for consistency.
+    // Key files — ranked by outgoing contains edge count (how many
+    // symbols the file defines). This is a richness signal: files with
+    // many functions/classes/modules are structurally substantial.
+    // Test files are excluded by path pattern to avoid noise.
     let key_files: Vec<(String, String, i64)> = {
         let sql = match status {
             Some(_) => {
-                "SELECT e.title, e.file_path, COUNT(*) as incoming_count
+                "SELECT e.title, e.file_path, COUNT(*) as symbol_count
                  FROM edges ed
-                 JOIN entities e ON ed.target_id = e.id
+                 JOIN entities e ON ed.source_id = e.id
                  WHERE e.type = 'file' AND e.status = ?
+                   AND ed.edge_type = 'contains'
+                   AND NOT (e.file_path LIKE 'tests/%'
+                     OR e.file_path LIKE '%/tests/%'
+                     OR e.file_path LIKE '%/tests.rs'
+                     OR e.file_path LIKE '%_tests.rs')
                  GROUP BY e.id
-                 ORDER BY incoming_count DESC
+                 ORDER BY symbol_count DESC
                  LIMIT 15"
             }
             None => {
-                "SELECT e.title, e.file_path, COUNT(*) as incoming_count
+                "SELECT e.title, e.file_path, COUNT(*) as symbol_count
                  FROM edges ed
-                 JOIN entities e ON ed.target_id = e.id
+                 JOIN entities e ON ed.source_id = e.id
                  WHERE e.type = 'file'
+                   AND ed.edge_type = 'contains'
+                   AND NOT (e.file_path LIKE 'tests/%'
+                     OR e.file_path LIKE '%/tests/%'
+                     OR e.file_path LIKE '%/tests.rs'
+                     OR e.file_path LIKE '%_tests.rs')
                  GROUP BY e.id
-                 ORDER BY incoming_count DESC
+                 ORDER BY symbol_count DESC
                  LIMIT 15"
             }
         };
@@ -107,7 +118,7 @@ pub fn code_map_sections(conn: &Connection, status: Option<&str>) -> Vec<Context
     if !key_files.is_empty() {
         let file_list: Vec<String> = key_files
             .iter()
-            .map(|(title, path, count)| format!("- {title} ({path}) — {count} refs"))
+            .map(|(title, path, count)| format!("- {title} ({path}) — {count} symbols"))
             .collect();
         sections.push(ContextSection {
             source: "code_map".to_string(),

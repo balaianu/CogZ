@@ -4,7 +4,7 @@ title: "Search pipeline — FTS, vector, RRF, graph expansion"
 type: knowledge
 status: active
 created_at: 2026-08-28T19:22:00Z
-updated_at: 2026-08-28T19:22:00Z
+updated_at: 2026-09-03T09:55:00Z
 references: ["a9d8f4cd-a22a-4e0c-a25a-418c92564dcd"]
 category: architecture
 tags: ["search", "fts5", "vector", "rrf", "graph-expansion"]
@@ -21,9 +21,9 @@ The search pipeline in `src/search/hybrid.rs` runs six steps:
    Results are filtered in Rust, not SQL, because vec0 doesn't
    support JOIN with the entities table for filtering.
 
-3. **RRF fusion** — `fuse()` is a pure function: takes ranked ID
-   lists with weights, returns fused (id, score) pairs. No I/O.
-   FTS-only mode skips fusion and uses rank-position scoring
+3. **RRF fusion** — `fuse()` in `src/search/rrf.rs` is a pure function:
+   takes ranked ID lists with weights, returns fused (id, score) pairs.
+   No I/O. FTS-only mode skips fusion and uses rank-position scoring
    directly.
 
 4. **Top-N selection** — take `params.limit` from the fused list.
