@@ -68,7 +68,10 @@ pub fn check_duplicate(
     new_embedding: Option<&[f32]>,
     config: &ConsolidationConfig,
 ) -> DedupResult {
-    let existing = match get_entities_by_type(conn, entity_type, None, 100) {
+    // Only compare against active entities. Stale, rejected, superseded,
+    // and pruned entities should not trigger duplicate warnings — a new
+    // observation that matches a rejected one is not a duplicate.
+    let existing = match get_entities_by_type(conn, entity_type, Some("active"), 100) {
         Ok(e) => e,
         Err(_) => return DedupResult::empty(),
     };
@@ -182,15 +185,20 @@ fn check_embedding_similarity(
             continue;
         }
 
+        // Only consider neighbors that are in the active existing list.
+        // KNN may return stale/rejected/superseded/pruned entities whose
+        // embeddings are still in vec0 — those should not trigger dedup.
+        let Some(entity) = existing.iter().find(|e| e.id == *entity_id) else {
+            continue;
+        };
+
         // sqlite-vec returns L2 distance. Convert to similarity:
         // similarity = 1 / (1 + distance)
         let similarity = 1.0 / (1.0 + *distance as f64);
 
         if similarity >= dedup_threshold {
             dedup_flagged = true;
-            if best_warning.is_none()
-                && let Some(entity) = existing.iter().find(|e| e.id == *entity_id)
-            {
+            if best_warning.is_none() {
                 best_warning = Some(DuplicateWarning {
                     existing_id: entity.id.clone(),
                     existing_title: entity.title.clone().unwrap_or_default(),

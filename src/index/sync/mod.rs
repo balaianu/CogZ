@@ -382,7 +382,11 @@ fn sync_entities_to_db(
 
     if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
         tracing::warn!("failed to commit entity transaction: {}", e);
-        // Transaction rolled back — discard counts.
+        // Transaction rolled back — discard created/updated counts
+        // since those writes were undone. But skipped entities were
+        // never modified (hash matched, no SQL executed), so the
+        // skipped count is still accurate.
+        result.skipped += skipped;
         return;
     }
 

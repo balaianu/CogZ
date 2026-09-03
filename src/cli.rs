@@ -65,6 +65,7 @@ pub fn run_search(
         } else {
             config.context.task_max_hops
         },
+        include_tests: false,
     };
 
     let results = {

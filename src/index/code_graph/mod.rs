@@ -154,8 +154,16 @@ pub fn sync_code_edges(
     // Phase 2b: build `contains` edges.
     edges.extend(build_contains_edges(&file_to_children));
 
-    // Phase 3: sync edges to DB.
+    // Phase 3: sync edges to DB. The DELETE and INSERTs are in a
+    // single transaction so a COMMIT failure rolls back both —
+    // otherwise the DELETE would persist (autocommit) while the
+    // INSERTs roll back, silently destroying the graph.
     let conn = storage.conn();
+
+    let in_transaction = conn.execute_batch("BEGIN").is_ok();
+    if !in_transaction {
+        tracing::warn!("failed to begin edge transaction — falling back to autocommit");
+    }
 
     if let Err(e) =
         storage::edges::delete_edges_by_type(&conn, &["calls", "imports", "extends", "contains"])
@@ -164,13 +172,6 @@ pub fn sync_code_edges(
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-
-    if let Err(e) = conn.execute_batch("BEGIN") {
-        tracing::warn!(
-            "failed to begin edge transaction: {} — falling back to autocommit",
-            e
-        );
-    }
 
     for edge in &edges {
         let db_edge = Edge {
@@ -185,7 +186,7 @@ pub fn sync_code_edges(
         }
     }
 
-    if let Err(e) = conn.execute_batch("COMMIT") {
+    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
         tracing::warn!("failed to commit edge transaction: {}", e);
     }
 }

@@ -57,7 +57,7 @@ pub fn index_code(storage: &storage::Storage, repo_root: &Path, config: &Config)
             None => continue,
         };
 
-        let (entities, raw_edges) = self::tree_sitter::extract_all(&abs_path, &source, language);
+        let (entities, raw_edges) = self::tree_sitter::extract_all(rel_path, &source, language);
         let path_str = rel_path.to_string_lossy().to_string();
         entities_by_file.push((path_str.clone(), entities));
         raw_edges_by_file.push((path_str, raw_edges));
@@ -210,7 +210,7 @@ fn reindex_incremental(
             None => continue,
         };
         let path_str = cf.path.to_string_lossy().to_string();
-        let (entities, _) = self::tree_sitter::extract_all(&abs_path, &source, language);
+        let (entities, _) = self::tree_sitter::extract_all(&cf.path, &source, language);
         entities_by_file.push((path_str, entities));
         source_files_for_edges.push((cf.path.clone(), source, language));
     }

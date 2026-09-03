@@ -58,7 +58,7 @@ fn fts_search_finds_content() {
     )
     .unwrap();
 
-    let results = fts_search(&conn, "ranking", None, Some("active"), 20).unwrap();
+    let results = fts_search(&conn, "ranking", None, Some("active"), false, 20).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].id, "u1");
 }
@@ -77,7 +77,15 @@ fn fts_search_with_type_filter() {
     )
     .unwrap();
 
-    let obs = fts_search(&conn, "ranking", Some("observation"), Some("active"), 20).unwrap();
+    let obs = fts_search(
+        &conn,
+        "ranking",
+        Some("observation"),
+        Some("active"),
+        false,
+        20,
+    )
+    .unwrap();
     assert_eq!(obs.len(), 1);
     assert_eq!(obs[0].r#type, "observation");
 }
@@ -97,7 +105,7 @@ fn fts_search_with_hyphenated_query() {
     .unwrap();
 
     // Hyphenated query should not crash (FTS5 treats - as NOT)
-    let results = fts_search(&conn, "tree-sitter", None, Some("active"), 20).unwrap();
+    let results = fts_search(&conn, "tree-sitter", None, Some("active"), false, 20).unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].id, "u1");
 }
@@ -118,7 +126,15 @@ fn fts_search_multi_word_query() {
 
     // Multi-word query should match all terms in any position (implicit AND),
     // not require them to be adjacent (phrase matching).
-    let results = fts_search(&conn, "search architecture", None, Some("active"), 20).unwrap();
+    let results = fts_search(
+        &conn,
+        "search architecture",
+        None,
+        Some("active"),
+        false,
+        20,
+    )
+    .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].id, "u1");
 
@@ -128,6 +144,7 @@ fn fts_search_multi_word_query() {
         "search system architecture",
         None,
         Some("active"),
+        false,
         20,
     )
     .unwrap();

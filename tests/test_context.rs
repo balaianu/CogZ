@@ -326,3 +326,43 @@ fn selected_sources_lists_unique_source_types() {
         pack.metadata.selected_sources
     );
 }
+
+#[test]
+fn code_entities_are_summarized_in_task_mode() {
+    let storage = Storage::open_memory().unwrap();
+    let conn = storage.conn();
+
+    // A function entity with 20+ lines of content
+    let long_body = (1..=25)
+        .map(|i| format!("    let x{i} = compute{i}();"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let func_content = format!("pub fn big_function() -> Result<()> {{\n{long_body}\n}}");
+
+    let mut func = Entity::new("f1", "function", "big_function", &func_content);
+    func.file_path = Some("src/main.rs".to_string());
+    insert_entity(&conn, &func).unwrap();
+
+    let config = default_config();
+    let params = AssembleParams {
+        mode: ContextMode::Task,
+        query: Some("big_function"),
+        ..Default::default()
+    };
+    let pack = assemble_context(&conn, &params, &config).unwrap();
+
+    let func_section = pack
+        .sections
+        .iter()
+        .find(|s| s.entity_id == "f1")
+        .expect("function should be in pack");
+
+    // Content should be summarized — not the full 27 lines
+    assert!(
+        func_section.content.contains("... ("),
+        "expected summarization marker, got: {}",
+        &func_section.content[..50.min(func_section.content.len())]
+    );
+    // Should contain the signature line
+    assert!(func_section.content.contains("pub fn big_function"));
+}

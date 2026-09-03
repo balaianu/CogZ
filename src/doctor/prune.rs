@@ -99,17 +99,11 @@ pub fn run_prune(
     let conn = storage.conn();
 
     for candidate in &candidates {
-        // Delete the observation file.
-        let file_path = cogz_dir.join(&candidate.file_path);
-        if file_path.exists()
-            && let Err(e) = std::fs::remove_file(&file_path)
-        {
-            tracing::warn!("failed to delete {}: {}", file_path.display(), e);
-            report.skipped += 1;
-            continue;
-        }
-
-        // Convert entity to tombstone via storage layer API.
+        // Tombstone the DB entity first, then delete the file. If the
+        // tombstone fails, the file is still on disk and the entity is
+        // still in its terminal state (rejected/superseded) — a safe
+        // state that can be retried. Deleting the file first would lose
+        // the content irreversibly if the tombstone fails.
         if let Err(e) = tombstone_entity(&conn, &candidate.entity_id) {
             tracing::warn!("failed to tombstone {}: {}", candidate.entity_id, e);
             report.skipped += 1;
@@ -119,6 +113,17 @@ pub fn run_prune(
         // Remove embedding for the tombstoned entity.
         // FTS is already cleaned by the UPDATE trigger (entities_fts_au).
         let _ = delete_embedding(&conn, &candidate.entity_id);
+
+        // Delete the observation file now that the DB tombstone succeeded.
+        let file_path = cogz_dir.join(&candidate.file_path);
+        if file_path.exists()
+            && let Err(e) = std::fs::remove_file(&file_path)
+        {
+            tracing::warn!("failed to delete {}: {}", file_path.display(), e);
+            // The entity is already tombstoned — the file leak is
+            // cosmetic. The next sync will mark it stale (file exists
+            // but entity is pruned), but that's harmless.
+        }
 
         report.pruned += 1;
     }

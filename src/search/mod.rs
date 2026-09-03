@@ -102,6 +102,11 @@ pub struct SearchParams {
     pub expand: bool,
     /// Max graph hops for expansion (0 = no expansion even if expand=true).
     pub max_hops: usize,
+    /// Whether to include test code entities in results. Test code
+    /// (files under `tests/` or named `*_tests.rs` / `tests.rs`) is
+    /// excluded by default to keep context packs focused on production
+    /// code. Set to true to include test entities.
+    pub include_tests: bool,
 }
 
 impl Default for SearchParams {
@@ -112,6 +117,7 @@ impl Default for SearchParams {
             limit: 20,
             expand: true,
             max_hops: 2,
+            include_tests: false,
         }
     }
 }

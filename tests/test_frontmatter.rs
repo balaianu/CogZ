@@ -155,3 +155,67 @@ fn full_file_roundtrip() {
     let reparsed = parse(&reserialized).unwrap();
     assert_eq!(fm, reparsed);
 }
+
+#[test]
+fn roundtrip_escaped_quotes_in_string() {
+    let mut fm = Frontmatter::new();
+    fm.insert(
+        "title",
+        FmValue::String(r#"He said "hello" to me"#.to_string()),
+    );
+    let serialized = serialize(&fm);
+    let parsed = parse(&serialized).unwrap();
+    assert_eq!(fm, parsed, "round-trip should preserve embedded quotes");
+}
+
+#[test]
+fn roundtrip_backslashes_in_string() {
+    let mut fm = Frontmatter::new();
+    fm.insert("path", FmValue::String(r"C:\Users\test\file".to_string()));
+    let serialized = serialize(&fm);
+    let parsed = parse(&serialized).unwrap();
+    assert_eq!(fm, parsed, "round-trip should preserve backslashes");
+}
+
+#[test]
+fn roundtrip_escaped_quotes_and_backslashes() {
+    let mut fm = Frontmatter::new();
+    fm.insert(
+        "title",
+        FmValue::String(r#"path "C:\test\" is valid"#.to_string()),
+    );
+    let serialized = serialize(&fm);
+    let parsed = parse(&serialized).unwrap();
+    assert_eq!(fm, parsed, "round-trip should preserve mixed escaping");
+}
+
+#[test]
+fn parse_array_with_comma_in_quoted_item() {
+    let fm = parse(r#"references: ["a,b", "c"]"#).unwrap();
+    let arr = fm.get("references").unwrap().as_array().unwrap();
+    assert_eq!(arr, &["a,b".to_string(), "c".to_string()]);
+}
+
+#[test]
+fn roundtrip_array_with_comma_in_quoted_item() {
+    let mut fm = Frontmatter::new();
+    fm.insert(
+        "references",
+        FmValue::Array(vec!["a,b".to_string(), "c".to_string()]),
+    );
+    let serialized = serialize(&fm);
+    let parsed = parse(&serialized).unwrap();
+    assert_eq!(fm, parsed, "array with comma in item should round-trip");
+}
+
+#[test]
+fn roundtrip_array_with_escaped_quotes_in_items() {
+    let mut fm = Frontmatter::new();
+    fm.insert(
+        "references",
+        FmValue::Array(vec![r#"say "hi""#.to_string(), "plain".to_string()]),
+    );
+    let serialized = serialize(&fm);
+    let parsed = parse(&serialized).unwrap();
+    assert_eq!(fm, parsed, "array with escaped quotes should round-trip");
+}

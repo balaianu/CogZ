@@ -136,7 +136,18 @@ pub fn sync_single_file(
     {
         let conn = storage.conn();
         match sync_parsed_file(&conn, &entity_file, &hash, &relative_path, true) {
-            Ok(action) => record_action(&mut result, action, &entity_file.id),
+            Ok(action) => {
+                let was_skipped = action == SyncAction::Skipped;
+                record_action(&mut result, action, &entity_file.id);
+                // Sync reference edges for changed files. Skipped files
+                // haven't changed, so their references are already correct.
+                if !was_skipped && let Err(e) = super::refs::sync_references(&conn, &entity_file) {
+                    result.errors.push(SyncFailure {
+                        file_path: abs_path.clone(),
+                        error: SyncError::Storage(e),
+                    });
+                }
+            }
             Err(error) => {
                 result.errors.push(SyncFailure {
                     file_path: abs_path,
@@ -176,20 +187,20 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
     // Phase 2: DB operations (lock held).
     let conn = storage.conn();
     let mut seen_ids: HashMap<String, PathBuf> = HashMap::new();
-    let mut synced_files: Vec<EntityFile> = Vec::new();
+    // All successfully parsed entity files — used for the reference
+    // sync pass. We include ALL entities (not just changed ones) so
+    // that forward references from unchanged entities to newly created
+    // entities are resolved. sync_references is idempotent (delete +
+    // re-insert), so re-syncing unchanged entities is a no-op for
+    // entities with no references.
+    let mut all_parsed_files: Vec<EntityFile> = Vec::new();
 
     for (file_path, ef, hash, rel_path) in &parsed {
         match sync_parsed_file(&conn, ef, hash, rel_path, incremental) {
             Ok(action) => {
-                let was_skipped = action == SyncAction::Skipped;
                 record_action(&mut result, action, &ef.id);
                 seen_ids.insert(ef.id.clone(), file_path.clone());
-                // Only re-sync references for files that changed.
-                // Skipped files haven't changed, so their references
-                // are already correct.
-                if !was_skipped {
-                    synced_files.push(ef.clone());
-                }
+                all_parsed_files.push(ef.clone());
             }
             Err(error) => result.errors.push(SyncFailure {
                 file_path: file_path.clone(),
@@ -200,8 +211,10 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
 
     // Second pass: sync reference edges now that all entities exist.
     // This handles forward references — edges to entities that were
-    // synced later in the same pass. Done once for all changed files.
-    for ef in &synced_files {
+    // synced later in the same pass. Re-syncing ALL entities (not just
+    // changed ones) ensures that an unchanged entity referencing a
+    // newly created entity gets its edge created.
+    for ef in &all_parsed_files {
         if let Err(e) = super::refs::sync_references(&conn, ef) {
             result.errors.push(SyncFailure {
                 file_path: ef.file_path(cogz_dir),

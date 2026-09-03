@@ -167,7 +167,7 @@ fn cold_start_sections(
     });
 
     // 2. Code map summary — top modules and files by connectivity.
-    sections.extend(code_map_sections(conn));
+    sections.extend(code_map_sections(conn, status));
 
     // 3. Scored rules — selected by composite score, not just recency.
     let rules = get_entities_by_type(conn, "rule", status, 1000)?;
@@ -280,6 +280,7 @@ fn query_sections(
         limit: max_results,
         expand: max_hops > 0,
         max_hops,
+        include_tests: false,
     };
 
     let embeddings = QueryEmbeddings {
@@ -299,15 +300,51 @@ fn query_sections(
 }
 
 /// Convert a search result to a context section.
-/// Takes ownership to avoid cloning — the caller's results are consumed.
+/// Code entities (function, class, file, module) are summarized to
+/// avoid flooding the token budget with full source code. Knowledge
+/// entities (observation, rule, knowledge) are included in full.
 fn search_result_to_section(result: SearchResult) -> ContextSection {
+    let content = if is_code_entity(&result.entity.r#type) {
+        summarize_code_content(&result.entity.content, &result.entity.r#type)
+    } else {
+        result.entity.content
+    };
     ContextSection {
         source: result.entity.r#type,
         entity_id: result.entity.id,
         title: result.entity.title.unwrap_or_default(),
-        content: result.entity.content,
+        content,
         relevance: result.relevance,
         graph_path: result.graph_path,
         graph_path_description: result.graph_path_description,
     }
+}
+
+/// Check if an entity type is a code entity (extracted from source).
+fn is_code_entity(entity_type: &str) -> bool {
+    matches!(entity_type, "function" | "class" | "file" | "module")
+}
+
+/// Summarize code entity content to keep context packs compact.
+/// Modules get 1 line (just the declaration), files get 15 lines
+/// (header + first items), functions and classes get 10 lines
+/// (signature + first lines of body). An ellipsis is appended if
+/// the content was truncated.
+fn summarize_code_content(content: &str, entity_type: &str) -> String {
+    let max_lines = match entity_type {
+        "module" => 1,
+        "file" => 15,
+        _ => 10,
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.len() <= max_lines {
+        return content.to_string();
+    }
+    let summary: String = lines
+        .iter()
+        .take(max_lines)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{summary}\n... ({} more lines)", lines.len() - max_lines)
 }

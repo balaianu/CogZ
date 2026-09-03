@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use cogz::files::{content_hash, scan_entity_files, sync_all, sync_incremental};
+use cogz::files::{content_hash, scan_entity_files, sync_all, sync_incremental, sync_single_file};
 use cogz::storage::{self, Storage};
 
 fn setup_storage() -> Storage {
@@ -268,6 +268,58 @@ fn sync_forward_reference_edge_created() {
 }
 
 #[test]
+fn sync_incremental_restores_forward_ref_to_new_entity() {
+    // Entity A exists and references entity B (which doesn't exist yet).
+    // First sync: A is created, B is missing — A's reference edge is
+    // skipped (FK constraint). Second sync (incremental): B is added.
+    // A is unchanged (hash matches, skipped). The reference edge from
+    // A to B must be created in the second sync's reference pass.
+    let storage = setup_storage();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create A with a reference to B (B doesn't exist yet).
+    write_file(
+        dir.path(),
+        "knowledge/architecture/overview.md",
+        "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"r1-uuid\"]\ncategory: architecture\n---\n\nContent",
+    );
+
+    // First sync — A is created, reference to B is skipped (FK).
+    let result = sync_all(&storage, dir.path());
+    assert_eq!(result.created, 1);
+    assert_eq!(result.errors.len(), 0);
+
+    // No edge yet — B doesn't exist.
+    {
+        let conn = storage.conn();
+        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        assert!(edges.is_empty(), "no edges expected — target doesn't exist");
+    }
+
+    // Now create B.
+    write_file(
+        dir.path(),
+        "rules/ref-rule.md",
+        "---\nid: r1-uuid\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: []\n---\n\nRule body",
+    );
+
+    // Second sync — incremental. A is unchanged (skipped), B is new.
+    // The reference pass must re-sync A's references and create the edge.
+    let result = sync_incremental(&storage, dir.path());
+    assert_eq!(result.created, 1);
+    assert_eq!(result.errors.len(), 0);
+
+    // Edge from A to B should now exist.
+    {
+        let conn = storage.conn();
+        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        assert_eq!(edges.len(), 1, "forward reference edge must be created");
+        assert_eq!(edges[0].target_id, "r1-uuid");
+        assert_eq!(edges[0].edge_type, "references");
+    }
+}
+
+#[test]
 fn sync_supports_edges_from_supporting_ids() {
     let storage = setup_storage();
     let dir = tempfile::tempdir().unwrap();
@@ -429,5 +481,60 @@ fn sync_records_create_and_edit_events() {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "rule_edited");
         assert_eq!(events[1].event_type, "rule_created");
+    }
+}
+
+#[test]
+fn sync_single_file_syncs_reference_edges() {
+    let storage = setup_storage();
+    let dir = tempfile::tempdir().unwrap();
+
+    // Create a knowledge file with no references.
+    write_file(
+        dir.path(),
+        "knowledge/architecture/overview.md",
+        &knowledge_file("k1-uuid", "Overview", "architecture", "Content"),
+    );
+
+    // Initial full sync.
+    sync_all(&storage, dir.path());
+
+    // Verify no references edge.
+    {
+        let conn = storage.conn();
+        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        assert!(edges.is_empty(), "no references expected initially");
+    }
+
+    // Edit the file to add a reference to a new entity.
+    let target_content = knowledge_file("k2-uuid", "Target", "architecture", "Target content");
+    write_file(
+        dir.path(),
+        "knowledge/architecture/target.md",
+        &target_content,
+    );
+
+    // Sync the target first so the FK constraint is satisfied.
+    sync_all(&storage, dir.path());
+
+    // Now edit the source file to add a reference to k2-uuid.
+    let updated_source = format!(
+        "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"k2-uuid\"]\ncategory: architecture\n---\n\nContent"
+    );
+    let source_path = dir.path().join("knowledge/architecture/overview.md");
+    std::fs::write(&source_path, &updated_source).unwrap();
+
+    // Sync only the single edited file (simulating the file_save hook).
+    let result = sync_single_file(&storage, dir.path(), "knowledge/architecture/overview.md");
+    assert_eq!(result.errors.len(), 0, "no errors expected");
+    assert_eq!(result.updated, 1, "file should be updated");
+
+    // Verify the references edge was created.
+    {
+        let conn = storage.conn();
+        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        assert_eq!(edges.len(), 1, "one references edge expected");
+        assert_eq!(edges[0].edge_type, "references");
+        assert_eq!(edges[0].target_id, "k2-uuid");
     }
 }

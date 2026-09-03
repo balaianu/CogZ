@@ -67,6 +67,16 @@ pub fn run_merge(
                 superseded_id: pair.superseded_id,
                 reason: pair.reason,
             }),
+            Err(MergeError::Storage(StorageError::IllegalTransition { .. })) => {
+                // Expected when a prior merge in the same batch already
+                // superseded this entity. Skip without warning — it's
+                // not an error, just a no-op.
+                tracing::debug!(
+                    "skip merge {} → {}: already superseded",
+                    pair.superseded_id,
+                    pair.survivor_id
+                );
+            }
             Err(e) => {
                 tracing::warn!(
                     "merge failed for {} → {}: {}",
@@ -186,16 +196,28 @@ fn resolve_file_path(file_path: &str, cogz_dir: &Path) -> PathBuf {
 /// Merge one pair: redirect edges, mark the superseded entity's file
 /// and DB row. File-first: the superseded entity's frontmatter is
 /// updated on disk before the DB.
+///
+/// The status transition is validated before any file I/O — if the
+/// entity was already superseded by a prior merge in the same batch,
+/// the transition `superseded → superseded` is illegal and we skip
+/// this pair without touching the file.
 fn merge_one(
     storage: &crate::storage::Storage,
     cogz_dir: &Path,
     pair: &MergeCandidate,
 ) -> Result<(), MergeError> {
-    // 1. Read the superseded entity's file, update frontmatter.
+    // 1. Fetch the current entity state from the DB (not the stale
+    //    candidate list — a prior merge in the same batch may have
+    //    already changed its status).
     let superseded_entity = {
         let conn = storage.conn();
         crate::storage::crud::get_entity(&conn, &pair.superseded_id)?
     };
+
+    // 2. Validate the status transition BEFORE writing the file.
+    //    If the entity is already superseded (from a prior merge),
+    //    this is a no-op pair — skip without touching the file.
+    transition_status(&superseded_entity.status, "superseded")?;
 
     let file_path = superseded_entity
         .file_path
@@ -215,39 +237,67 @@ fn merge_one(
     // Write file first.
     write_entity_file(&path, &entity_file)?;
 
-    // 2. DB: redirect edges, update status.
+    // 3. DB: redirect edges, update status. All DB operations are in
+    //    a single transaction so a failure in any step rolls back all
+    //    changes — otherwise partial edge redirection would leave the
+    //    graph inconsistent with the entity status.
     let conn = storage.conn();
 
-    // Validate the status transition before applying.
-    transition_status(&superseded_entity.status, "superseded")?;
-
-    redirect_edges(&conn, &pair.superseded_id, &pair.survivor_id)?;
-
-    // Update the superseded entity's status and properties via the
-    // storage layer (no direct SQL outside storage/).
-    let mut updated = superseded_entity.clone();
-    if let Some(obj) = updated.properties.as_object_mut() {
-        obj.insert(
-            "superseded_by".to_string(),
-            serde_json::Value::String(pair.survivor_id.clone()),
-        );
+    let in_transaction = conn.execute_batch("BEGIN").is_ok();
+    if !in_transaction {
+        tracing::warn!("failed to begin merge transaction — falling back to autocommit");
     }
-    updated.status = "superseded".to_string();
-    updated.updated_at = chrono::Utc::now().to_rfc3339();
-    crate::storage::crud::update_entity(&conn, &updated)?;
 
-    // Record event.
-    let payload = serde_json::json!({
-        "survivor_id": pair.survivor_id,
-        "superseded_id": pair.superseded_id,
-        "reason": pair.reason,
-    });
-    record_event(
-        &conn,
-        EventType::KnowledgeMerged,
-        Some(&pair.survivor_id),
-        &payload,
-    )?;
+    // Wrap all transactional operations in a closure so that any error
+    // triggers ROLLBACK before returning. Without this, a `?` early
+    // return would leave the transaction open on the shared connection,
+    // breaking all subsequent DB operations.
+    let tx_result: Result<(), MergeError> = (|| {
+        redirect_edges(&conn, &pair.superseded_id, &pair.survivor_id)?;
+
+        // Update the superseded entity's status and properties via the
+        // storage layer (no direct SQL outside storage/).
+        let mut updated = superseded_entity.clone();
+        if let Some(obj) = updated.properties.as_object_mut() {
+            obj.insert(
+                "superseded_by".to_string(),
+                serde_json::Value::String(pair.survivor_id.clone()),
+            );
+        }
+        updated.status = "superseded".to_string();
+        updated.updated_at = chrono::Utc::now().to_rfc3339();
+        crate::storage::crud::update_entity(&conn, &updated)?;
+
+        // Record event.
+        let payload = serde_json::json!({
+            "survivor_id": pair.survivor_id,
+            "superseded_id": pair.superseded_id,
+            "reason": pair.reason,
+        });
+        record_event(
+            &conn,
+            EventType::KnowledgeMerged,
+            Some(&pair.survivor_id),
+            &payload,
+        )?;
+        Ok(())
+    })();
+
+    if let Err(e) = tx_result {
+        if in_transaction {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+        return Err(e);
+    }
+
+    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
+        tracing::warn!("failed to commit merge transaction: {}", e);
+        // The file was already written, but the DB rolled back. The
+        // next sync will reconcile: the file says "superseded" but
+        // the DB still says "active". sync_parsed_file will update
+        // the DB to match the file on the next index pass.
+        return Err(StorageError::File(format!("merge transaction commit failed: {e}")).into());
+    }
 
     Ok(())
 }

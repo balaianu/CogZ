@@ -113,6 +113,43 @@ fn doctor_detects_missing_file() {
 }
 
 #[test]
+fn doctor_no_false_positive_missing_file_for_stale() {
+    // A stale entity with a missing file is in the expected state —
+    // file-backed entities are marked stale when their file is deleted.
+    // Doctor should not report this as a MissingFile issue.
+    let (storage, config, cogz_dir, _dir) = setup();
+
+    let obs = make_observation("Test obs", "content");
+    write_and_sync(&storage, &cogz_dir, &obs, "observations/2026-08");
+
+    // Delete the file and run sync to mark the entity stale.
+    let file_path = cogz_dir
+        .join("observations/2026-08")
+        .join(format!("{}.md", obs.id));
+    std::fs::remove_file(&file_path).unwrap();
+    sync_all(&storage, &cogz_dir);
+
+    // Verify the entity is stale.
+    {
+        let conn = storage.conn();
+        let entity = cogz::storage::crud::get_entity(&conn, &obs.id).unwrap();
+        assert_eq!(entity.status, "stale");
+    }
+
+    let report = run_doctor(&storage, &config, &cogz_dir, &cogz_dir);
+
+    let missing: Vec<_> = report
+        .issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::MissingFile && i.entity_id == Some(obs.id.clone()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "stale entity with missing file should not be reported"
+    );
+}
+
+#[test]
 fn doctor_detects_observation_edit() {
     let (storage, config, cogz_dir, _dir) = setup();
 
@@ -327,4 +364,49 @@ fn tombstone_limit_enforced() {
         )
         .unwrap();
     assert_eq!(tombstone_count, 2);
+}
+
+#[test]
+fn doctor_detects_corrupt_entity_json() {
+    let (storage, config, cogz_dir, _dir) = setup();
+
+    // Create a valid observation file and sync it.
+    let mut obs = EntityFile::new(
+        "Test observation",
+        FileEntityType::Observation,
+        "Some content",
+    );
+    obs.id = "corrupt-test-uuid".to_string();
+    let path = obs.file_path(&cogz_dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    write_entity_file(&path, &obs).unwrap();
+    sync_all(&storage, &cogz_dir);
+
+    // Corrupt the properties column directly in the DB.
+    let conn = storage.conn();
+    conn.execute(
+        "UPDATE entities SET properties = ? WHERE id = ?",
+        rusqlite::params!["{not valid json", "corrupt-test-uuid"],
+    )
+    .unwrap();
+    drop(conn);
+
+    let report = run_doctor(&storage, &config, &cogz_dir, &cogz_dir);
+    let corrupt_issues: Vec<_> = report
+        .issues
+        .iter()
+        .filter(|i| i.kind == IssueKind::CorruptJson)
+        .collect();
+    assert!(
+        !corrupt_issues.is_empty(),
+        "doctor should detect corrupt entity JSON"
+    );
+    assert!(
+        corrupt_issues
+            .iter()
+            .any(|i| i.entity_id == Some("corrupt-test-uuid".to_string())),
+        "corrupt JSON issue should reference the entity ID"
+    );
 }

@@ -45,6 +45,7 @@ pub async fn search(
             limit: params.limit.unwrap_or(default_limit),
             expand,
             max_hops: if expand { task_max_hops } else { 0 },
+            include_tests: false,
         };
         search_entities(
             &conn,

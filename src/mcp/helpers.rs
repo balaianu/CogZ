@@ -14,7 +14,7 @@ use crate::consolidate::contradict::{
 };
 use crate::embed::{EmbeddingModel, NliModel, OnnxEmbeddingModel};
 use crate::files::embed_sync::store_embeddings;
-use crate::files::{EntityFile, sync_incremental, write_entity_file};
+use crate::files::{EntityFile, sync_single_file, write_entity_file};
 use crate::mcp::dedup::check_duplicate;
 use crate::storage::crud::Entity;
 use crate::storage::{Storage, events, query};
@@ -176,8 +176,11 @@ pub fn write_and_sync(
         )
     })?;
 
-    // 2. Sync to DB (incremental — only the new/changed file)
-    let sync_result = sync_incremental(storage, cogz_dir);
+    // 2. Sync to DB — only the single new/changed file, not the
+    // entire .cogz/ directory. This avoids O(n) filesystem reads on
+    // every MCP write call.
+    let relative_path = path.strip_prefix(cogz_dir).unwrap_or(&path);
+    let sync_result = sync_single_file(storage, cogz_dir, &relative_path.to_string_lossy());
     if !sync_result.errors.is_empty() {
         let err = &sync_result.errors[0];
         return Err(mcp_error(
@@ -260,8 +263,6 @@ pub fn write_and_sync(
         let payload = json!({"dedup_flagged": true});
         let _ = events::record_event(&conn, event_type, Some(&entity.id), &payload);
     }
-
-    let relative_path = path.strip_prefix(cogz_dir).unwrap_or(&path);
 
     Ok(json!({
         "id": entity.id,

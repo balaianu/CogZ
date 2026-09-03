@@ -2,6 +2,7 @@
 //! entities after the foreground indexing completes.
 
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 use crate::cli;
 
@@ -11,6 +12,10 @@ use crate::cli;
 /// the code model, and embeds each entity in batches. The ID file is
 /// removed on completion (including early returns when there's nothing
 /// to embed or the model is unavailable).
+///
+/// On startup, sweeps the temp directory for stale `cogz-embed-bg-*.txt`
+/// files older than 1 hour — these accumulate when background embed
+/// processes crash before cleaning up their ID files.
 pub fn run_embed_bg(
     db_path: &Path,
     ids_file: &Path,
@@ -21,6 +26,9 @@ pub fn run_embed_bg(
 ) -> anyhow::Result<()> {
     use cogz::embed::{EmbeddingCache, ModelType, OnnxEmbeddingModel};
     use cogz::storage::crud::get_entities_batch;
+
+    // Clean up stale ID files from crashed background embed processes.
+    cleanup_stale_id_files();
 
     // Read entity IDs from the file.
     let ids_content = std::fs::read_to_string(ids_file)?;
@@ -86,4 +94,39 @@ pub fn run_embed_bg(
     let _ = std::fs::remove_file(ids_file);
 
     Ok(())
+}
+
+/// Remove stale `cogz-embed-bg-*.txt` files from the temp directory.
+/// These accumulate when background embed processes crash before
+/// cleaning up their ID files. Files older than 1 hour are removed —
+/// this preserves ID files from processes that are still running.
+fn cleanup_stale_id_files() {
+    let one_hour_ago = SystemTime::now() - Duration::from_secs(3600);
+    let temp_dir = std::env::temp_dir();
+
+    let Ok(entries) = std::fs::read_dir(&temp_dir) else {
+        return;
+    };
+
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("cogz-embed-bg-") || !name.ends_with(".txt") {
+            continue;
+        }
+        if let Ok(metadata) = std::fs::metadata(&path)
+            && let Ok(modified) = metadata.modified()
+            && modified < one_hour_ago
+            && std::fs::remove_file(&path).is_ok()
+        {
+            removed += 1;
+        }
+    }
+
+    if removed > 0 {
+        tracing::debug!("cleaned {} stale background embed ID file(s)", removed);
+    }
 }

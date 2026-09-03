@@ -38,6 +38,7 @@ pub fn expand_with_paths(
     max_hops: usize,
     exclude_ids: &HashSet<String>,
     status_filter: Option<&str>,
+    include_tests: bool,
 ) -> Result<Vec<ExpansionResult>, StorageError> {
     if max_hops == 0 || seed_ids.is_empty() {
         return Ok(Vec::new());
@@ -103,30 +104,43 @@ pub fn expand_with_paths(
 
         // Batch status check: one query for all candidates in this hop
         if !candidates.is_empty() {
-            match status_filter {
-                None | Some("all") => {
-                    for (id, path, seed_id) in candidates {
-                        discovered.push(ExpansionResult {
-                            entity_id: id,
-                            graph_path: path,
-                            seed_id,
-                        });
-                    }
-                }
+            // Filter by status first
+            let status_filtered: Vec<(String, Vec<String>, String)> = match status_filter {
+                None | Some("all") => candidates,
                 Some(status) => {
                     let ids: Vec<String> = candidates.iter().map(|(id, _, _)| id.clone()).collect();
                     let matching = batch_check_status(conn, &ids, status)?;
                     let include_set: HashSet<&String> = matching.iter().collect();
-                    for (id, path, seed_id) in candidates {
-                        if include_set.contains(&id) {
-                            discovered.push(ExpansionResult {
-                                entity_id: id,
-                                graph_path: path,
-                                seed_id,
-                            });
-                        }
-                    }
+                    candidates
+                        .into_iter()
+                        .filter(|(id, _, _)| include_set.contains(id))
+                        .collect()
                 }
+            };
+
+            // Filter out test code entities when include_tests is false.
+            // Uses a batch query to check file_path patterns.
+            let final_candidates = if include_tests {
+                status_filtered
+            } else {
+                let ids: Vec<String> = status_filtered
+                    .iter()
+                    .map(|(id, _, _)| id.clone())
+                    .collect();
+                let test_ids = batch_check_test_paths(conn, &ids)?;
+                let test_set: HashSet<&String> = test_ids.iter().collect();
+                status_filtered
+                    .into_iter()
+                    .filter(|(id, _, _)| !test_set.contains(id))
+                    .collect()
+            };
+
+            for (id, path, seed_id) in final_candidates {
+                discovered.push(ExpansionResult {
+                    entity_id: id,
+                    graph_path: path,
+                    seed_id,
+                });
             }
         }
 
@@ -164,6 +178,41 @@ fn batch_check_status(
             chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         params.push(&status);
         let sql = format!("SELECT id FROM entities WHERE id IN ({placeholders}) AND status = ?");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
+        for row in rows {
+            matching.push(row?);
+        }
+    }
+
+    Ok(matching)
+}
+
+/// Batch-check which entity IDs have test file paths. Returns the
+/// subset of `ids` whose `file_path` matches test patterns.
+fn batch_check_test_paths(conn: &Connection, ids: &[String]) -> Result<Vec<String>, StorageError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    const CHUNK_SIZE: usize = 998;
+
+    let mut matching = Vec::new();
+
+    for chunk in ids.chunks(CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let sql = format!(
+            "SELECT id FROM entities WHERE id IN ({placeholders}) \
+             AND (file_path LIKE 'tests/%' \
+             OR file_path LIKE '%/tests/%' \
+             OR file_path LIKE '%/tests.rs' \
+             OR file_path LIKE '%_tests.rs')"
+        );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
         for row in rows {
@@ -214,7 +263,8 @@ mod tests {
         insert_edge(&conn, &edge("obs1", "func1", "references")).unwrap();
 
         let exclude = HashSet::new();
-        let results = expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, None).unwrap();
+        let results =
+            expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, None, true).unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id, "func1");
@@ -233,7 +283,8 @@ mod tests {
         insert_edge(&conn, &edge("func1", "func2", "calls")).unwrap();
 
         let exclude = HashSet::new();
-        let results = expand_with_paths(&conn, &["obs1".to_string()], 2, &exclude, None).unwrap();
+        let results =
+            expand_with_paths(&conn, &["obs1".to_string()], 2, &exclude, None, true).unwrap();
 
         assert_eq!(results.len(), 2);
         let func2 = results.iter().find(|r| r.entity_id == "func2").unwrap();
@@ -251,7 +302,8 @@ mod tests {
         let mut exclude = HashSet::new();
         exclude.insert("func1".to_string());
 
-        let results = expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, None).unwrap();
+        let results =
+            expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, None, true).unwrap();
         assert!(results.is_empty());
     }
 
@@ -261,7 +313,8 @@ mod tests {
         insert_entity(&conn, &Entity::new("obs1", "observation", "Bug", "c")).unwrap();
 
         let exclude = HashSet::new();
-        let results = expand_with_paths(&conn, &["obs1".to_string()], 2, &exclude, None).unwrap();
+        let results =
+            expand_with_paths(&conn, &["obs1".to_string()], 2, &exclude, None, true).unwrap();
         assert!(results.is_empty());
     }
 
@@ -271,7 +324,8 @@ mod tests {
         insert_entity(&conn, &Entity::new("obs1", "observation", "Bug", "c")).unwrap();
 
         let exclude = HashSet::new();
-        let results = expand_with_paths(&conn, &["obs1".to_string()], 0, &exclude, None).unwrap();
+        let results =
+            expand_with_paths(&conn, &["obs1".to_string()], 0, &exclude, None, true).unwrap();
         assert!(results.is_empty());
     }
 
@@ -286,12 +340,26 @@ mod tests {
         insert_edge(&conn, &edge("obs1", "func1", "references")).unwrap();
 
         let exclude = HashSet::new();
-        let results =
-            expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, Some("active")).unwrap();
+        let results = expand_with_paths(
+            &conn,
+            &["obs1".to_string()],
+            1,
+            &exclude,
+            Some("active"),
+            true,
+        )
+        .unwrap();
         assert!(results.is_empty());
 
-        let results =
-            expand_with_paths(&conn, &["obs1".to_string()], 1, &exclude, Some("stale")).unwrap();
+        let results = expand_with_paths(
+            &conn,
+            &["obs1".to_string()],
+            1,
+            &exclude,
+            Some("stale"),
+            true,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
     }
 }

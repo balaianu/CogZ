@@ -109,19 +109,22 @@ pub fn sync_code_edges_incremental(
     edges.extend(build_contains_edges(&file_to_children));
 
     // Delete only edges sourced from changed entities, then re-insert.
+    // Both are in a single transaction so a COMMIT failure rolls back
+    // the DELETE too — otherwise changed files would lose all their
+    // structural edges with no recovery.
     let conn = storage.conn();
+
+    let in_transaction = conn.execute_batch("BEGIN").is_ok();
+    if !in_transaction {
+        tracing::warn!("failed to begin edge transaction — falling back to autocommit");
+    }
+
     if let Err(e) = storage::edges::delete_structural_edges_by_sources(&conn, &changed_entity_ids) {
         tracing::warn!("failed to clear structural edges for changed files: {}", e);
     }
 
     let now = chrono::Utc::now().to_rfc3339();
 
-    if let Err(e) = conn.execute_batch("BEGIN") {
-        tracing::warn!(
-            "failed to begin edge transaction: {} — falling back to autocommit",
-            e
-        );
-    }
     for edge in &edges {
         let db_edge = Edge {
             source_id: edge.source_id.clone(),
@@ -134,7 +137,7 @@ pub fn sync_code_edges_incremental(
             tracing::debug!("skipped edge {}: {}", edge.edge_type, e);
         }
     }
-    if let Err(e) = conn.execute_batch("COMMIT") {
+    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
         tracing::warn!("failed to commit edge transaction: {}", e);
     }
 }

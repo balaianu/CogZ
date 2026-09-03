@@ -9,7 +9,7 @@ use serde_json::json;
 use crate::embed::OnnxEmbeddingModel;
 use crate::files::embed_sync::store_embeddings;
 use crate::files::frontmatter::FmValue;
-use crate::files::{read_entity_file, sync_incremental, write_entity_file};
+use crate::files::{read_entity_file, sync_single_file, write_entity_file};
 use crate::mcp::errors::mcp_error;
 use crate::mcp::helpers::embed_entity_text;
 use crate::mcp::params::UpdateKnowledgeParams;
@@ -111,8 +111,11 @@ pub fn update_knowledge_file(
     write_entity_file(&new_path, &entity_file)
         .map_err(|e| mcp_error("file_write_failed", &format!("Failed to write file: {}", e)))?;
 
-    // 5. Sync to DB
-    let sync_result = sync_incremental(storage, cogz_dir);
+    // 5. Sync to DB — only the single changed file, not the entire
+    // .cogz/ directory. This avoids O(n) filesystem reads on every
+    // MCP update call.
+    let relative_new = new_path.strip_prefix(cogz_dir).unwrap_or(&new_path);
+    let sync_result = sync_single_file(storage, cogz_dir, &relative_new.to_string_lossy());
     if !sync_result.errors.is_empty() {
         let err = &sync_result.errors[0];
         return Err(mcp_error(
@@ -143,11 +146,9 @@ pub fn update_knowledge_file(
         );
     }
 
-    let relative_path = new_path.strip_prefix(cogz_dir).unwrap_or(&new_path);
-
     Ok(json!({
         "id": entity_file.id,
-        "file_path": relative_path.display().to_string(),
+        "file_path": relative_new.display().to_string(),
         "status": entity_file.status,
         "updated_fields": updated_fields,
     }))

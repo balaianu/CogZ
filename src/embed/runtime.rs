@@ -92,6 +92,8 @@ fn find_existing_lib() -> Option<PathBuf> {
 
 /// Download and extract the ONNX Runtime library to cogz's lib dir.
 /// Downloads the CPU-only Linux x86_64 build (~11MB) from GitHub releases.
+/// Verifies the SHA-256 checksum from the release's SHA256SUMS file before
+/// extracting.
 fn download_ort() -> Result<PathBuf, std::io::Error> {
     let lib_dir = cogz_lib_dir();
     std::fs::create_dir_all(&lib_dir)?;
@@ -108,22 +110,48 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
 
     info!("downloading ONNX Runtime {} from GitHub", ORT_VERSION);
 
-    // Download the .tgz archive using ureq (already a dependency).
-    let response = ureq::get(&url)
-        .call()
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NetworkUnreachable, e.to_string()))?;
-
     // Use a temp directory under the system temp dir (no tempfile dependency).
     let temp_dir = std::env::temp_dir().join(format!("cogz-ort-{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir)?;
 
     let archive_path = temp_dir.join("onnxruntime.tgz");
 
-    // Write the response body to a file
+    // Download the .tgz archive using ureq (already a dependency).
+    let response = ureq::get(&url)
+        .call()
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::NetworkUnreachable, e.to_string()))?;
     let mut body = response.into_body().into_reader();
     let mut file = std::fs::File::create(&archive_path)?;
     std::io::copy(&mut body, &mut file)?;
     drop(file);
+
+    // Verify checksum from the release's SHA256SUMS file.
+    let checksum_url = format!(
+        "https://github.com/microsoft/onnxruntime/releases/download/v{}/SHA256SUMS",
+        ORT_VERSION
+    );
+    if let Ok(checksum_resp) = ureq::get(&checksum_url).call() {
+        if let Ok(sums_content) = checksum_resp.into_body().read_to_string() {
+            if let Some(expected_hash) = find_ort_checksum(&sums_content, ORT_ASSET) {
+                let actual_hash = sha256_file(&archive_path)?;
+                if expected_hash != actual_hash {
+                    let _ = std::fs::remove_dir_all(&temp_dir);
+                    return Err(std::io::Error::other(format!(
+                        "ONNX Runtime checksum mismatch: expected {expected_hash}, got {actual_hash}"
+                    )));
+                }
+                info!("ONNX Runtime checksum verified");
+            } else {
+                warn!(
+                    "ONNX Runtime SHA256SUMS downloaded but no entry for {} — \
+                     proceeding without checksum verification",
+                    ORT_ASSET
+                );
+            }
+        }
+    } else {
+        warn!("ONNX Runtime SHA256SUMS not available — proceeding without checksum verification");
+    }
 
     // Extract the .tgz archive
     let extract_dir = temp_dir.join("extracted");
@@ -175,6 +203,30 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     );
 
     Ok(lib_path)
+}
+
+/// Parse a SHA256SUMS file and find the checksum for the target asset.
+fn find_ort_checksum(sums_content: &str, asset_name: &str) -> Option<String> {
+    for line in sums_content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() == 2 && parts[1] == asset_name {
+            return Some(parts[0].to_string());
+        }
+    }
+    None
+}
+
+/// Compute SHA-256 of a file.
+fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
+    use sha2::{Digest, Sha256};
+    let data = std::fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&data);
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect())
 }
 
 /// Ensure the ONNX Runtime is available and initialize `ort` with the
@@ -244,5 +296,21 @@ mod tests {
             std::env::remove_var("ORT_DYLIB_PATH");
         }
         let _ = find_existing_lib();
+    }
+
+    #[test]
+    fn find_ort_checksum_matches_correct_asset() {
+        let sums =
+            "abc123  onnxruntime-linux-x64-1.27.0.tgz\ndef456  onnxruntime-win-x64-1.27.0.zip\n";
+        assert_eq!(
+            find_ort_checksum(sums, "onnxruntime-linux-x64-1.27.0.tgz"),
+            Some("abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn find_ort_checksum_returns_none_for_missing_asset() {
+        let sums = "abc123  onnxruntime-linux-x64-1.27.0.tgz\n";
+        assert_eq!(find_ort_checksum(sums, "onnxruntime-windows.zip"), None);
     }
 }

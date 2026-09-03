@@ -20,6 +20,8 @@ pub enum UpdateError {
     Io(#[from] std::io::Error),
     #[error("checksum mismatch: expected {expected}, got {actual}")]
     ChecksumMismatch { expected: String, actual: String },
+    #[error("checksum file downloaded but no entry found for asset {0}")]
+    ChecksumEntryNotFound(String),
     #[error("no suitable asset found in release")]
     NoAsset,
 }
@@ -169,10 +171,12 @@ pub fn run_update() -> Result<String, UpdateError> {
             let asset_name = platform_asset_name();
             let asset_url = find_asset_url(&release).ok_or(UpdateError::NoAsset)?;
 
-            // Download to a temp file.
+            // Download to a temp file. Include PID to avoid collisions
+            // between concurrent update processes.
             let temp_dir = std::env::temp_dir();
-            let temp_binary = temp_dir.join(format!("cogz-update-{}", latest));
-            let temp_checksum = temp_dir.join(format!("cogz-update-{}.sha256", latest));
+            let pid = std::process::id();
+            let temp_binary = temp_dir.join(format!("cogz-update-{latest}-{pid}"));
+            let temp_checksum = temp_dir.join(format!("cogz-update-{latest}-{pid}.sha256"));
 
             download_file(asset_url, &temp_binary)?;
 
@@ -180,16 +184,19 @@ pub fn run_update() -> Result<String, UpdateError> {
             if let Some(checksum_url) = find_checksum_url(&release) {
                 download_file(checksum_url, &temp_checksum)?;
                 let sums_content = std::fs::read_to_string(&temp_checksum)?;
-                if let Some(expected_hash) = find_checksum(&sums_content, asset_name) {
-                    let actual_hash = sha256_file(&temp_binary)?;
-                    if expected_hash != actual_hash {
-                        let _ = std::fs::remove_file(&temp_binary);
-                        let _ = std::fs::remove_file(&temp_checksum);
-                        return Err(UpdateError::ChecksumMismatch {
-                            expected: expected_hash,
-                            actual: actual_hash,
-                        });
-                    }
+                let expected_hash = find_checksum(&sums_content, asset_name).ok_or_else(|| {
+                    let _ = std::fs::remove_file(&temp_binary);
+                    let _ = std::fs::remove_file(&temp_checksum);
+                    UpdateError::ChecksumEntryNotFound(asset_name.to_string())
+                })?;
+                let actual_hash = sha256_file(&temp_binary)?;
+                if expected_hash != actual_hash {
+                    let _ = std::fs::remove_file(&temp_binary);
+                    let _ = std::fs::remove_file(&temp_checksum);
+                    return Err(UpdateError::ChecksumMismatch {
+                        expected: expected_hash,
+                        actual: actual_hash,
+                    });
                 }
             }
 
@@ -225,5 +232,44 @@ pub fn run_update() -> Result<String, UpdateError> {
 
             Ok(format!("Updated CogZ from v{} to v{}", current, latest))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn find_checksum_matches_correct_asset() {
+        let sums =
+            "abc123  cogz-x86_64-unknown-linux-gnu\ndef456  cogz-aarch64-unknown-linux-gnu\n";
+        assert_eq!(
+            find_checksum(sums, "cogz-x86_64-unknown-linux-gnu"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(
+            find_checksum(sums, "cogz-aarch64-unknown-linux-gnu"),
+            Some("def456".to_string())
+        );
+    }
+
+    #[test]
+    fn find_checksum_returns_none_for_missing_asset() {
+        let sums = "abc123  cogz-x86_64-unknown-linux-gnu\n";
+        assert_eq!(find_checksum(sums, "cogz-windows-x86_64.exe"), None);
+    }
+
+    #[test]
+    fn find_checksum_handles_empty_file() {
+        assert_eq!(find_checksum("", "any-asset"), None);
+    }
+
+    #[test]
+    fn find_checksum_handles_malformed_lines() {
+        let sums = "not-a-valid-line\nabc123  cogz-x86_64-unknown-linux-gnu\n";
+        assert_eq!(
+            find_checksum(sums, "cogz-x86_64-unknown-linux-gnu"),
+            Some("abc123".to_string())
+        );
     }
 }

@@ -135,7 +135,10 @@ fn check_file_sync(
     // File-backed entities (observation, rule, knowledge) have paths
     // relative to cogz_dir. Code entities (function, class, file,
     // module) have paths relative to repo_root.
-    let sql = "SELECT id, type, file_path FROM entities WHERE file_path IS NOT NULL AND status != 'pruned'";
+    // Exclude stale entities — file-backed entities are marked stale
+    // precisely when their file has been deleted, so a missing file
+    // for a stale entity is the expected state, not an issue.
+    let sql = "SELECT id, type, file_path FROM entities WHERE file_path IS NOT NULL AND status NOT IN ('pruned', 'stale')";
     if let Ok(mut stmt) = conn.prepare(sql)
         && let Ok(rows) = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
@@ -451,31 +454,51 @@ fn extract_vec0_dim(ddl: &str) -> Option<usize> {
     num_str.parse().ok()
 }
 
-/// Check for entities with corrupt properties JSON (marked by
-/// `_corrupt_properties` key during row parsing) and events with
-/// corrupt payload JSON (marked by `_corrupt_payload` key).
+/// Check for entities with corrupt properties JSON and events with
+/// corrupt payload JSON. Uses `json_valid()` to detect malformed JSON
+/// directly in the persisted columns — the in-memory `_corrupt_*`
+/// markers set by `row_to_entity`/`row_to_event` are never written
+/// back to the DB, so searching for them would never match.
 fn check_corrupt_json(conn: &Connection, report: &mut DoctorReport) {
-    let corrupt_entities: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM entities WHERE properties LIKE '%_corrupt_properties%'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if corrupt_entities > 0 {
+    // Entities: properties column must be valid JSON (or empty/null).
+    // A well-formed entity has properties = '{}' or a JSON object.
+    let corrupt_entities: Vec<String> = {
+        let mut stmt = match conn.prepare(
+            "SELECT id FROM entities \
+             WHERE properties IS NOT NULL \
+             AND properties != '' \
+             AND json_valid(properties) = 0",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to query corrupt entity JSON: {}", e);
+                return;
+            }
+        };
+        let rows = match stmt.query_map([], |r| r.get::<_, String>(0)) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("failed to query corrupt entity JSON: {}", e);
+                return;
+            }
+        };
+        rows.flatten().collect()
+    };
+    for id in &corrupt_entities {
         report.issues.push(Issue {
             kind: IssueKind::CorruptJson,
-            entity_id: None,
-            message: format!(
-                "{corrupt_entities} entit{} with corrupt properties JSON (raw preserved in _corrupt_properties)",
-                if corrupt_entities == 1 { "y" } else { "ies" }
-            ),
+            entity_id: Some(id.clone()),
+            message: "entity has corrupt properties JSON".to_string(),
         });
     }
 
+    // Events: payload column must be valid JSON (or empty/null).
     let corrupt_events: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM events WHERE payload LIKE '%_corrupt_payload%'",
+            "SELECT COUNT(*) FROM events \
+             WHERE payload IS NOT NULL \
+             AND payload != '' \
+             AND json_valid(payload) = 0",
             [],
             |r| r.get(0),
         )
@@ -485,7 +508,7 @@ fn check_corrupt_json(conn: &Connection, report: &mut DoctorReport) {
             kind: IssueKind::CorruptJson,
             entity_id: None,
             message: format!(
-                "{corrupt_events} event{} with corrupt payload JSON (raw preserved in _corrupt_payload)",
+                "{corrupt_events} event{} with corrupt payload JSON",
                 if corrupt_events == 1 { "" } else { "s" }
             ),
         });

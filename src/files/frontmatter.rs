@@ -221,7 +221,11 @@ fn parse_value(s: &str) -> Result<FmValue, FrontmatterError> {
     if (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
         || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
     {
-        return Ok(FmValue::String(s[1..s.len() - 1].to_string()));
+        let inner = &s[1..s.len() - 1];
+        // Unescape backslash sequences: \\ → \, \" → "
+        // (matching the serializer's escape_string).
+        let unescaped = unescape_string(inner);
+        return Ok(FmValue::String(unescaped));
     }
 
     // Unquoted string
@@ -229,22 +233,69 @@ fn parse_value(s: &str) -> Result<FmValue, FrontmatterError> {
 }
 
 /// Parse inline array contents: `"a", "b", "c"` → vec of strings.
+/// Respects quoted commas so `["a,b", "c"]` produces two items, not three.
 fn parse_inline_array(inner: &str) -> Vec<String> {
     if inner.trim().is_empty() {
         return Vec::new();
     }
 
-    inner
-        .split(',')
+    let mut items = Vec::new();
+    let mut current = String::new();
+    let mut in_quotes: Option<char> = None;
+    let mut chars = inner.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match in_quotes {
+            Some(q) => {
+                if c == '\\' {
+                    if let Some(&next) = chars.peek()
+                        && (next == '\\' || next == q)
+                    {
+                        current.push('\\');
+                        current.push(next);
+                        chars.next();
+                        continue;
+                    }
+                    current.push(c);
+                } else if c == q {
+                    // Push the closing quote so the item retains its
+                    // outer quotes for the post-processing strip step.
+                    current.push(c);
+                    in_quotes = None;
+                } else {
+                    current.push(c);
+                }
+            }
+            None => {
+                if c == '"' || c == '\'' {
+                    // Push the opening quote so the item retains its
+                    // outer quotes for the post-processing strip step.
+                    current.push(c);
+                    in_quotes = Some(c);
+                } else if c == ',' {
+                    items.push(current.trim().to_string());
+                    current.clear();
+                } else {
+                    current.push(c);
+                }
+            }
+        }
+    }
+    if !current.trim().is_empty() || in_quotes.is_some() {
+        items.push(current.trim().to_string());
+    }
+
+    // Strip outer quotes and unescape each item.
+    items
+        .iter()
         .map(|item| {
-            let item = item.trim();
-            // Strip quotes
-            if (item.starts_with('"') && item.ends_with('"'))
-                || (item.starts_with('\'') && item.ends_with('\''))
+            let trimmed = item.trim();
+            if (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
+                || (trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2)
             {
-                item[1..item.len() - 1].to_string()
+                unescape_string(&trimmed[1..trimmed.len() - 1])
             } else {
-                item.to_string()
+                trimmed.to_string()
             }
         })
         .collect()
@@ -324,4 +375,23 @@ fn needs_quotes(s: &str) -> bool {
 /// Escape double quotes and backslashes in a string for YAML output.
 fn escape_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Unescape backslash sequences in a parsed quoted string: `\\` → `\`,
+/// `\"` → `"`. Reverses `escape_string` so round-tripping is stable.
+fn unescape_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\\'
+            && let Some(&next) = chars.peek()
+            && (next == '\\' || next == '"')
+        {
+            chars.next();
+            out.push(next);
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }

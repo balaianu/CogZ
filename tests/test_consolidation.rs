@@ -117,6 +117,24 @@ fn dedup_no_false_positive_for_different_titles() {
     assert!(!result.dedup_flagged);
 }
 
+#[test]
+fn dedup_ignores_non_active_entities() {
+    // A rejected entity with the same title should not trigger a
+    // duplicate warning for a new entity.
+    let storage = setup();
+    let conn = storage.conn();
+    let mut rejected = Entity::new("u1", "observation", "Same title", "c");
+    rejected.status = "rejected".to_string();
+    insert_entity(&conn, &rejected).unwrap();
+
+    let result = check_duplicate(&conn, "u2", "Same title", "observation", None, &config());
+    assert!(
+        result.duplicate_warning.is_none(),
+        "rejected entities should not trigger dedup"
+    );
+    assert!(!result.dedup_flagged);
+}
+
 // ─── Contradiction integration ───────────────────────────────────
 
 #[test]

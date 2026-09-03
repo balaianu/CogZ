@@ -169,11 +169,14 @@ pub fn get_knowledge_filtered(
 /// FTS5 search over entity titles and content.
 ///
 /// Returns entities matching the query, filtered by type and status.
+/// When `exclude_tests` is true, code entities whose `file_path`
+/// matches test patterns are excluded from results.
 pub fn fts_search(
     conn: &Connection,
     query: &str,
     type_filter: Option<&str>,
     status_filter: Option<&str>,
+    exclude_tests: bool,
     limit: i64,
 ) -> Result<Vec<Entity>, StorageError> {
     // Escape FTS5 special characters by wrapping each term in double
@@ -204,6 +207,19 @@ pub fn fts_search(
     if let Some(st) = status_filter {
         sql.push_str(" AND e.status = ?");
         param_values.push(Box::new(st.to_string()));
+    }
+    if exclude_tests {
+        // Exclude test code: files under tests/ or named *_tests.rs / tests.rs.
+        // Only applies to entities with a non-null file_path — knowledge
+        // entities (observations, rules, knowledge) have NULL file_path
+        // and should never be excluded by this filter.
+        sql.push_str(
+            " AND (e.file_path IS NULL \
+             OR NOT (e.file_path LIKE 'tests/%' \
+             OR e.file_path LIKE '%/tests/%' \
+             OR e.file_path LIKE '%/tests.rs' \
+             OR e.file_path LIKE '%_tests.rs'))",
+        );
     }
 
     sql.push_str(" ORDER BY rank LIMIT ?");

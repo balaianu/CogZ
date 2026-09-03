@@ -39,7 +39,14 @@ pub fn search(
     let status_filter = resolve_status_filter(params.status.as_deref());
 
     // 1. FTS search — returns full entities, cached to avoid re-fetching
-    let fts_entities = fts_search(conn, query, type_filter, status_filter, limit)?;
+    let fts_entities = fts_search(
+        conn,
+        query,
+        type_filter,
+        status_filter,
+        !params.include_tests,
+        limit,
+    )?;
     let fts_ids: Vec<String> = fts_entities.iter().map(|e| e.id.clone()).collect();
 
     // Seed entity_map with FTS results so we don't re-fetch them later
@@ -57,6 +64,7 @@ pub fn search(
             &mut entity_map,
             type_filter,
             status_filter,
+            params.include_tests,
             limit,
         )?
     } else {
@@ -72,6 +80,7 @@ pub fn search(
             &mut entity_map,
             type_filter,
             status_filter,
+            params.include_tests,
             limit,
         )?
     } else {
@@ -146,6 +155,7 @@ pub fn search(
             params.max_hops,
             &exclude_ids,
             status_filter,
+            params.include_tests,
         )?;
 
         let uncached_expansion_ids: Vec<String> = expansions
@@ -170,10 +180,14 @@ pub fn search(
                 continue;
             }
             if let Some(entity) = entity_map.get(&exp.entity_id) {
-                // Relevance decays with hop distance: 0.5^hops
+                // Relevance decays aggressively with hop distance: 0.3^hops.
+                // This creates clear separation between direct matches and
+                // graph-expanded entities, so the token budget prioritizes
+                // direct hits over tangential graph connections.
+                // 1-hop: 30%, 2-hop: 9%, 3-hop: 2.7%
                 let hop = exp.graph_path.len().saturating_sub(1);
                 let seed_score = seed_relevance.get(&exp.seed_id).copied().unwrap_or(0.0);
-                let decayed = seed_score * 0.5_f32.powi(hop as i32);
+                let decayed = seed_score * 0.3_f32.powi(hop as i32);
                 expanded_results.push(SearchResult {
                     entity: entity.clone(),
                     relevance: decayed,
@@ -182,6 +196,20 @@ pub fn search(
                 });
             }
         }
+
+        // Cap expanded results to prevent graph fan-out from flooding
+        // the result set. Expanded entities are context, not primary
+        // matches — a small number suffices.
+        let max_expansions = params.limit as usize;
+        if expanded_results.len() > max_expansions {
+            expanded_results.sort_by(|a, b| {
+                b.relevance
+                    .partial_cmp(&a.relevance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            expanded_results.truncate(max_expansions);
+        }
+
         results.extend(expanded_results);
     }
 
@@ -192,7 +220,8 @@ pub fn search(
 }
 
 /// Run a single KNN channel: KNN search, batch-fetch entities, filter
-/// by type/status, return filtered ID list.
+/// by type/status/test-path, return filtered ID list.
+#[allow(clippy::too_many_arguments)]
 fn knn_channel(
     conn: &Connection,
     query: &[f32],
@@ -200,6 +229,7 @@ fn knn_channel(
     entity_map: &mut std::collections::HashMap<String, Entity>,
     type_filter: Option<&str>,
     status_filter: Option<&str>,
+    include_tests: bool,
     limit: i64,
 ) -> Result<Vec<String>, SearchError> {
     let knn_limit = limit * 3;
@@ -222,6 +252,7 @@ fn knn_channel(
         };
         if type_filter.is_none_or(|t| entity.r#type == t)
             && status_filter.is_none_or(|s| entity.status == s)
+            && (include_tests || !is_test_entity(entity))
         {
             filtered.push(id);
             if filtered.len() >= limit as usize {
@@ -230,6 +261,17 @@ fn knn_channel(
         }
     }
     Ok(filtered)
+}
+
+/// Check if an entity is test code based on its file_path.
+fn is_test_entity(entity: &Entity) -> bool {
+    let Some(ref fp) = entity.file_path else {
+        return false;
+    };
+    fp.starts_with("tests/")
+        || fp.contains("/tests/")
+        || fp.ends_with("/tests.rs")
+        || fp.ends_with("_tests.rs")
 }
 
 /// Resolve the status filter: None and "active" → Some("active"),
