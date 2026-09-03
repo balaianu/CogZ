@@ -253,6 +253,37 @@ pub fn count_stale(conn: &Connection) -> Result<i64, StorageError> {
     count_by_status(conn, "stale")
 }
 
+/// Count active entities of a specific type. Used by source balancing
+/// to normalize FTS match counts by collection size.
+pub fn count_active_by_type(conn: &Connection, entity_type: &str) -> Result<i64, StorageError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entities WHERE type = ?1 AND status = 'active'",
+        params![entity_type],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Count active code entities (function, class, file, module).
+pub fn count_active_code(conn: &Connection) -> Result<i64, StorageError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entities WHERE type IN ('function','class','file','module') AND status = 'active'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Count active knowledge entities (knowledge, observation, rule).
+pub fn count_active_knowledge(conn: &Connection) -> Result<i64, StorageError> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM entities WHERE type IN ('knowledge','observation','rule') AND status = 'active'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(count)
+}
+
 /// Get entity counts grouped by type. Returns (type, count) pairs.
 pub fn entity_counts_by_type(conn: &Connection) -> Result<Vec<(String, i64)>, StorageError> {
     let mut stmt =

@@ -19,7 +19,7 @@ use rusqlite::Connection;
 use crate::config::SearchConfig;
 use crate::storage::crud::{Entity, EntityType, get_entities_batch};
 use crate::storage::embeddings::{EmbeddingSpace, knn_search};
-use crate::storage::query::fts_search;
+use crate::storage::query::{count_active_code, count_active_knowledge, fts_search};
 
 use super::QueryEmbeddings;
 use super::SearchError;
@@ -112,15 +112,25 @@ pub fn search(
     //    When models are available, the query's semantic closeness to
     //    each embedding space determines how much weight code vs
     //    knowledge gets in the fused ranking. FTS-only mode uses 50/50.
-    let (code_prop, knowledge_prop) = if search_mode == SearchMode::FtsOnly {
-        (0.5, 0.5)
-    } else {
-        detect_proportions(
-            &code_distances,
-            &knowledge_distances,
-            config.min_source_proportion,
-        )
-    };
+    let (code_prop, knowledge_prop) =
+        if search_mode == SearchMode::FtsOnly || !config.source_balance_enabled {
+            (0.5, 0.5)
+        } else {
+            // Collection sizes for normalizing FTS match rates. Code entities
+            // vastly outnumber knowledge entities, so raw match counts bias
+            // toward code. Match rate (matches / collection_size) corrects this.
+            let code_size = count_active_code(conn).unwrap_or(0) as usize;
+            let knowledge_size = count_active_knowledge(conn).unwrap_or(0) as usize;
+            detect_proportions(
+                &code_distances,
+                &knowledge_distances,
+                code_fts_ids.len(),
+                knowledge_fts_ids.len(),
+                code_size,
+                knowledge_size,
+                config.min_source_proportion,
+            )
+        };
 
     tracing::debug!(
         code_proportion = code_prop,

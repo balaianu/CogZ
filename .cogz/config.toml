@@ -19,6 +19,7 @@ vec_weight = 0.6
 rrf_k = 60
 max_results = 20
 min_source_proportion = 0.2
+source_balance_enabled = false
 
 [consolidation]
 dedup_threshold = 0.92

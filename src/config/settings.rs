@@ -86,6 +86,16 @@ pub struct SearchConfig {
     /// gets at least 20% of the RRF weight. Defaults to 0.2.
     #[serde(default = "default_min_source_proportion")]
     pub min_source_proportion: f64,
+    /// Enable query-sensitive source balancing. When true, the hybrid
+    /// search detects code/knowledge proportions from KNN distance
+    /// spread and FTS pool sizes. When false (default), uses a fixed
+    /// 0.5/0.5 split — the evaluation showed this outperforms all
+    /// balance detection variants on overall retrieval quality.
+    /// The balance detection code is kept for future experimentation
+    /// with better signals (e.g. trained classifiers, NLI-based
+    /// intent detection).
+    #[serde(default = "default_source_balance_enabled")]
+    pub source_balance_enabled: bool,
 }
 
 fn default_code_vec_weight() -> f64 {
@@ -94,6 +104,10 @@ fn default_code_vec_weight() -> f64 {
 
 fn default_min_source_proportion() -> f64 {
     0.2
+}
+
+fn default_source_balance_enabled() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -225,6 +239,7 @@ impl Config {
                 rrf_k: 60,
                 max_results: 20,
                 min_source_proportion: 0.2,
+                source_balance_enabled: false,
             },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.92,

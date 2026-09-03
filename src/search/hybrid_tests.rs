@@ -22,6 +22,14 @@ fn default_config() -> SearchConfig {
         rrf_k: 60,
         max_results: 20,
         min_source_proportion: 0.2,
+        source_balance_enabled: false,
+    }
+}
+
+fn balanced_config() -> SearchConfig {
+    SearchConfig {
+        source_balance_enabled: true,
+        ..default_config()
     }
 }
 
@@ -177,7 +185,7 @@ fn balanced_fusion_code_favored_when_query_closer_to_code() {
         "indexing",
         QueryEmbeddings::both(&query_vec, &query_vec),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
 
@@ -229,7 +237,7 @@ fn balanced_fusion_knowledge_favored_when_query_closer_to_knowledge() {
         "indexing",
         QueryEmbeddings::both(&query_vec, &query_vec),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
 
@@ -275,7 +283,7 @@ fn balanced_fusion_fts_only_splits_by_type() {
         "indexing",
         QueryEmbeddings::none(),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
 
@@ -333,7 +341,7 @@ fn balanced_fusion_floor_prevents_knowledge_suppression() {
         "indexing",
         QueryEmbeddings::both(&query_vec, &query_vec),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
 
@@ -375,7 +383,7 @@ fn search_with_graph_expansion() {
         "ranking",
         QueryEmbeddings::none(),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
 
@@ -408,7 +416,7 @@ fn search_no_results() {
         "nonexistent",
         QueryEmbeddings::none(),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
     assert!(results.results.is_empty());
@@ -431,7 +439,7 @@ fn search_status_all_includes_stale() {
         "ranking",
         QueryEmbeddings::none(),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
     assert!(results.results.is_empty());
@@ -447,7 +455,7 @@ fn search_status_all_includes_stale() {
         "ranking",
         QueryEmbeddings::none(),
         &params,
-        &default_config(),
+        &balanced_config(),
     )
     .unwrap();
     assert_eq!(results.results.len(), 1);

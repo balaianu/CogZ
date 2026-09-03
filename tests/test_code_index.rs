@@ -358,6 +358,7 @@ fn build_sql_query(table: &str) -> String {
         rrf_k: 60,
         max_results: 20,
         min_source_proportion: 0.2,
+        source_balance_enabled: false,
     };
     let results = search(
         &conn,
