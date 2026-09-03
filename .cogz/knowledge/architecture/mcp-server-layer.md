@@ -1,12 +1,13 @@
 ---
 id: 4cc109e1-09cc-414e-831c-8f5710374d4a
+title: MCP Server Layer
 type: knowledge
 status: active
-title: MCP Server Layer
+created_at: "2026-08-29T02:30:00Z"
+updated_at: "2026-09-03T11:50:00Z"
+references: []
 category: architecture
-tags: [mcp, architecture, rmcp, async]
-created_at: 2026-08-29T02:30:00Z
-updated_at: 2026-08-29T23:15:00Z
+tags: ["mcp", "architecture", "rmcp", "async"]
 ---
 
 # MCP Server Layer
@@ -19,12 +20,17 @@ to AI agents via the Model Context Protocol over stdio transport.
 - `src/mcp/mod.rs` — module declarations, re-exports `CogzServer`
 - `src/mcp/server.rs` — `CogzServer` struct, `ServerHandler` impl,
   `run_stdio()` entry point
-- `src/mcp/tools.rs` — `#[tool_router]` impl with 11 `#[tool]` methods
+- `src/mcp/tools.rs` — `#[tool_router]` impl with 13 `#[tool]` methods
 - `src/mcp/params.rs` — parameter structs (`serde::Deserialize` +
   `schemars::JsonSchema`)
 - `src/mcp/helpers.rs` — file-first write logic, response builders,
-  error helpers, embedding helper
-- `src/mcp/dedup.rs` — title match + embedding similarity dedup
+  error helpers, embedding helper. Uses `sync_single_file` for O(1)
+  file synchronization on writes (not full incremental scan).
+- `src/mcp/dedup.rs` — title match + embedding similarity dedup.
+  Filters to active entities only — rejected/superseded/pruned
+  entities don't trigger duplicate warnings.
+- `src/mcp/update_knowledge.rs` — in-place knowledge updates with
+  file move support on category change. Uses `sync_single_file`.
 
 ## Key patterns
 
@@ -49,8 +55,6 @@ generates the `call_tool` dispatch. The `vis = "pub"` is required because
 
 ## What's deferred
 
-- `consolidate` tool (Phase 9) — contradiction detection, promotion, merge
-- `capture_event` tool (Phase 11) — event recording from agents
 - Code entities are indexed by `cogz index` (Phase 8) and searchable
   via the `search` and `list_entities` tools, but there are no
   MCP tools for direct code entity manipulation — they're read-only

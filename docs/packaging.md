@@ -610,6 +610,99 @@ DB, does its work, and exits. No daemon, no long-running process.
 
 ---
 
+## Multi-User Collaboration
+
+CogZ is designed for multi-user collaboration through a single Git
+repo. The `.cogz/` directory (knowledge, rules, observations, config)
+is tracked by Git. The SQLite database is gitignored — each machine
+derives its own DB from the shared files.
+
+### How it works
+
+1. User A writes knowledge via `cogz` MCP tools or manual file edits
+2. User A commits and pushes the `.cogz/*.md` files
+3. User B pulls — Git merges the Markdown files (plain text, no
+   conflicts in normal use)
+4. User B's local DB is now stale — the files are current but the
+   DB doesn't know about the new entries yet
+5. User B runs `cogz reindex` — incremental sync picks up the new
+   and changed files, updates the DB
+
+Code entities (functions, classes, files, modules) use deterministic
+UUID v5 IDs derived from `{file_path}:{entity_type}:{qualified_name}`,
+so every machine produces the same entities from the same source code.
+Embeddings are deterministic given the same model — every machine
+produces the same vectors.
+
+### Recommended: Git hooks for automatic reindex
+
+Add a `post-merge` hook to reindex automatically after `git pull`:
+
+```bash
+# .git/hooks/post-merge
+#!/bin/sh
+cogz reindex 2>/dev/null
+```
+
+Optionally, add `post-checkout` for branch switching:
+
+```bash
+# .git/hooks/post-checkout
+#!/bin/sh
+cogz reindex 2>/dev/null
+```
+
+The `2>/dev/null` suppresses errors so the hook is a silent no-op
+when cogz isn't installed or no `.cogz/` directory exists. This
+makes the hooks safe to share across team members who haven't
+installed CogZ — they simply do nothing.
+
+Git hooks are not tracked by the repo and must be set up per-user,
+same as agent hooks. CogZ does not install them automatically — it
+is agent-agnostic and should not modify a user's Git configuration.
+
+### What not to share
+
+- **`cogz.db`** — gitignored, local only. Sharing it via Git would
+  add a large binary that changes on every reindex, cause unsolvable
+  merge conflicts, and break the "files are canonical, DB is derived"
+  invariant.
+- **Observations** — gitignored by default. Observations are per-user
+  session notes. Teams that want shared observations can remove the
+  gitignore entry, but this is a team decision, not a CogZ default.
+
+### Caveats
+
+- **Consolidation is a coordinated operation.** If two users run
+  `cogz consolidate` simultaneously, both might promote the same
+  observation or merge the same duplicates, creating conflicting
+  file changes. In multi-user setups, consolidation should be run
+  by one designated person, or the `session_end` hook (which runs
+  consolidation) should be disabled.
+- **Not all Git operations trigger hooks.** `git reset --hard`,
+  `git stash pop`, and direct file edits don't trigger `post-merge`.
+  Run `cogz reindex` manually in these cases.
+- **Embedding model divergence.** If users configure different
+  embedding models, vector search results will differ. FTS results
+  are identical. This is acceptable — vector search is a local
+  optimization.
+- **Forward references resolve on reindex.** If user A creates
+  knowledge that references user B's knowledge (by UUID), the
+  reference edge won't resolve until both files are in the working
+  tree. `cogz reindex` handles this via the second-pass reference
+  sync — all reference edges are retried after all files are synced.
+
+### Future: lazy stamp-file check
+
+A planned enhancement (post-Phase 12) will add a lazy check: on
+`cogz search` or `cogz context`, CogZ compares a quick hash of
+`.cogz/` file mtimes against a stored stamp. If different, it runs
+`cogz reindex` before proceeding. This catches cases where the Git
+hook wasn't installed or was bypassed, without adding latency to
+the common case (stamp matches → proceed immediately).
+
+---
+
 ## Versioning
 
 ### Semantic versioning

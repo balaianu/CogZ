@@ -323,6 +323,21 @@ They run `cogz index`:
 Clean start with curated knowledge. No raw observations from someone
 else's agent sessions.
 
+### Ongoing collaboration
+
+When team members push new knowledge/rules, others pull the updated
+`.cogz/` files via Git. The files are current but the local DB is
+stale until reindexed. Two recommended approaches:
+
+1. **Git hook (automatic):** `post-merge` hook runs `cogz reindex`
+   after `git pull`. See `docs/packaging.md` → Multi-User Collaboration.
+2. **Lazy check (planned):** On `cogz search` or `cogz context`, CogZ
+   will compare file mtimes against a stored stamp and reindex if
+   needed. Post-Phase 12 enhancement.
+
+Manual `cogz reindex` after a pull also works — it's incremental,
+syncing only changed files and reindexing code via git diff.
+
 ---
 
 ## Storage Schema
