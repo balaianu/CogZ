@@ -6,6 +6,7 @@
 //! is provided. Model loading and query embedding happen at the CLI
 //! boundary, same pattern as `embed_synced`.
 
+pub mod balance;
 pub mod describe;
 pub mod expand;
 pub mod hybrid;

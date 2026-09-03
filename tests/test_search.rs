@@ -20,6 +20,7 @@ fn default_config() -> SearchConfig {
         code_vec_weight: 0.3,
         rrf_k: 60,
         max_results: 20,
+        min_source_proportion: 0.2,
     }
 }
 

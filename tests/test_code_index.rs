@@ -357,6 +357,7 @@ fn build_sql_query(table: &str) -> String {
         code_vec_weight: 0.3,
         rrf_k: 60,
         max_results: 20,
+        min_source_proportion: 0.2,
     };
     let results = search(
         &conn,

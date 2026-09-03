@@ -6,10 +6,15 @@
 //! with name-based references that are resolved to UUIDs by the
 //! code_graph module after all files are parsed.
 //!
-//! Supports Rust and Python via per-language extractors.
+//! Supports Rust, Python, Go, JavaScript, TypeScript, and Bash via
+//! per-language extractors.
 
+mod bash;
+mod go;
+mod javascript;
 mod python;
 mod raw_edges;
+mod rust;
 #[cfg(test)]
 mod tests;
 
@@ -52,6 +57,11 @@ pub struct RawEdge {
 pub enum Language {
     Rust,
     Python,
+    Go,
+    JavaScript,
+    TypeScript,
+    Tsx,
+    Bash,
 }
 
 impl Language {
@@ -59,6 +69,11 @@ impl Language {
         match self {
             Self::Rust => "rust",
             Self::Python => "python",
+            Self::Go => "go",
+            Self::JavaScript => "javascript",
+            Self::TypeScript => "typescript",
+            Self::Tsx => "tsx",
+            Self::Bash => "bash",
         }
     }
 
@@ -66,6 +81,11 @@ impl Language {
         match s {
             "rust" => Some(Self::Rust),
             "python" => Some(Self::Python),
+            "go" => Some(Self::Go),
+            "javascript" => Some(Self::JavaScript),
+            "typescript" => Some(Self::TypeScript),
+            "tsx" => Some(Self::Tsx),
+            "bash" => Some(Self::Bash),
             _ => None,
         }
     }
@@ -74,6 +94,11 @@ impl Language {
         match self {
             Self::Rust => tree_sitter_rust::LANGUAGE,
             Self::Python => tree_sitter_python::LANGUAGE,
+            Self::Go => tree_sitter_go::LANGUAGE,
+            Self::JavaScript => tree_sitter_javascript::LANGUAGE,
+            Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT,
+            Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX,
+            Self::Bash => tree_sitter_bash::LANGUAGE,
         }
     }
 }
@@ -124,10 +149,7 @@ pub fn extract_entities(file_path: &Path, source: &str, language: Language) -> V
         }),
     });
 
-    match language {
-        Language::Rust => extract_rust(&root, source_bytes, &path_str, &mut entities),
-        Language::Python => python::extract_python(&root, source_bytes, &path_str, &mut entities),
-    }
+    dispatch_extract(&language, &root, source_bytes, &path_str, &mut entities);
 
     entities
 }
@@ -184,193 +206,56 @@ pub fn extract_all(
         }),
     });
 
-    match language {
-        Language::Rust => {
-            extract_rust(&root, source_bytes, &path_str, &mut entities);
-            raw_edges::extract_rust_raw_edges(&root, source_bytes, &path_str, &mut edges);
-        }
-        Language::Python => {
-            python::extract_python(&root, source_bytes, &path_str, &mut entities);
-            python::extract_python_raw_edges(&root, source_bytes, &path_str, &mut edges);
-        }
-    }
+    dispatch_extract(&language, &root, source_bytes, &path_str, &mut entities);
+    dispatch_raw_edges(&language, &root, source_bytes, &path_str, &mut edges);
 
     (entities, edges)
 }
 
-pub(super) fn node_text(node: &Node, source: &[u8]) -> Option<String> {
-    node.utf8_text(source).ok().map(|s| s.to_string())
-}
-
-// ── Rust extraction ───────────────────────────────────────────────
-
-fn extract_rust(root: &Node, source: &[u8], file_path: &str, entities: &mut Vec<CodeEntity>) {
-    let mut cursor = root.walk();
-    for child in root.named_children(&mut cursor) {
-        match child.kind() {
-            "function_item" => {
-                if let Some(entity) = extract_rust_function(&child, source, file_path) {
-                    entities.push(entity);
-                }
-            }
-            "struct_item" | "enum_item" | "trait_item" => {
-                if let Some(entity) = extract_rust_type(&child, source, file_path, child.kind()) {
-                    entities.push(entity);
-                }
-            }
-            "impl_item" => {
-                if let Some(entity) = extract_rust_impl(&child, source, file_path) {
-                    entities.push(entity);
-                }
-                extract_rust_impl_methods(&child, source, file_path, entities);
-            }
-            "mod_item" => {
-                if let Some(entity) = extract_rust_module(&child, source, file_path) {
-                    entities.push(entity);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn extract_rust_function(node: &Node, source: &[u8], file_path: &str) -> Option<CodeEntity> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(&name_node, source)?;
-    let line_start = node.start_position().row + 1;
-    let line_end = node.end_position().row + 1;
-    let content = node_text(node, source)?;
-    let signature = content.lines().next().unwrap_or("").to_string();
-
-    Some(CodeEntity {
-        entity_type: "function",
-        title: name.clone(),
-        content,
-        properties: json!({
-            "file_path": file_path,
-            "line_start": line_start,
-            "line_end": line_end,
-            "language": "rust",
-            "signature": signature,
-            "qualified_name": name,
-        }),
-    })
-}
-
-fn extract_rust_type(
-    node: &Node,
+/// Dispatch entity extraction to the appropriate language module.
+fn dispatch_extract(
+    language: &Language,
+    root: &Node,
     source: &[u8],
-    file_path: &str,
-    kind: &str,
-) -> Option<CodeEntity> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(&name_node, source)?;
-    let line_start = node.start_position().row + 1;
-    let line_end = node.end_position().row + 1;
-    let content = node_text(node, source)?;
-
-    Some(CodeEntity {
-        entity_type: "class",
-        title: name.clone(),
-        content,
-        properties: json!({
-            "file_path": file_path,
-            "line_start": line_start,
-            "line_end": line_end,
-            "language": "rust",
-            "qualified_name": name,
-            "kind": kind,
-        }),
-    })
-}
-
-fn extract_rust_impl(node: &Node, source: &[u8], file_path: &str) -> Option<CodeEntity> {
-    let type_node = node.child_by_field_name("type")?;
-    let type_name = node_text(&type_node, source)?;
-    let trait_name = node
-        .child_by_field_name("trait")
-        .and_then(|n| node_text(&n, source));
-    let line_start = node.start_position().row + 1;
-    let line_end = node.end_position().row + 1;
-    let content = node_text(node, source)?;
-
-    let title = match &trait_name {
-        Some(trait_) => format!("impl {trait_} for {type_name}"),
-        None => format!("impl {type_name}"),
-    };
-
-    // Qualified name includes "impl" prefix to distinguish from the
-    // struct/class entity with the same type name.
-    let qualified_name = match &trait_name {
-        Some(trait_) => format!("impl {trait_} for {type_name}"),
-        None => format!("impl {type_name}"),
-    };
-
-    Some(CodeEntity {
-        entity_type: "class",
-        title,
-        content,
-        properties: json!({
-            "file_path": file_path,
-            "line_start": line_start,
-            "line_end": line_end,
-            "language": "rust",
-            "qualified_name": qualified_name,
-            "kind": "impl",
-            "trait": trait_name,
-        }),
-    })
-}
-
-fn extract_rust_impl_methods(
-    impl_node: &Node,
-    source: &[u8],
-    file_path: &str,
+    path: &str,
     entities: &mut Vec<CodeEntity>,
 ) {
-    let body = match impl_node.child_by_field_name("body") {
-        Some(b) => b,
-        None => return,
-    };
-    let mut cursor = body.walk();
-    for child in body.named_children(&mut cursor) {
-        if child.kind() == "function_item"
-            && let Some(mut entity) = extract_rust_function(&child, source, file_path)
-        {
-            if let Some(type_node) = impl_node.child_by_field_name("type")
-                && let Some(type_name) = node_text(&type_node, source)
-                && let Some(props) = entity.properties.as_object_mut()
-            {
-                let method_name = props
-                    .get("qualified_name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                props.insert(
-                    "qualified_name".to_string(),
-                    json!(format!("{type_name}::{method_name}")),
-                );
-            }
-            entities.push(entity);
+    match language {
+        Language::Rust => rust::extract_rust(root, source, path, entities),
+        Language::Python => python::extract_python(root, source, path, entities),
+        Language::Go => go::extract_go(root, source, path, entities),
+        Language::JavaScript => {
+            javascript::extract_javascript(root, source, path, "javascript", entities)
         }
+        Language::TypeScript => {
+            javascript::extract_javascript(root, source, path, "typescript", entities)
+        }
+        Language::Tsx => javascript::extract_javascript(root, source, path, "tsx", entities),
+        Language::Bash => bash::extract_bash(root, source, path, entities),
     }
 }
 
-fn extract_rust_module(node: &Node, source: &[u8], file_path: &str) -> Option<CodeEntity> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(&name_node, source)?;
-    let content = node_text(node, source)?;
+/// Dispatch raw edge extraction to the appropriate language module.
+fn dispatch_raw_edges(
+    language: &Language,
+    root: &Node,
+    source: &[u8],
+    path: &str,
+    edges: &mut Vec<RawEdge>,
+) {
+    match language {
+        Language::Rust => raw_edges::extract_rust_raw_edges(root, source, path, edges),
+        Language::Python => python::extract_python_raw_edges(root, source, path, edges),
+        Language::Go => go::extract_go_raw_edges(root, source, path, edges),
+        Language::JavaScript | Language::TypeScript | Language::Tsx => {
+            javascript::extract_javascript_raw_edges(root, source, path, edges)
+        }
+        Language::Bash => bash::extract_bash_raw_edges(root, source, path, edges),
+    }
+}
 
-    Some(CodeEntity {
-        entity_type: "module",
-        title: name.clone(),
-        content,
-        properties: json!({
-            "file_path": file_path,
-            "language": "rust",
-            "module_path": name,
-        }),
-    })
+pub(super) fn node_text(node: &Node, source: &[u8]) -> Option<String> {
+    node.utf8_text(source).ok().map(|s| s.to_string())
 }
 
 pub(super) fn walk_descendants<F>(node: &Node, f: &mut F)

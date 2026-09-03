@@ -34,8 +34,9 @@ pub struct ChangedFile {
 /// `baseline_sha` is `None` (first index). The caller should do a
 /// full scan in that case.
 ///
-/// Only files matching supported source extensions (`.rs`, `.py`) are
-/// returned — other changes are irrelevant to code indexing.
+/// Only files matching supported source extensions (`.rs`, `.py`,
+/// `.go`, `.js`, `.mjs`, `.cjs`, `.jsx`, `.ts`, `.tsx`, `.sh`, `.bash`)
+/// are returned — other changes are irrelevant to code indexing.
 pub fn changed_source_files(
     repo_root: &Path,
     baseline_sha: Option<&str>,

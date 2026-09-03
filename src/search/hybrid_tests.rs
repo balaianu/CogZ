@@ -21,6 +21,7 @@ fn default_config() -> SearchConfig {
         code_vec_weight: 0.3,
         rrf_k: 60,
         max_results: 20,
+        min_source_proportion: 0.2,
     }
 }
 
@@ -132,6 +133,220 @@ fn search_with_type_filter() {
 
     assert_eq!(results.results.len(), 1);
     assert_eq!(results.results[0].entity.r#type, "observation");
+}
+
+#[test]
+fn balanced_fusion_code_favored_when_query_closer_to_code() {
+    let conn = setup();
+
+    // Knowledge entity — matches FTS for "indexing"
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "k1",
+            "knowledge",
+            "Search pipeline indexing",
+            "indexing pipeline content",
+        ),
+    )
+    .unwrap();
+    // Code entity — also matches FTS for "indexing"
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "f1",
+            "function",
+            "index_code",
+            "fn index_code() { indexing }",
+        ),
+    )
+    .unwrap();
+
+    // Knowledge embedding: far from query
+    insert_embedding(&conn, "k1", "knowledge", &vec![0.9_f32; 768]).unwrap();
+    // Code embedding: close to query
+    insert_embedding(&conn, "f1", "function", &vec![0.1_f32; 768]).unwrap();
+
+    let query_vec = vec![0.1_f32; 768];
+    let params = SearchParams {
+        expand: false,
+        ..Default::default()
+    };
+    let results = search(
+        &conn,
+        "indexing",
+        QueryEmbeddings::both(&query_vec, &query_vec),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
+
+    assert_eq!(results.search_mode, SearchMode::Hybrid);
+    // Both should be present
+    assert_eq!(results.results.len(), 2);
+    // Code entity should rank higher — query embedding is closer to code space
+    assert_eq!(results.results[0].entity.id, "f1");
+    assert_eq!(results.results[1].entity.id, "k1");
+}
+
+#[test]
+fn balanced_fusion_knowledge_favored_when_query_closer_to_knowledge() {
+    let conn = setup();
+
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "k1",
+            "knowledge",
+            "Search pipeline indexing",
+            "indexing pipeline content",
+        ),
+    )
+    .unwrap();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "f1",
+            "function",
+            "index_code",
+            "fn index_code() { indexing }",
+        ),
+    )
+    .unwrap();
+
+    // Knowledge embedding: close to query
+    insert_embedding(&conn, "k1", "knowledge", &vec![0.1_f32; 768]).unwrap();
+    // Code embedding: far from query
+    insert_embedding(&conn, "f1", "function", &vec![0.9_f32; 768]).unwrap();
+
+    let query_vec = vec![0.1_f32; 768];
+    let params = SearchParams {
+        expand: false,
+        ..Default::default()
+    };
+    let results = search(
+        &conn,
+        "indexing",
+        QueryEmbeddings::both(&query_vec, &query_vec),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
+
+    assert_eq!(results.results.len(), 2);
+    // Knowledge entity should rank higher — query embedding is closer to knowledge space
+    assert_eq!(results.results[0].entity.id, "k1");
+    assert_eq!(results.results[1].entity.id, "f1");
+}
+
+#[test]
+fn balanced_fusion_fts_only_splits_by_type() {
+    // In FTS-only mode, code and knowledge are fused separately with
+    // equal proportions. Both should appear in results.
+    let conn = setup();
+
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "k1",
+            "knowledge",
+            "indexing design",
+            "indexing architecture content",
+        ),
+    )
+    .unwrap();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "f1",
+            "function",
+            "index_code",
+            "fn index_code() { indexing }",
+        ),
+    )
+    .unwrap();
+
+    let params = SearchParams {
+        expand: false,
+        ..Default::default()
+    };
+    let results = search(
+        &conn,
+        "indexing",
+        QueryEmbeddings::none(),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
+
+    assert_eq!(results.search_mode, SearchMode::FtsOnly);
+    assert_eq!(results.results.len(), 2);
+    // Both code and knowledge should be present
+    let types: Vec<&str> = results
+        .results
+        .iter()
+        .map(|r| r.entity.r#type.as_str())
+        .collect();
+    assert!(types.contains(&"knowledge"));
+    assert!(types.contains(&"function"));
+}
+
+#[test]
+fn balanced_fusion_floor_prevents_knowledge_suppression() {
+    // Even when code is very close and knowledge is very far,
+    // the floor ensures knowledge entities still appear.
+    let conn = setup();
+
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "k1",
+            "knowledge",
+            "indexing design",
+            "indexing architecture content",
+        ),
+    )
+    .unwrap();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "f1",
+            "function",
+            "index_code",
+            "fn index_code() { indexing }",
+        ),
+    )
+    .unwrap();
+
+    // Code embedding: nearly identical to query
+    insert_embedding(&conn, "f1", "function", &vec![0.01_f32; 768]).unwrap();
+    // Knowledge embedding: nearly opposite to query
+    insert_embedding(&conn, "k1", "knowledge", &vec![1.9_f32; 768]).unwrap();
+
+    let query_vec = vec![0.01_f32; 768];
+    let params = SearchParams {
+        expand: false,
+        ..Default::default()
+    };
+    let results = search(
+        &conn,
+        "indexing",
+        QueryEmbeddings::both(&query_vec, &query_vec),
+        &params,
+        &default_config(),
+    )
+    .unwrap();
+
+    // Knowledge should still appear despite being far in vector space,
+    // because the floor gives it at least 20% weight, and it matches FTS.
+    let has_knowledge = results
+        .results
+        .iter()
+        .any(|r| r.entity.r#type == "knowledge");
+    assert!(
+        has_knowledge,
+        "knowledge entity should appear despite low vector similarity"
+    );
 }
 
 #[test]

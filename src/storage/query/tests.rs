@@ -124,8 +124,9 @@ fn fts_search_multi_word_query() {
     )
     .unwrap();
 
-    // Multi-word query should match all terms in any position (implicit AND),
-    // not require them to be adjacent (phrase matching).
+    // Multi-word query with OR semantics: documents matching any term
+    // are returned, but BM25 ranks documents matching more terms higher.
+    // This entity matches all terms, so it ranks first.
     let results = fts_search(
         &conn,
         "search architecture",
@@ -149,6 +150,50 @@ fn fts_search_multi_word_query() {
     )
     .unwrap();
     assert_eq!(results.len(), 1);
+}
+
+#[test]
+fn fts_search_or_semantics_partial_match() {
+    let conn = setup();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "u1",
+            "function",
+            "tree_sitter_language",
+            "fn tree_sitter_language() -> LanguageFn",
+        ),
+    )
+    .unwrap();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "u2",
+            "knowledge",
+            "Search pipeline design",
+            "The search pipeline uses FTS5 and vector search with RRF fusion",
+        ),
+    )
+    .unwrap();
+
+    // With OR semantics, "tree-sitter dispatch function" should match u1
+    // (matches "tree-sitter" and "function") even though "dispatch" doesn't
+    // appear in u1. Under AND semantics, this query would return 0 results.
+    let results = fts_search(
+        &conn,
+        "tree-sitter dispatch function",
+        None,
+        Some("active"),
+        false,
+        20,
+    )
+    .unwrap();
+    assert!(
+        !results.is_empty(),
+        "OR semantics should return partial matches"
+    );
+    // u1 matches 2 of 3 terms, u2 matches 1 of 3 — u1 should rank higher
+    assert_eq!(results[0].id, "u1");
 }
 
 #[test]

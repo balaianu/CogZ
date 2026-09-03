@@ -80,10 +80,20 @@ pub struct SearchConfig {
     pub code_vec_weight: f64,
     pub rrf_k: u32,
     pub max_results: u32,
+    /// Floor for each source type's proportion in balanced fusion.
+    /// Ensures neither code nor knowledge is completely suppressed
+    /// even when the query strongly favors one. 0.2 = each source
+    /// gets at least 20% of the RRF weight. Defaults to 0.2.
+    #[serde(default = "default_min_source_proportion")]
+    pub min_source_proportion: f64,
 }
 
 fn default_code_vec_weight() -> f64 {
     0.3
+}
+
+fn default_min_source_proportion() -> f64 {
+    0.2
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -214,6 +224,7 @@ impl Config {
                 code_vec_weight: 0.3,
                 rrf_k: 60,
                 max_results: 20,
+                min_source_proportion: 0.2,
             },
             consolidation: ConsolidationConfig {
                 dedup_threshold: 0.92,

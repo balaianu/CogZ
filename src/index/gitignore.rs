@@ -14,6 +14,11 @@ fn language_for_extension(ext: &str) -> Option<&'static str> {
     match ext {
         "rs" => Some("rust"),
         "py" => Some("python"),
+        "go" => Some("go"),
+        "js" | "mjs" | "cjs" | "jsx" => Some("javascript"),
+        "ts" => Some("typescript"),
+        "tsx" => Some("tsx"),
+        "sh" | "bash" => Some("bash"),
         _ => None,
     }
 }
@@ -250,6 +255,14 @@ mod tests {
     fn language_for_extension_works() {
         assert_eq!(language_for_path(Path::new("foo.rs")), Some("rust"));
         assert_eq!(language_for_path(Path::new("bar.py")), Some("python"));
-        assert_eq!(language_for_path(Path::new("baz.js")), None);
+        assert_eq!(language_for_path(Path::new("baz.go")), Some("go"));
+        assert_eq!(language_for_path(Path::new("qux.js")), Some("javascript"));
+        assert_eq!(language_for_path(Path::new("qux.mjs")), Some("javascript"));
+        assert_eq!(language_for_path(Path::new("app.ts")), Some("typescript"));
+        assert_eq!(language_for_path(Path::new("comp.tsx")), Some("tsx"));
+        assert_eq!(language_for_path(Path::new("deploy.sh")), Some("bash"));
+        assert_eq!(language_for_path(Path::new("setup.bash")), Some("bash"));
+        assert_eq!(language_for_path(Path::new("style.css")), None);
+        assert_eq!(language_for_path(Path::new("page.html")), None);
     }
 }
