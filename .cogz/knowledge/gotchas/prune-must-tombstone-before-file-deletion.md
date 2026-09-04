@@ -2,9 +2,9 @@
 id: d0e4f5a6-09cc-414e-831c-8f5710374d4a
 title: Prune must tombstone DB before deleting canonical file
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-03T11:58:00Z"
-updated_at: "2026-09-03T11:58:00Z"
+updated_at: "2026-09-04T09:20:00.899401395+00:00"
 references: []
 category: gotchas
 tags: ["prune", "doctor", "tombstone", "file-first", "ordering"]

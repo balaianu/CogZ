@@ -2,9 +2,9 @@
 id: a3b7c8d9-09cc-414e-831c-8f5710374d4a
 title: MCP write path uses single-file sync for O(1) I/O
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-03T12:01:00Z"
-updated_at: "2026-09-03T12:01:00Z"
+updated_at: "2026-09-04T09:15:30.748875943+00:00"
 references: []
 category: architecture
 tags: ["mcp", "performance", "sync", "hot-path"]
