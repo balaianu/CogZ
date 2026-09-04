@@ -241,6 +241,7 @@ fn gitignored_files_not_indexed() {
     let source_paths = cogz::index::gitignore::scan_source_files(&ScanConfig {
         root,
         allow: &config.index.allow,
+        deny: &config.index.deny,
     });
 
     assert!(
@@ -269,6 +270,7 @@ fn allow_overrides_gitignore() {
     let config = Config {
         index: cogz::config::IndexConfig {
             allow: vec!["src/secret.rs".to_string()],
+            deny: vec![],
         },
         ..default_config()
     };
@@ -276,6 +278,7 @@ fn allow_overrides_gitignore() {
     let source_paths = cogz::index::gitignore::scan_source_files(&ScanConfig {
         root,
         allow: &config.index.allow,
+        deny: &config.index.deny,
     });
 
     assert!(
@@ -295,7 +298,11 @@ fn cogz_dir_not_indexed_as_source() {
     std::fs::write(root.join(".cogz/config.toml"), "# config\n").unwrap();
     std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
 
-    let source_paths = cogz::index::gitignore::scan_source_files(&ScanConfig { root, allow: &[] });
+    let source_paths = cogz::index::gitignore::scan_source_files(&ScanConfig {
+        root,
+        allow: &[],
+        deny: &[],
+    });
 
     assert!(
         !source_paths.iter().any(|p| p.starts_with(".cogz")),

@@ -153,10 +153,19 @@ fn default_dedup_nli_threshold() -> f64 {
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct IndexConfig {
-    /// Explicit gitignore overrides — paths to index despite being
-    /// gitignored.
+    /// Glob patterns for files to index despite being gitignored.
+    /// Patterns are relative to the repo root and use standard glob
+    /// syntax (`*`, `**`, `?`, `[abc]`). Allow overrides both gitignore
+    /// and deny.
     #[serde(default)]
     pub allow: Vec<String>,
+    /// Glob patterns for files to exclude from indexing even if they
+    /// are not gitignored. Patterns are relative to the repo root and
+    /// use the same glob syntax as `allow`. Use cases: vendored code,
+    /// generated files not covered by .gitignore, benchmark files.
+    /// Allow patterns take precedence over deny.
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -251,7 +260,10 @@ impl Config {
                 contradiction_length_ratio: 5.0,
                 dedup_nli_threshold: 0.85,
             },
-            index: IndexConfig { allow: vec![] },
+            index: IndexConfig {
+                allow: vec![],
+                deny: vec![],
+            },
             retention: RetentionConfig {
                 observation_prune_after_days: 90,
                 tombstone_max_count: 1000,
@@ -350,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn allow_defaults_to_empty() {
+    fn allow_and_deny_default_to_empty() {
         let toml_str = r#"
 [project]
 name = "test"
@@ -381,6 +393,7 @@ tombstone_max_count = 1000
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert!(config.index.allow.is_empty());
+        assert!(config.index.deny.is_empty());
         assert_eq!(config.context, ContextConfig::default());
     }
 
