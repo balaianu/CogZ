@@ -518,11 +518,9 @@ fn sync_single_file_syncs_reference_edges() {
     sync_all(&storage, dir.path());
 
     // Now edit the source file to add a reference to k2-uuid.
-    let updated_source = format!(
-        "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"k2-uuid\"]\ncategory: architecture\n---\n\nContent"
-    );
+    let updated_source = "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"k2-uuid\"]\ncategory: architecture\n---\n\nContent";
     let source_path = dir.path().join("knowledge/architecture/overview.md");
-    std::fs::write(&source_path, &updated_source).unwrap();
+    std::fs::write(&source_path, updated_source).unwrap();
 
     // Sync only the single edited file (simulating the file_save hook).
     let result = sync_single_file(&storage, dir.path(), "knowledge/architecture/overview.md");
