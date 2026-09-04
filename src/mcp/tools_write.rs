@@ -22,11 +22,12 @@ pub async fn record_observation(
     Parameters(params): Parameters<RecordObservationParams>,
 ) -> Result<CallToolResult, McpError> {
     let title = params.title.unwrap_or_else(|| auto_title(&params.content));
-    let storage = server.storage.clone();
-    let config = server.config.clone();
-    let cogz_dir = server.cogz_dir.clone();
-    let query_model = server.query_model.clone();
-    let nli_model = server.nli_model.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let config = repo.config.clone();
+    let cogz_dir = repo.cogz_dir.clone();
+    let query_model = repo.query_model.clone();
+    let nli_model = repo.nli_model.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let mut entity = EntityFile::new(&title, FileEntityType::Observation, &params.content);
@@ -67,11 +68,12 @@ pub async fn create_rule(
     Parameters(params): Parameters<CreateRuleParams>,
 ) -> Result<CallToolResult, McpError> {
     let title = params.title.unwrap_or_else(|| auto_title(&params.content));
-    let storage = server.storage.clone();
-    let config = server.config.clone();
-    let cogz_dir = server.cogz_dir.clone();
-    let query_model = server.query_model.clone();
-    let nli_model = server.nli_model.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let config = repo.config.clone();
+    let cogz_dir = repo.cogz_dir.clone();
+    let query_model = repo.query_model.clone();
+    let nli_model = repo.nli_model.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let mut entity = EntityFile::new(&title, FileEntityType::Rule, &params.content);
@@ -104,10 +106,11 @@ pub async fn create_knowledge(
     server: &CogzServer,
     Parameters(params): Parameters<CreateKnowledgeParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
-    let config = server.config.clone();
-    let cogz_dir = server.cogz_dir.clone();
-    let query_model = server.query_model.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let config = repo.config.clone();
+    let cogz_dir = repo.cogz_dir.clone();
+    let query_model = repo.query_model.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let mut entity = EntityFile::new(&params.title, FileEntityType::Knowledge, &params.content);
@@ -146,9 +149,10 @@ pub async fn update_knowledge(
     server: &CogzServer,
     Parameters(params): Parameters<UpdateKnowledgeParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
-    let cogz_dir = server.cogz_dir.clone();
-    let query_model = server.query_model.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let cogz_dir = repo.cogz_dir.clone();
+    let query_model = repo.query_model.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         update_knowledge_file(&storage, &cogz_dir, &params, Some(&query_model))

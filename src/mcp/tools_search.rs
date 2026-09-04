@@ -18,12 +18,13 @@ pub async fn search(
     server: &CogzServer,
     Parameters(params): Parameters<SearchToolParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
-    let search_config = server.config.search.clone();
-    let default_limit = server.config.search.max_results;
-    let task_max_hops = server.config.context.task_max_hops;
-    let query_model = server.query_model.clone();
-    let code_model = server.code_model.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let search_config = repo.config.search.clone();
+    let default_limit = repo.config.search.max_results;
+    let task_max_hops = repo.config.context.task_max_hops;
+    let query_model = repo.query_model.clone();
+    let code_model = repo.code_model.clone();
     let use_code = params.code_search.unwrap_or(false);
 
     let results = tokio::task::spawn_blocking(move || {
@@ -69,10 +70,11 @@ pub async fn get_context(
     let mode_str = params.mode.as_deref().unwrap_or("task");
     let mode = parse_context_mode(mode_str, params.query.as_deref())?;
     let query_str = params.query.clone();
-    let storage = server.storage.clone();
-    let config = server.config.clone();
-    let query_model = server.query_model.clone();
-    let code_model = server.code_model.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let config = repo.config.clone();
+    let query_model = repo.query_model.clone();
+    let code_model = repo.code_model.clone();
 
     let pack = tokio::task::spawn_blocking(move || {
         let knowledge_embedding = params

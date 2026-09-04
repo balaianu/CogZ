@@ -18,7 +18,8 @@ pub async fn query_observations(
     server: &CogzServer,
     Parameters(params): Parameters<QueryObservationsParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = storage.conn();
@@ -46,7 +47,8 @@ pub async fn query_rules(
     server: &CogzServer,
     Parameters(params): Parameters<QueryRulesParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = storage.conn();
@@ -70,7 +72,8 @@ pub async fn query_knowledge(
     server: &CogzServer,
     Parameters(params): Parameters<QueryKnowledgeParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = storage.conn();
@@ -98,7 +101,8 @@ pub async fn list_entities(
     server: &CogzServer,
     Parameters(params): Parameters<ListEntitiesParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
     let entity_type = params.entity_type.clone();
     let status = params.status.clone();
 

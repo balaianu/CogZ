@@ -124,9 +124,11 @@ enum Commands {
 
     /// Run the MCP server over stdio (for AI agent integration).
     McpStdio {
-        /// Repository root directory. Defaults to current directory.
-        #[arg(long, default_value = ".")]
-        repo: PathBuf,
+        /// Repository root directory. If omitted, tool calls must
+        /// specify `repo` per call. Defaults to current directory
+        /// when provided.
+        #[arg(long)]
+        repo: Option<PathBuf>,
     },
 
     /// Run background consolidation: promote supported observations
@@ -311,7 +313,7 @@ fn main() -> anyhow::Result<()> {
             include_stale,
             max_tokens,
         } => cli::run_context(&mode, query.as_deref(), &repo, include_stale, max_tokens),
-        Commands::McpStdio { repo } => cli::run_mcp_stdio(&repo),
+        Commands::McpStdio { repo } => cli::run_mcp_stdio(repo.as_deref()),
         Commands::Consolidate { repo, dry_run } => commands::run_consolidate(&repo, dry_run),
         Commands::CaptureEvent {
             event_type,

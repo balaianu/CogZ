@@ -9,13 +9,17 @@ use serde_json::json;
 
 use crate::hooks::lifecycle::{LifecycleEvent, LifecycleInput, handle_lifecycle_event};
 use crate::mcp::helpers::{build_status_response, mcp_internal_error};
-use crate::mcp::params::{CaptureEventParams, ConsolidateParams};
+use crate::mcp::params::{CaptureEventParams, ConsolidateParams, GetStatusParams};
 use crate::mcp::responses::tool_success;
 use crate::mcp::server::CogzServer;
 
-pub async fn get_status(server: &CogzServer) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
-    let config = server.config.clone();
+pub async fn get_status(
+    server: &CogzServer,
+    Parameters(params): Parameters<GetStatusParams>,
+) -> Result<CallToolResult, McpError> {
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let config = repo.config.clone();
 
     let status = tokio::task::spawn_blocking(move || build_status_response(&storage, &config))
         .await
@@ -29,9 +33,10 @@ pub async fn consolidate(
     server: &CogzServer,
     Parameters(params): Parameters<ConsolidateParams>,
 ) -> Result<CallToolResult, McpError> {
-    let storage = server.storage.clone();
-    let config = server.config.clone();
-    let cogz_dir = server.cogz_dir.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let config = repo.config.clone();
+    let cogz_dir = repo.cogz_dir.clone();
     let dry_run = params.dry_run;
 
     let result = tokio::task::spawn_blocking(move || {
@@ -79,11 +84,12 @@ pub async fn capture_event(
         )
     })?;
 
-    let storage = server.storage.clone();
-    let config = server.config.clone();
-    let cogz_dir = server.cogz_dir.clone();
-    let query_model = server.query_model.clone();
-    let code_model = server.code_model.clone();
+    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let storage = repo.storage.clone();
+    let config = repo.config.clone();
+    let cogz_dir = repo.cogz_dir.clone();
+    let query_model = repo.query_model.clone();
+    let code_model = repo.code_model.clone();
     let prompt = params.prompt.clone();
     let tool_name = params.tool_name.clone();
     let tool_result = params.tool_result.clone();

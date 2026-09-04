@@ -1,21 +1,26 @@
 //! MCP server handler — implements `ServerHandler` for CogZ.
+//!
+//! The server holds a cache of `RepoState` entries keyed by canonical
+//! repo path. Tool calls specify which repo they target via an optional
+//! `repo` parameter. If omitted, the server falls back to a default
+//! repo (provided via `--repo` at startup) or cwd.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
-use rmcp::{ServerHandler, ServiceExt, model::*, tool_handler, transport::stdio};
+use rmcp::{
+    ErrorData as McpError, ServerHandler, ServiceExt, model::*, tool_handler, transport::stdio,
+};
 
 use crate::config::Config;
 use crate::embed::{ModelType, OnnxEmbeddingModel, OnnxNliModel};
+use crate::mcp::errors::{mcp_internal_error, mcp_invalid_parameter};
 use crate::storage::Storage;
 
-/// The MCP server. Holds shared state accessible to all tool handlers.
-/// The `query_model` is a persistent ONNX model used for query embedding
-/// — it loads lazily on first use and is reused across calls to avoid
-/// reloading the model from disk on every search. The `code_model` is
-/// used when `code_search` is requested (CodeRankEmbed with query prefix).
-/// The `nli_model` is used for contradiction detection on insert.
-pub struct CogzServer {
+/// Per-repo state: DB connection, config, file root, and model instances.
+/// One of these exists for each repo the server has opened.
+pub struct RepoState {
     pub storage: Arc<Storage>,
     pub config: Config,
     pub cogz_dir: PathBuf,
@@ -24,20 +29,26 @@ pub struct CogzServer {
     pub nli_model: Arc<OnnxNliModel>,
 }
 
-impl CogzServer {
-    pub fn new(storage: Arc<Storage>, config: Config, cogz_dir: PathBuf) -> Self {
-        let models_dir = crate::embed::models_dir();
-        Self::with_models_dir(storage, config, cogz_dir, &models_dir)
-    }
+/// The MCP server. Holds a cache of repo states so tool calls can
+/// target any repo with a `.cogz/` directory. Models are lazy-loaded
+/// per repo — opening a repo doesn't load ONNX models until first use.
+pub struct CogzServer {
+    repos: Mutex<HashMap<PathBuf, Arc<RepoState>>>,
+    models_dir: PathBuf,
+    default_repo: Option<PathBuf>,
+}
 
-    /// Create a server with an explicit models directory. Used by tests
-    /// to isolate from the real model cache.
+impl CogzServer {
+    /// Create a server with a pre-loaded default repo. Used when
+    /// `--repo` is passed to `mcp-stdio` and by tests.
     pub fn with_models_dir(
         storage: Arc<Storage>,
         config: Config,
         cogz_dir: PathBuf,
-        models_dir: &std::path::Path,
+        models_dir: &Path,
     ) -> Self {
+        let repo_root = cogz_dir.parent().unwrap_or(&cogz_dir).to_path_buf();
+
         let query_model = Arc::new(OnnxEmbeddingModel::with_resource_config(
             ModelType::Knowledge,
             models_dir,
@@ -60,14 +71,119 @@ impl CogzServer {
             config.embedding.model_idle_ttl,
             config.embedding.model_min_free_mb,
         ));
+
+        let state = Arc::new(RepoState {
+            storage,
+            config,
+            cogz_dir: cogz_dir.clone(),
+            query_model,
+            code_model,
+            nli_model,
+        });
+
+        let mut repos = HashMap::new();
+        repos.insert(repo_root.clone(), state);
+
         Self {
+            repos: Mutex::new(repos),
+            models_dir: models_dir.to_path_buf(),
+            default_repo: Some(repo_root),
+        }
+    }
+
+    /// Create an empty server with no pre-loaded repos. Tool calls
+    /// must specify `repo` or the server tries cwd.
+    pub fn empty(models_dir: &Path) -> Self {
+        Self {
+            repos: Mutex::new(HashMap::new()),
+            models_dir: models_dir.to_path_buf(),
+            default_repo: None,
+        }
+    }
+
+    /// Resolve a repo from the cache or open it on demand.
+    /// If `repo` is None, falls back to `default_repo` or cwd.
+    pub fn resolve_repo(&self, repo: Option<&str>) -> Result<Arc<RepoState>, McpError> {
+        let path = match repo {
+            Some(r) => PathBuf::from(r),
+            None => match &self.default_repo {
+                Some(d) => d.clone(),
+                None => std::env::current_dir()
+                    .map_err(|e| mcp_internal_error("resolve_repo", &e.to_string()))?,
+            },
+        };
+
+        let canonical = path.canonicalize().unwrap_or(path);
+
+        // Fast path: cache hit (brief lock, no I/O).
+        {
+            let repos = self.repos.lock().unwrap();
+            if let Some(state) = repos.get(&canonical) {
+                return Ok(state.clone());
+            }
+        }
+
+        // Slow path: open a new repo.
+        let cogz_dir = canonical.join(".cogz");
+        let config_path = cogz_dir.join("config.toml");
+        if !config_path.exists() {
+            return Err(mcp_invalid_parameter(&format!(
+                "No .cogz/ directory found in {}. Run `cogz init` first.",
+                canonical.display()
+            )));
+        }
+
+        let config = crate::config::load(&config_path)
+            .map_err(|e| mcp_internal_error("config", &e.to_string()))?;
+
+        let db_path = canonical.join(&config.storage.db_path);
+        if !db_path.exists() {
+            return Err(mcp_invalid_parameter(&format!(
+                "Database not found at {}. Run `cogz index` first.",
+                db_path.display()
+            )));
+        }
+
+        let storage = Arc::new(
+            Storage::open(&db_path, config.embedding.dimension)
+                .map_err(|e| mcp_internal_error("storage", &e.to_string()))?,
+        );
+
+        let query_model = Arc::new(OnnxEmbeddingModel::with_resource_config(
+            ModelType::Knowledge,
+            &self.models_dir,
+            config.embedding.dimension,
+            &config.embedding.knowledge_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
+        ));
+        let code_model = Arc::new(OnnxEmbeddingModel::with_resource_config(
+            ModelType::Code,
+            &self.models_dir,
+            config.embedding.dimension,
+            &config.embedding.code_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
+        ));
+        let nli_model = Arc::new(OnnxNliModel::with_resource_config(
+            &self.models_dir,
+            &config.embedding.nli_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
+        ));
+
+        let state = Arc::new(RepoState {
             storage,
             config,
             cogz_dir,
             query_model,
             code_model,
             nli_model,
-        }
+        });
+
+        let mut repos = self.repos.lock().unwrap();
+        repos.insert(canonical, state.clone());
+        Ok(state)
     }
 }
 
@@ -92,7 +208,10 @@ impl ServerHandler for CogzServer {
                  Tools: record_observation, query_observations, create_rule, \
                  query_rules, create_knowledge, update_knowledge, query_knowledge, \
                  search, get_context, get_status, list_entities, consolidate, \
-                 capture_event."
+                 capture_event. \
+                 All tools accept an optional `repo` parameter (absolute path \
+                 to the project root containing .cogz/). If omitted, the \
+                 server default or cwd is used."
                     .to_string(),
             )
     }

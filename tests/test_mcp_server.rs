@@ -448,7 +448,7 @@ async fn list_entities_returns_ids_and_titles() {
 #[tokio::test]
 async fn update_knowledge_edits_content() {
     let (server, dir) = setup();
-    let storage = server.storage.clone();
+    let storage = server.resolve_repo(None).unwrap().storage.clone();
     let client = spawn_server(server).await;
 
     // Create knowledge

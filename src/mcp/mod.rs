@@ -18,4 +18,4 @@ pub mod tools_system;
 pub mod tools_write;
 pub mod update_knowledge;
 
-pub use server::CogzServer;
+pub use server::{CogzServer, RepoState};

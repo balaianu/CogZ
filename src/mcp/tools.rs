@@ -122,8 +122,11 @@ impl CogzServer {
         name = "get_status",
         description = "Get CogZ system status: database stats, model availability, entity counts by type, stale entity count."
     )]
-    async fn get_status(&self) -> Result<CallToolResult, McpError> {
-        tools_system::get_status(self).await
+    async fn get_status(
+        &self,
+        params: Parameters<GetStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        tools_system::get_status(self, params).await
     }
 
     #[tool(

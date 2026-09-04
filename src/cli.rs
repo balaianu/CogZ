@@ -225,31 +225,39 @@ pub fn run_context(
     Ok(())
 }
 
-/// Run the MCP server over stdio. Requires an initialized .cogz/
-/// directory and an indexed database.
-pub fn run_mcp_stdio(repo: &std::path::Path) -> anyhow::Result<()> {
-    let cogz_dir = repo.join(".cogz");
-    let config_path = cogz_dir.join("config.toml");
+/// Run the MCP server over stdio. If `repo` is provided, it is
+/// pre-loaded as the default repo. If not, tool calls must specify
+/// `repo` or the server tries cwd.
+pub fn run_mcp_stdio(repo: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let models_dir = crate::cli_embed::models_dir();
 
-    if !config_path.exists() {
-        anyhow::bail!(
-            "No .cogz/ directory found in {}. Run `cogz init` first.",
-            repo.display()
-        );
-    }
+    let server = match repo {
+        Some(r) => {
+            let cogz_dir = r.join(".cogz");
+            let config_path = cogz_dir.join("config.toml");
 
-    let config = cogz::config::load(&config_path)?;
-    let db_path = repo.join(&config.storage.db_path);
+            if !config_path.exists() {
+                anyhow::bail!(
+                    "No .cogz/ directory found in {}. Run `cogz init` first.",
+                    r.display()
+                );
+            }
 
-    if !db_path.exists() {
-        anyhow::bail!(
-            "Database not found at {}. Run `cogz index` first.",
-            db_path.display()
-        );
-    }
+            let config = cogz::config::load(&config_path)?;
+            let db_path = r.join(&config.storage.db_path);
 
-    let storage = std::sync::Arc::new(Storage::open(&db_path, config.embedding.dimension)?);
-    let server = cogz::mcp::CogzServer::new(storage, config, cogz_dir);
+            if !db_path.exists() {
+                anyhow::bail!(
+                    "Database not found at {}. Run `cogz index` first.",
+                    db_path.display()
+                );
+            }
+
+            let storage = std::sync::Arc::new(Storage::open(&db_path, config.embedding.dimension)?);
+            cogz::mcp::CogzServer::with_models_dir(storage, config, cogz_dir, &models_dir)
+        }
+        None => cogz::mcp::CogzServer::empty(&models_dir),
+    };
 
     // tracing must go to stderr, not stdout — stdout is the MCP transport
     tracing::info!("Starting CogZ MCP server over stdio");
