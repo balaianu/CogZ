@@ -187,7 +187,9 @@ pub fn fts_search(
     // BM25 ranking naturally prioritizes documents matching more
     // terms. This is critical for code retrieval: code entities are
     // short and dense, so a 4-word query with AND semantics would
-    // exclude most relevant functions that match only 1-2 terms.
+    // exclude most relevant functions that match only 1-2 terms. It
+    // also ensures queries containing common words (how, does, the)
+    // still return results instead of matching zero documents.
     let escaped_query = query
         .split_whitespace()
         .map(|term| format!("\"{}\"", term.replace('"', "\"\"")))

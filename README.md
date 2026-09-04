@@ -93,6 +93,35 @@ Hooks capture lifecycle events and inject context:
 | `cogz reset [--purge]` | Drop DB (optionally purge observations) |
 | `cogz mcp-stdio` | Run MCP server over stdio |
 
+## Requirements
+
+### Minimum (FTS-only mode)
+
+| Resource | Requirement |
+|---|---|
+| RAM | 256 MB free |
+| Disk | 50 MB (binary + DB, no models) |
+| CPU | any x86_64 or ARM64 |
+
+Works without ONNX Runtime or model downloads. All hooks, FTS search,
+context packs, consolidation, doctor, and prune are functional. Vector
+search, embedding-based dedup, and contradiction detection are not
+available.
+
+### Recommended (hybrid search mode)
+
+| Resource | Requirement |
+|---|---|
+| RAM | 2 GB free |
+| Disk | 550 MB (binary + ONNX Runtime + 3 models + DB) |
+| CPU | any x86_64 or ARM64, 4+ cores speeds up batch embedding |
+
+Full functionality including vector search, semantic dedup, and NLI
+contradiction detection. Models auto-download on first use and
+auto-unload after 5 min idle (RAM drops back to ~11 MB). See
+`docs/evaluations/2026-09-04-resource-profile.md` for the full
+resource consumption profile.
+
 ## Architecture
 
 - **Single Rust binary** — no runtime dependencies except optional
