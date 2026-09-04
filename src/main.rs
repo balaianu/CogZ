@@ -273,12 +273,20 @@ enum ModelsSub {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+    // MCP stdio uses stdout as the transport — tracing must go to
+    // stderr to avoid corrupting the protocol.
+    let is_mcp_stdio = std::env::args().any(|a| a == "mcp-stdio");
+
+    let subscriber = tracing_subscriber::fmt().with_env_filter(
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+    );
+
+    if is_mcp_stdio {
+        subscriber.with_writer(std::io::stderr).init();
+    } else {
+        subscriber.init();
+    }
 
     let cli = Cli::parse();
 

@@ -8,6 +8,7 @@ pub mod dedup;
 pub mod errors;
 pub mod helpers;
 pub mod params;
+pub mod repo_cache;
 pub mod responses;
 pub mod server;
 pub mod status;
@@ -18,4 +19,5 @@ pub mod tools_system;
 pub mod tools_write;
 pub mod update_knowledge;
 
-pub use server::{CogzServer, RepoState};
+pub use repo_cache::RepoState;
+pub use server::CogzServer;
