@@ -263,7 +263,7 @@ pub async fn run_stdio(server: CogzServer) -> anyhow::Result<()> {
 impl ServerHandler for CogzServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2024_11_05)
+            .with_protocol_version(ProtocolVersion::LATEST)
             .with_server_info(Implementation::new("cogz", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "CogZ — local-first engineering cognition runtime. \

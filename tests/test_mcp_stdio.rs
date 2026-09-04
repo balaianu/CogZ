@@ -115,7 +115,7 @@ impl McpClient {
         self.send(
             "initialize",
             serde_json::json!({
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-11-25",
                 "capabilities": {},
                 "clientInfo": {"name": "test", "version": "0.1"},
             }),
@@ -224,7 +224,7 @@ fn mcp_stdio_handshake_and_tools() {
     client.send(
         "initialize",
         serde_json::json!({
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-11-25",
             "capabilities": {},
             "clientInfo": {"name": "test", "version": "0.1"},
         }),
@@ -310,7 +310,7 @@ fn mcp_stdio_tracing_goes_to_stderr_not_stdout() {
     let messages = [
         serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+            "params": {"protocolVersion": "2025-11-25", "capabilities": {},
                        "clientInfo": {"name": "test", "version": "0.1"}}
         }),
         serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
