@@ -61,8 +61,19 @@ async fn spawn_server(
     client
 }
 
-fn call_tool_args(args: serde_json::Value) -> Option<rmcp::model::JsonObject> {
-    args.as_object().map(|m| m.clone().into_iter().collect())
+fn call_tool_args(
+    dir: &std::path::Path,
+    args: serde_json::Value,
+) -> Option<rmcp::model::JsonObject> {
+    let mut map = match args {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    map.insert(
+        "repo".to_string(),
+        serde_json::Value::String(dir.to_str().unwrap().to_string()),
+    );
+    Some(map.into_iter().collect())
 }
 
 fn parse_result(result: rmcp::model::CallToolResult) -> serde_json::Value {
@@ -86,11 +97,14 @@ fn parse_result(result: rmcp::model::CallToolResult) -> serde_json::Value {
 
 #[tokio::test]
 async fn get_status_returns_db_stats() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
-        .call_tool(CallToolRequestParams::new("get_status"))
+        .call_tool(
+            CallToolRequestParams::new("get_status")
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
+        )
         .await
         .unwrap();
     let value = parse_result(result);
@@ -111,11 +125,14 @@ async fn record_observation_creates_file_and_db_entry() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "Found a bug in the search ranking logic",
-                    "title": "Search ranking bug",
-                    "source": "test",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Found a bug in the search ranking logic",
+                        "title": "Search ranking bug",
+                        "source": "test",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -149,11 +166,14 @@ async fn create_rule_creates_file_and_db_entry() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("create_rule").with_arguments(
-                call_tool_args(json!({
-                    "content": "Always use parameterized SQL queries",
-                    "title": "Use parameterized queries",
-                    "confidence": 0.9,
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Always use parameterized SQL queries",
+                        "title": "Use parameterized queries",
+                        "confidence": 0.9,
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -179,12 +199,15 @@ async fn create_knowledge_creates_file_and_db_entry() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "title": "Search Architecture",
-                    "content": "The search pipeline uses FTS5 and optional vector search.",
-                    "category": "architecture",
-                    "tags": ["search", "architecture"],
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "title": "Search Architecture",
+                        "content": "The search pipeline uses FTS5 and optional vector search.",
+                        "category": "architecture",
+                        "tags": ["search", "architecture"],
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -214,17 +237,20 @@ async fn create_knowledge_creates_file_and_db_entry() {
 
 #[tokio::test]
 async fn query_observations_returns_results() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     // Create an observation first
     let _ = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "Test observation content",
-                    "title": "Test observation",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Test observation content",
+                        "title": "Test observation",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -233,7 +259,10 @@ async fn query_observations_returns_results() {
 
     // Query observations
     let result = client
-        .call_tool(CallToolRequestParams::new("query_observations"))
+        .call_tool(
+            CallToolRequestParams::new("query_observations")
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
+        )
         .await
         .unwrap();
     let value = parse_result(result);
@@ -247,16 +276,19 @@ async fn query_observations_returns_results() {
 
 #[tokio::test]
 async fn query_rules_returns_results() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let _ = client
         .call_tool(
             CallToolRequestParams::new("create_rule").with_arguments(
-                call_tool_args(json!({
-                    "content": "Always batch DB queries",
-                    "title": "Batch DB queries",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Always batch DB queries",
+                        "title": "Batch DB queries",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -264,7 +296,10 @@ async fn query_rules_returns_results() {
         .unwrap();
 
     let result = client
-        .call_tool(CallToolRequestParams::new("query_rules"))
+        .call_tool(
+            CallToolRequestParams::new("query_rules")
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
+        )
         .await
         .unwrap();
     let value = parse_result(result);
@@ -277,18 +312,21 @@ async fn query_rules_returns_results() {
 
 #[tokio::test]
 async fn query_knowledge_filters_by_category() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     for (title, category) in [("Search Arch", "architecture"), ("DB Design", "decisions")] {
         let _ = client
             .call_tool(
                 CallToolRequestParams::new("create_knowledge").with_arguments(
-                    call_tool_args(json!({
-                        "title": title,
-                        "content": "content",
-                        "category": category,
-                    }))
+                    call_tool_args(
+                        dir.path(),
+                        json!({
+                            "title": title,
+                            "content": "content",
+                            "category": category,
+                        }),
+                    )
                     .unwrap(),
                 ),
             )
@@ -298,8 +336,9 @@ async fn query_knowledge_filters_by_category() {
 
     let result = client
         .call_tool(
-            CallToolRequestParams::new("query_knowledge")
-                .with_arguments(call_tool_args(json!({"category": "architecture"})).unwrap()),
+            CallToolRequestParams::new("query_knowledge").with_arguments(
+                call_tool_args(dir.path(), json!({"category": "architecture"})).unwrap(),
+            ),
         )
         .await
         .unwrap();
@@ -313,7 +352,7 @@ async fn query_knowledge_filters_by_category() {
 
 #[tokio::test]
 async fn search_returns_fts_results() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     for (title, content) in [
@@ -323,11 +362,14 @@ async fn search_returns_fts_results() {
         let _ = client
             .call_tool(
                 CallToolRequestParams::new("create_knowledge").with_arguments(
-                    call_tool_args(json!({
-                        "title": title,
-                        "content": content,
-                        "category": "search",
-                    }))
+                    call_tool_args(
+                        dir.path(),
+                        json!({
+                            "title": title,
+                            "content": content,
+                            "category": "search",
+                        }),
+                    )
                     .unwrap(),
                 ),
             )
@@ -338,7 +380,7 @@ async fn search_returns_fts_results() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("search")
-                .with_arguments(call_tool_args(json!({"query": "ranking"})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({"query": "ranking"})).unwrap()),
         )
         .await
         .unwrap();
@@ -352,16 +394,19 @@ async fn search_returns_fts_results() {
 
 #[tokio::test]
 async fn get_context_cold_start() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let _ = client
         .call_tool(
             CallToolRequestParams::new("create_rule").with_arguments(
-                call_tool_args(json!({
-                    "content": "Always use typed errors",
-                    "title": "Typed errors rule",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Always use typed errors",
+                        "title": "Typed errors rule",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -371,7 +416,7 @@ async fn get_context_cold_start() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("get_context")
-                .with_arguments(call_tool_args(json!({"mode": "cold_start"})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({"mode": "cold_start"})).unwrap()),
         )
         .await
         .unwrap();
@@ -383,13 +428,13 @@ async fn get_context_cold_start() {
 
 #[tokio::test]
 async fn get_context_task_requires_query() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("get_context")
-                .with_arguments(call_tool_args(json!({"mode": "task"})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({"mode": "task"})).unwrap()),
         )
         .await;
     assert!(result.is_err(), "task mode without query should error");
@@ -397,15 +442,15 @@ async fn get_context_task_requires_query() {
 
 #[tokio::test]
 async fn get_context_invalid_mode_errors() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
-    let result = client
-        .call_tool(
-            CallToolRequestParams::new("get_context")
-                .with_arguments(call_tool_args(json!({"mode": "invalid_mode"})).unwrap()),
-        )
-        .await;
+    let result =
+        client
+            .call_tool(CallToolRequestParams::new("get_context").with_arguments(
+                call_tool_args(dir.path(), json!({"mode": "invalid_mode"})).unwrap(),
+            ))
+            .await;
     assert!(result.is_err(), "invalid mode should error");
 }
 
@@ -413,29 +458,32 @@ async fn get_context_invalid_mode_errors() {
 
 #[tokio::test]
 async fn list_entities_returns_ids_and_titles() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let _ = client
         .call_tool(
             CallToolRequestParams::new("create_rule").with_arguments(
-                call_tool_args(json!({
-                    "content": "Test rule",
-                    "title": "Test rule title",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Test rule",
+                        "title": "Test rule title",
+                    }),
+                )
                 .unwrap(),
             ),
         )
         .await
         .unwrap();
 
-    let result = client
-        .call_tool(
-            CallToolRequestParams::new("list_entities")
-                .with_arguments(call_tool_args(json!({"entity_type": "rule"})).unwrap()),
-        )
-        .await
-        .unwrap();
+    let result =
+        client
+            .call_tool(CallToolRequestParams::new("list_entities").with_arguments(
+                call_tool_args(dir.path(), json!({"entity_type": "rule"})).unwrap(),
+            ))
+            .await
+            .unwrap();
     let value = parse_result(result);
 
     assert_eq!(value["entity_type"], "rule");
@@ -448,18 +496,22 @@ async fn list_entities_returns_ids_and_titles() {
 #[tokio::test]
 async fn update_knowledge_edits_content() {
     let (server, dir) = setup();
-    let storage = server.resolve_repo(None).unwrap().storage.clone();
+    let repo_path = dir.path().to_str().unwrap().to_string();
+    let storage = server.resolve_repo(&repo_path).unwrap().storage.clone();
     let client = spawn_server(server).await;
 
     // Create knowledge
     let create_result = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "title": "Original title",
-                    "content": "Original content",
-                    "category": "test",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "title": "Original title",
+                        "content": "Original content",
+                        "category": "test",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -472,11 +524,14 @@ async fn update_knowledge_edits_content() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("update_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "id": entity_id,
-                    "content": "Updated content",
-                    "title": "Updated title",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "id": entity_id,
+                        "content": "Updated content",
+                        "title": "Updated title",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -506,16 +561,19 @@ async fn update_knowledge_edits_content() {
 
 #[tokio::test]
 async fn update_knowledge_nonexistent_id_errors() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("update_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "id": "nonexistent-uuid",
-                    "content": "content",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "id": "nonexistent-uuid",
+                        "content": "content",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -527,17 +585,20 @@ async fn update_knowledge_nonexistent_id_errors() {
 
 #[tokio::test]
 async fn record_observation_duplicate_title_warns() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     // First observation
     let _ = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "First observation",
-                    "title": "Duplicate title",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "First observation",
+                        "title": "Duplicate title",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -548,10 +609,13 @@ async fn record_observation_duplicate_title_warns() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "Second observation",
-                    "title": "Duplicate title",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Second observation",
+                        "title": "Duplicate title",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -590,7 +654,8 @@ async fn db_rebuildable_from_files_after_mcp_writes() {
     ] {
         let _ = client
             .call_tool(
-                CallToolRequestParams::new(tool).with_arguments(call_tool_args(args).unwrap()),
+                CallToolRequestParams::new(tool)
+                    .with_arguments(call_tool_args(dir.path(), args).unwrap()),
             )
             .await
             .unwrap();
@@ -625,17 +690,20 @@ async fn db_rebuildable_from_files_after_mcp_writes() {
 
 #[tokio::test]
 async fn query_observations_defaults_to_active_status() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     // Create an observation
     let _ = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "Active observation content",
-                    "title": "Active obs",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Active observation content",
+                        "title": "Active obs",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -646,7 +714,7 @@ async fn query_observations_defaults_to_active_status() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("query_observations")
-                .with_arguments(call_tool_args(json!({})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
         )
         .await
         .unwrap();
@@ -657,7 +725,7 @@ async fn query_observations_defaults_to_active_status() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("query_observations")
-                .with_arguments(call_tool_args(json!({"status": "all"})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({"status": "all"})).unwrap()),
         )
         .await
         .unwrap();
@@ -672,18 +740,21 @@ async fn query_observations_defaults_to_active_status() {
 
 #[tokio::test]
 async fn query_response_includes_references_field() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     // Create a knowledge entry first to get a reference target
     let kn_result = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "title": "Architecture knowledge",
-                    "content": "The system uses SQLite",
-                    "category": "architecture",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "title": "Architecture knowledge",
+                        "content": "The system uses SQLite",
+                        "category": "architecture",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -696,11 +767,14 @@ async fn query_response_includes_references_field() {
     let _ = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "Confirmed the architecture",
-                    "title": "Architecture confirmed",
-                    "references": [kn_id],
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Confirmed the architecture",
+                        "title": "Architecture confirmed",
+                        "references": [kn_id],
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -711,7 +785,7 @@ async fn query_response_includes_references_field() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("query_observations")
-                .with_arguments(call_tool_args(json!({})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
         )
         .await
         .unwrap();
@@ -730,18 +804,21 @@ async fn query_response_includes_references_field() {
 
 #[tokio::test]
 async fn query_observations_with_references_filter() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     // Create a knowledge entry as the reference target
     let kn_result = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "title": "Reference target",
-                    "content": "Target knowledge",
-                    "category": "test",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "title": "Reference target",
+                        "content": "Target knowledge",
+                        "category": "test",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -755,11 +832,14 @@ async fn query_observations_with_references_filter() {
         let _ = client
             .call_tool(
                 CallToolRequestParams::new("record_observation").with_arguments(
-                    call_tool_args(json!({
-                        "content": format!("Observation {i}"),
-                        "title": format!("Obs {i}"),
-                        "references": refs,
-                    }))
+                    call_tool_args(
+                        dir.path(),
+                        json!({
+                            "content": format!("Observation {i}"),
+                            "title": format!("Obs {i}"),
+                            "references": refs,
+                        }),
+                    )
                     .unwrap(),
                 ),
             )
@@ -772,10 +852,13 @@ async fn query_observations_with_references_filter() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("query_observations").with_arguments(
-                call_tool_args(json!({
-                    "references": kn_id,
-                    "limit": 20,
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "references": kn_id,
+                        "limit": 20,
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -792,18 +875,21 @@ async fn query_observations_with_references_filter() {
 
 #[tokio::test]
 async fn query_knowledge_response_includes_category_and_tags() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let _ = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "title": "Tagged knowledge",
-                    "content": "Important info",
-                    "category": "testing",
-                    "tags": ["rust", "sqlite"],
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "title": "Tagged knowledge",
+                        "content": "Important info",
+                        "category": "testing",
+                        "tags": ["rust", "sqlite"],
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -813,7 +899,7 @@ async fn query_knowledge_response_includes_category_and_tags() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("query_knowledge")
-                .with_arguments(call_tool_args(json!({})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
         )
         .await
         .unwrap();
@@ -829,11 +915,14 @@ async fn query_knowledge_response_includes_category_and_tags() {
 
 #[tokio::test]
 async fn get_status_includes_models_and_db_path() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
-        .call_tool(CallToolRequestParams::new("get_status"))
+        .call_tool(
+            CallToolRequestParams::new("get_status")
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
+        )
         .await
         .unwrap();
     let value = parse_result(result);
@@ -868,16 +957,19 @@ async fn get_status_includes_models_and_db_path() {
 
 #[tokio::test]
 async fn record_observation_defaults_source_to_agent() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "Observation without explicit source",
-                    "title": "No source obs",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Observation without explicit source",
+                        "title": "No source obs",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -889,7 +981,7 @@ async fn record_observation_defaults_source_to_agent() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("query_observations")
-                .with_arguments(call_tool_args(json!({})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
         )
         .await
         .unwrap();
@@ -911,10 +1003,13 @@ async fn record_observation_defaults_confidence_to_half() {
     let _ = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
-                    "content": "Observation without explicit confidence",
-                    "title": "Default confidence obs",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Observation without explicit confidence",
+                        "title": "Default confidence obs",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -944,16 +1039,19 @@ async fn record_observation_defaults_confidence_to_half() {
 
 #[tokio::test]
 async fn create_rule_defaults_confidence_to_1() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let _ = client
         .call_tool(
             CallToolRequestParams::new("create_rule").with_arguments(
-                call_tool_args(json!({
-                    "content": "Rule without explicit confidence",
-                    "title": "Default confidence rule",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "content": "Rule without explicit confidence",
+                        "title": "Default confidence rule",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -964,7 +1062,7 @@ async fn create_rule_defaults_confidence_to_1() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("query_rules")
-                .with_arguments(call_tool_args(json!({})).unwrap()),
+                .with_arguments(call_tool_args(dir.path(), json!({})).unwrap()),
         )
         .await
         .unwrap();
@@ -988,11 +1086,14 @@ async fn update_knowledge_category_change_moves_file() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "title": "Movable knowledge",
-                    "content": "Will be recategorized",
-                    "category": "original",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "title": "Movable knowledge",
+                        "content": "Will be recategorized",
+                        "category": "original",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -1014,11 +1115,14 @@ async fn update_knowledge_category_change_moves_file() {
     let _ = client
         .call_tool(
             CallToolRequestParams::new("update_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "id": id,
-                    "content": "Updated content",
-                    "category": "recategorized",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "id": id,
+                        "content": "Updated content",
+                        "category": "recategorized",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -1041,15 +1145,18 @@ async fn update_knowledge_category_change_moves_file() {
 
 #[tokio::test]
 async fn capture_event_session_start_returns_context_pack() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("capture_event").with_arguments(
-                call_tool_args(json!({
-                    "event_type": "session_start",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "event_type": "session_start",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -1075,11 +1182,14 @@ async fn capture_event_post_tool_use_records_event_only() {
     let result = client
         .call_tool(
             CallToolRequestParams::new("capture_event").with_arguments(
-                call_tool_args(json!({
-                    "event_type": "post_tool_use",
-                    "tool_name": "edit_file",
-                    "tool_result": "modified src/main.rs",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "event_type": "post_tool_use",
+                        "tool_name": "edit_file",
+                        "tool_result": "modified src/main.rs",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -1115,15 +1225,18 @@ async fn capture_event_post_tool_use_records_event_only() {
 
 #[tokio::test]
 async fn capture_event_invalid_type_returns_error() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("capture_event").with_arguments(
-                call_tool_args(json!({
-                    "event_type": "invalid_event",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "event_type": "invalid_event",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -1150,17 +1263,20 @@ async fn mcp_server_lists_13_tools() {
 
 #[tokio::test]
 async fn create_knowledge_rejects_secret() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
-                    "title": "API credentials",
-                    "content": "The API key is ghp_1234567890abcdefghijklmnopqrstuvwxyz",
-                    "category": "secrets",
-                }))
+                call_tool_args(
+                    dir.path(),
+                    json!({
+                        "title": "API credentials",
+                        "content": "The API key is ghp_1234567890abcdefghijklmnopqrstuvwxyz",
+                        "category": "secrets",
+                    }),
+                )
                 .unwrap(),
             ),
         )
@@ -1177,13 +1293,13 @@ async fn create_knowledge_rejects_secret() {
 
 #[tokio::test]
 async fn record_observation_rejects_secret() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("record_observation").with_arguments(
-                call_tool_args(json!({
+                call_tool_args(dir.path(), json!({
                     "content": "Found private key: -----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA",
                 }))
                 .unwrap(),
@@ -1202,13 +1318,13 @@ async fn record_observation_rejects_secret() {
 
 #[tokio::test]
 async fn create_knowledge_allows_non_secret_content() {
-    let (server, _dir) = setup();
+    let (server, dir) = setup();
     let client = spawn_server(server).await;
 
     let result = client
         .call_tool(
             CallToolRequestParams::new("create_knowledge").with_arguments(
-                call_tool_args(json!({
+                call_tool_args(dir.path(), json!({
                     "title": "API design notes",
                     "content": "When using API keys, store them in environment variables, not in code.",
                     "category": "architecture",

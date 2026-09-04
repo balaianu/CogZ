@@ -18,7 +18,7 @@ pub async fn search(
     server: &CogzServer,
     Parameters(params): Parameters<SearchToolParams>,
 ) -> Result<CallToolResult, McpError> {
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let search_config = repo.config.search.clone();
     let default_limit = repo.config.search.max_results;
@@ -70,7 +70,7 @@ pub async fn get_context(
     let mode_str = params.mode.as_deref().unwrap_or("task");
     let mode = parse_context_mode(mode_str, params.query.as_deref())?;
     let query_str = params.query.clone();
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let config = repo.config.clone();
     let query_model = repo.query_model.clone();

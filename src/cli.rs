@@ -225,39 +225,13 @@ pub fn run_context(
     Ok(())
 }
 
-/// Run the MCP server over stdio. If `repo` is provided, it is
-/// pre-loaded as the default repo. If not, tool calls must specify
-/// `repo` or the server tries cwd.
-pub fn run_mcp_stdio(repo: Option<&std::path::Path>) -> anyhow::Result<()> {
+/// Run the MCP server over stdio. The server starts with no
+/// pre-loaded repos. Every tool call must provide a `repo` parameter
+/// specifying the project root. The server opens and caches repos
+/// on demand.
+pub fn run_mcp_stdio() -> anyhow::Result<()> {
     let models_dir = crate::cli_embed::models_dir();
-
-    let server = match repo {
-        Some(r) => {
-            let cogz_dir = r.join(".cogz");
-            let config_path = cogz_dir.join("config.toml");
-
-            if !config_path.exists() {
-                anyhow::bail!(
-                    "No .cogz/ directory found in {}. Run `cogz init` first.",
-                    r.display()
-                );
-            }
-
-            let config = cogz::config::load(&config_path)?;
-            let db_path = r.join(&config.storage.db_path);
-
-            if !db_path.exists() {
-                anyhow::bail!(
-                    "Database not found at {}. Run `cogz index` first.",
-                    db_path.display()
-                );
-            }
-
-            let storage = std::sync::Arc::new(Storage::open(&db_path, config.embedding.dimension)?);
-            cogz::mcp::CogzServer::with_models_dir(storage, config, cogz_dir, &models_dir)
-        }
-        None => cogz::mcp::CogzServer::empty(&models_dir),
-    };
+    let server = cogz::mcp::CogzServer::with_models_dir_only(&models_dir);
 
     // tracing must go to stderr, not stdout — stdout is the MCP transport
     tracing::info!("Starting CogZ MCP server over stdio");

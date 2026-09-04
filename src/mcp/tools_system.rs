@@ -17,7 +17,7 @@ pub async fn get_status(
     server: &CogzServer,
     Parameters(params): Parameters<GetStatusParams>,
 ) -> Result<CallToolResult, McpError> {
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let config = repo.config.clone();
 
@@ -33,7 +33,7 @@ pub async fn consolidate(
     server: &CogzServer,
     Parameters(params): Parameters<ConsolidateParams>,
 ) -> Result<CallToolResult, McpError> {
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let config = repo.config.clone();
     let cogz_dir = repo.cogz_dir.clone();
@@ -84,7 +84,7 @@ pub async fn capture_event(
         )
     })?;
 
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let config = repo.config.clone();
     let cogz_dir = repo.cogz_dir.clone();

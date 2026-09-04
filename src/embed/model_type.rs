@@ -6,7 +6,7 @@ use super::registry;
 
 /// Which embedding model to use — determines the model file path
 /// and tokenizer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ModelType {
     /// Code embedding model (CodeRankEmbed-int8).
     Code,

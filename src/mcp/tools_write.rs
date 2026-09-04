@@ -22,7 +22,7 @@ pub async fn record_observation(
     Parameters(params): Parameters<RecordObservationParams>,
 ) -> Result<CallToolResult, McpError> {
     let title = params.title.unwrap_or_else(|| auto_title(&params.content));
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let config = repo.config.clone();
     let cogz_dir = repo.cogz_dir.clone();
@@ -68,7 +68,7 @@ pub async fn create_rule(
     Parameters(params): Parameters<CreateRuleParams>,
 ) -> Result<CallToolResult, McpError> {
     let title = params.title.unwrap_or_else(|| auto_title(&params.content));
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let config = repo.config.clone();
     let cogz_dir = repo.cogz_dir.clone();
@@ -106,7 +106,7 @@ pub async fn create_knowledge(
     server: &CogzServer,
     Parameters(params): Parameters<CreateKnowledgeParams>,
 ) -> Result<CallToolResult, McpError> {
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let config = repo.config.clone();
     let cogz_dir = repo.cogz_dir.clone();
@@ -149,7 +149,7 @@ pub async fn update_knowledge(
     server: &CogzServer,
     Parameters(params): Parameters<UpdateKnowledgeParams>,
 ) -> Result<CallToolResult, McpError> {
-    let repo = server.resolve_repo(params.repo.as_deref())?;
+    let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
     let cogz_dir = repo.cogz_dir.clone();
     let query_model = repo.query_model.clone();
