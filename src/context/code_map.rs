@@ -69,7 +69,9 @@ pub fn code_map_sections(conn: &Connection, status: Option<&str>) -> Vec<Context
     // Key files — ranked by outgoing contains edge count (how many
     // symbols the file defines). This is a richness signal: files with
     // many functions/classes/modules are structurally substantial.
-    // Test files are excluded by path pattern to avoid noise.
+    // Test files are excluded using the shared language-aware
+    // is_test_file function. We over-fetch (LIMIT 50) and filter in
+    // Rust to ensure we get 15 non-test files after filtering.
     let key_files: Vec<(String, String, i64)> = {
         let sql = match status {
             Some(_) => {
@@ -78,13 +80,9 @@ pub fn code_map_sections(conn: &Connection, status: Option<&str>) -> Vec<Context
                  JOIN entities e ON ed.source_id = e.id
                  WHERE e.type = 'file' AND e.status = ?
                    AND ed.edge_type = 'contains'
-                   AND NOT (e.file_path LIKE 'tests/%'
-                     OR e.file_path LIKE '%/tests/%'
-                     OR e.file_path LIKE '%/tests.rs'
-                     OR e.file_path LIKE '%_tests.rs')
                  GROUP BY e.id
                  ORDER BY symbol_count DESC
-                 LIMIT 15"
+                 LIMIT 50"
             }
             None => {
                 "SELECT e.title, e.file_path, COUNT(*) as symbol_count
@@ -92,13 +90,9 @@ pub fn code_map_sections(conn: &Connection, status: Option<&str>) -> Vec<Context
                  JOIN entities e ON ed.source_id = e.id
                  WHERE e.type = 'file'
                    AND ed.edge_type = 'contains'
-                   AND NOT (e.file_path LIKE 'tests/%'
-                     OR e.file_path LIKE '%/tests/%'
-                     OR e.file_path LIKE '%/tests.rs'
-                     OR e.file_path LIKE '%_tests.rs')
                  GROUP BY e.id
                  ORDER BY symbol_count DESC
-                 LIMIT 15"
+                 LIMIT 50"
             }
         };
         let mut stmt = match conn.prepare(sql) {
@@ -109,10 +103,14 @@ pub fn code_map_sections(conn: &Connection, status: Option<&str>) -> Vec<Context
             Some(s) => stmt.query_map(rusqlite::params![s], row_mapper),
             None => stmt.query_map([], row_mapper),
         };
-        match result {
+        let rows: Vec<(String, String, i64)> = match result {
             Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
             Err(_) => return sections,
-        }
+        };
+        rows.into_iter()
+            .filter(|(_, path, _)| !crate::index::is_test_file(path))
+            .take(15)
+            .collect()
     };
 
     if !key_files.is_empty() {

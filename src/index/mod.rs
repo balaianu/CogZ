@@ -18,6 +18,7 @@ use crate::config::Config;
 use crate::storage;
 use crate::storage::crud::EntityType;
 
+pub use gitignore::is_test_file;
 pub use sync::{CodeSyncResult, mark_stale_for_deleted_files};
 
 /// Index code entities from the repository.
@@ -32,6 +33,7 @@ pub fn index_code(storage: &storage::Storage, repo_root: &Path, config: &Config)
     let source_paths = gitignore::scan_source_files(&gitignore::ScanConfig {
         root: repo_root,
         allow: &config.index.allow,
+        deny: &config.index.deny,
     });
 
     // Phase 2: read and parse all source files in a single pass.

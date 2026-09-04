@@ -119,7 +119,8 @@ pub fn expand_with_paths(
             };
 
             // Filter out test code entities when include_tests is false.
-            // Uses a batch query to check file_path patterns.
+            // Uses the shared language-aware is_test_file function for
+            // consistent test detection across all supported languages.
             let final_candidates = if include_tests {
                 status_filtered
             } else {
@@ -127,7 +128,7 @@ pub fn expand_with_paths(
                     .iter()
                     .map(|(id, _, _)| id.clone())
                     .collect();
-                let test_ids = batch_check_test_paths(conn, &ids)?;
+                let test_ids = batch_check_test_paths_rust(conn, &ids)?;
                 let test_set: HashSet<&String> = test_ids.iter().collect();
                 status_filtered
                     .into_iter()
@@ -188,12 +189,18 @@ fn batch_check_status(
     Ok(matching)
 }
 
-/// Batch-check which entity IDs have test file paths. Returns the
-/// subset of `ids` whose `file_path` matches test patterns.
-fn batch_check_test_paths(conn: &Connection, ids: &[String]) -> Result<Vec<String>, StorageError> {
+/// Batch-check which entity IDs have test file paths. Fetches
+/// file_path for each ID in a single batched query, then filters
+/// using the shared language-aware `is_test_file` function.
+fn batch_check_test_paths_rust(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<Vec<String>, StorageError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
+
+    use crate::index::is_test_file;
 
     const CHUNK_SIZE: usize = 998;
 
@@ -206,17 +213,18 @@ fn batch_check_test_paths(conn: &Connection, ids: &[String]) -> Result<Vec<Strin
         let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
         let params: Vec<&dyn rusqlite::ToSql> =
             chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-        let sql = format!(
-            "SELECT id FROM entities WHERE id IN ({placeholders}) \
-             AND (file_path LIKE 'tests/%' \
-             OR file_path LIKE '%/tests/%' \
-             OR file_path LIKE '%/tests.rs' \
-             OR file_path LIKE '%_tests.rs')"
-        );
+        let sql = format!("SELECT id, file_path FROM entities WHERE id IN ({placeholders})");
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
         for row in rows {
-            matching.push(row?);
+            let (id, file_path) = row?;
+            if let Some(ref fp) = file_path
+                && is_test_file(fp)
+            {
+                matching.push(id);
+            }
         }
     }
 

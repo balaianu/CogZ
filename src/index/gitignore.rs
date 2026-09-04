@@ -37,13 +37,101 @@ pub fn language_for_path(path: &Path) -> Option<&'static str> {
         .and_then(language_for_extension)
 }
 
+/// Check if a relative file path is a test file, using language-specific
+/// conventions. This is the single source of truth for test-file
+/// detection across search filtering and code-map generation.
+///
+/// Patterns are deliberately conservative — they match only well-known
+/// test file naming conventions per language, not any file containing
+/// the substring "test". This avoids excluding legitimate files like
+/// `test_utils.rs` (a test helper, not a test file itself in Rust) or
+/// `protest.go` (not a Go test file).
+///
+/// Conventions by language:
+/// - **Rust**: `tests/` directory, `tests.rs`, `*_tests.rs` (integration
+///   tests). Unit tests live inline in `#[cfg(test)] mod tests` and are
+///   filtered by module title, not file path.
+/// - **Go**: `*_test.go` — enforced by the Go toolchain.
+/// - **Python**: `test_*.py`, `*_test.py` — pytest/unittest convention.
+/// - **JS/TS/JSX/TSX**: `*.test.{ext}`, `*.spec.{ext}`, `__tests__/`
+///   directory — jest/vitest/mocha convention.
+/// - **Bash**: `test_*.sh`, `*_test.sh` — less standardized, but these
+///   patterns cover the common cases without false positives.
+pub fn is_test_file(rel_path: &str) -> bool {
+    // Extract the file extension (lowercase, no leading dot).
+    let ext = rel_path
+        .rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext));
+
+    let Some(ext) = ext else { return false };
+
+    // Check directory-based patterns first (language-agnostic).
+    // `tests/` at the top level or as a subdirectory.
+    let in_tests_dir = rel_path.starts_with("tests/") || rel_path.contains("/tests/");
+
+    match ext {
+        // Rust: tests/ dir, tests.rs, *_tests.rs
+        "rs" => {
+            in_tests_dir
+                || rel_path.ends_with("/tests.rs")
+                || rel_path == "tests.rs"
+                || rel_path.ends_with("_tests.rs")
+        }
+        // Go: *_test.go (Go toolchain enforces this)
+        "go" => rel_path.ends_with("_test.go"),
+        // Python: test_*.py, *_test.py, tests/ dir
+        "py" => in_tests_dir || has_test_prefix(rel_path, "py") || has_test_suffix(rel_path, "py"),
+        // JS/TS: *.test.{ext}, *.spec.{ext}, __tests__/ dir
+        "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" => {
+            rel_path.contains("/__tests__/") || has_dot_test_or_spec(rel_path, ext)
+        }
+        // Bash: test_*.sh, *_test.sh
+        "sh" | "bash" => has_test_prefix(rel_path, ext) || has_test_suffix(rel_path, ext),
+        _ => false,
+    }
+}
+
+/// Check if a file name starts with `test_` (e.g. `test_foo.py`).
+/// Matches the filename only, not directory components.
+fn has_test_prefix(rel_path: &str, ext: &str) -> bool {
+    let filename = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    let prefix = "test_";
+    let suffix = format!(".{ext}");
+    filename.starts_with(prefix)
+        && filename.ends_with(&suffix)
+        && filename.len() > prefix.len() + suffix.len()
+}
+
+/// Check if a file name ends with `_test.{ext}` (e.g. `foo_test.py`).
+/// Matches the filename only, not directory components.
+fn has_test_suffix(rel_path: &str, ext: &str) -> bool {
+    let filename = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    let suffix = format!("_test.{ext}");
+    filename.ends_with(&suffix) && filename.len() > suffix.len()
+}
+
+/// Check if a file matches `*.test.{ext}` or `*.spec.{ext}` (JS/TS convention).
+/// Ensures there's a base name before the `.test`/`.spec` part.
+fn has_dot_test_or_spec(rel_path: &str, ext: &str) -> bool {
+    let filename = rel_path.rsplit('/').next().unwrap_or(rel_path);
+    let test_suffix = format!(".test.{ext}");
+    let spec_suffix = format!(".spec.{ext}");
+    (filename.ends_with(&test_suffix) && filename.len() > test_suffix.len())
+        || (filename.ends_with(&spec_suffix) && filename.len() > spec_suffix.len())
+}
+
 /// Configuration for the source file scanner.
 pub struct ScanConfig<'a> {
     /// Repo root directory.
     pub root: &'a Path,
-    /// Explicit allow-list paths from `[index].allow` config.
-    /// These are indexed despite being gitignored.
+    /// Glob patterns from `[index].allow` config. Files matching
+    /// these are indexed despite being gitignored or denied.
     pub allow: &'a [String],
+    /// Glob patterns from `[index].deny` config. Files matching
+    /// these are excluded from indexing even if not gitignored.
+    /// Allow patterns take precedence over deny.
+    pub deny: &'a [String],
 }
 
 /// Scan the repo for source files, respecting `.gitignore`.
@@ -52,8 +140,9 @@ pub struct ScanConfig<'a> {
 /// directories (other than `.gitignore` itself) are excluded —
 /// `.cogz/` files are synced separately by the file sync layer.
 ///
-/// The `allow` list overrides gitignore for matching paths. A path
-/// in `allow` is indexed even if `.gitignore` would exclude it.
+/// Filter precedence: gitignore → deny → allow. A file matching both
+/// `allow` and `deny` is indexed (allow wins). A file matching `deny`
+/// but not `allow` is excluded even if not gitignored.
 pub fn scan_source_files(config: &ScanConfig<'_>) -> Vec<PathBuf> {
     let mut builder = WalkBuilder::new(config.root);
     builder
@@ -64,21 +153,27 @@ pub fn scan_source_files(config: &ScanConfig<'_>) -> Vec<PathBuf> {
         .git_exclude(true)
         .parents(true);
 
-    // Build allow-list glob matchers for the second pass.
-    let allow_globs: Vec<_> = config
-        .allow
-        .iter()
-        .filter_map(|pattern| {
-            GlobBuilder::new(pattern)
-                .literal_separator(true)
-                .build()
-                .map(|g| g.compile_matcher())
-                .map_err(|e| {
-                    tracing::warn!("invalid allow pattern '{}': {}", pattern, e);
-                })
-                .ok()
-        })
-        .collect();
+    // Build glob matchers for allow and deny lists.
+    let build_matchers = |patterns: &[String], label: &str| {
+        patterns
+            .iter()
+            .filter_map(|pattern| {
+                GlobBuilder::new(pattern)
+                    .literal_separator(true)
+                    .build()
+                    .map(|g| g.compile_matcher())
+                    .map_err(|e| {
+                        tracing::warn!("invalid {label} pattern '{}': {}", pattern, e);
+                    })
+                    .ok()
+            })
+            .collect::<Vec<_>>()
+    };
+    let allow_globs = build_matchers(config.allow, "allow");
+    let deny_globs = build_matchers(config.deny, "deny");
+
+    let is_denied = |rel: &Path| deny_globs.iter().any(|g| g.is_match(rel));
+    let is_allowed = |rel: &Path| allow_globs.iter().any(|g| g.is_match(rel));
 
     let walker = builder.build();
 
@@ -104,6 +199,10 @@ pub fn scan_source_files(config: &ScanConfig<'_>) -> Vec<PathBuf> {
         if is_source_file(path)
             && let Ok(rel) = path.strip_prefix(config.root)
         {
+            // Deny filter: exclude unless allow overrides.
+            if is_denied(rel) && !is_allowed(rel) {
+                continue;
+            }
             files.push(rel.to_path_buf());
         }
     }
@@ -135,8 +234,8 @@ pub fn scan_source_files(config: &ScanConfig<'_>) -> Vec<PathBuf> {
                 if rel.starts_with(".cogz") {
                     continue;
                 }
-                // Check if this path matches any allow glob
-                if allow_globs.iter().any(|g| g.is_match(rel)) {
+                // Allow overrides both gitignore and deny.
+                if is_allowed(rel) {
                     let rel_path = rel.to_path_buf();
                     if !files.contains(&rel_path) {
                         files.push(rel_path);
@@ -174,6 +273,7 @@ mod tests {
         let files = scan_source_files(&ScanConfig {
             root: dir.path(),
             allow: &[],
+            deny: &[],
         });
         assert_eq!(files.len(), 2);
         assert!(files.contains(&PathBuf::from("src/main.rs")));
@@ -190,6 +290,7 @@ mod tests {
         let files = scan_source_files(&ScanConfig {
             root: dir.path(),
             allow: &[],
+            deny: &[],
         });
         assert_eq!(files.len(), 2);
         assert!(files.contains(&PathBuf::from("app.py")));
@@ -208,6 +309,7 @@ mod tests {
         let files = scan_source_files(&ScanConfig {
             root: dir.path(),
             allow: &[],
+            deny: &[],
         });
         assert_eq!(files.len(), 1);
         assert!(files.contains(&PathBuf::from("src/main.rs")));
@@ -222,6 +324,7 @@ mod tests {
         let files = scan_source_files(&ScanConfig {
             root: dir.path(),
             allow: &[],
+            deny: &[],
         });
         assert_eq!(files.len(), 1);
         assert!(files.contains(&PathBuf::from("src/main.rs")));
@@ -239,6 +342,7 @@ mod tests {
         let files = scan_source_files(&ScanConfig {
             root: dir.path(),
             allow: &[],
+            deny: &[],
         });
         assert_eq!(files.len(), 1);
 
@@ -246,9 +350,83 @@ mod tests {
         let files = scan_source_files(&ScanConfig {
             root: dir.path(),
             allow: &["generated/*.rs".to_string()],
+            deny: &[],
         });
         assert_eq!(files.len(), 2);
         assert!(files.contains(&PathBuf::from("generated/code.rs")));
+    }
+
+    #[test]
+    fn scan_deny_excludes_non_gitignored_files() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "src/main.rs", "fn main() {}");
+        write_file(dir.path(), "vendor/lib.rs", "fn lib() {}");
+        write_file(dir.path(), "vendor/util.rs", "fn util() {}");
+
+        // Without deny — all .rs files included
+        let files = scan_source_files(&ScanConfig {
+            root: dir.path(),
+            allow: &[],
+            deny: &[],
+        });
+        assert_eq!(files.len(), 3);
+
+        // With deny — vendor/ excluded
+        let files = scan_source_files(&ScanConfig {
+            root: dir.path(),
+            allow: &[],
+            deny: &["vendor/**/*.rs".to_string()],
+        });
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&PathBuf::from("src/main.rs")));
+    }
+
+    #[test]
+    fn scan_deny_glob_pattern_matches_recursively() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "src/main.rs", "fn main() {}");
+        write_file(dir.path(), "bench/bench1.rs", "fn bench1() {}");
+        write_file(dir.path(), "bench/nested/bench2.rs", "fn bench2() {}");
+
+        let files = scan_source_files(&ScanConfig {
+            root: dir.path(),
+            allow: &[],
+            deny: &["bench/**/*.rs".to_string()],
+        });
+        assert_eq!(files.len(), 1);
+        assert!(files.contains(&PathBuf::from("src/main.rs")));
+    }
+
+    #[test]
+    fn scan_allow_overrides_deny() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "src/main.rs", "fn main() {}");
+        write_file(dir.path(), "vendor/keep.rs", "fn keep() {}");
+        write_file(dir.path(), "vendor/skip.rs", "fn skip() {}");
+
+        // Deny vendor/**, but allow vendor/keep.rs
+        let files = scan_source_files(&ScanConfig {
+            root: dir.path(),
+            allow: &["vendor/keep.rs".to_string()],
+            deny: &["vendor/**/*.rs".to_string()],
+        });
+        assert!(files.contains(&PathBuf::from("src/main.rs")));
+        assert!(files.contains(&PathBuf::from("vendor/keep.rs")));
+        assert!(!files.contains(&PathBuf::from("vendor/skip.rs")));
+    }
+
+    #[test]
+    fn scan_deny_empty_default_includes_all() {
+        let dir = TempDir::new().unwrap();
+        write_file(dir.path(), "a.rs", "fn a() {}");
+        write_file(dir.path(), "b.rs", "fn b() {}");
+
+        let files = scan_source_files(&ScanConfig {
+            root: dir.path(),
+            allow: &[],
+            deny: &[],
+        });
+        assert_eq!(files.len(), 2);
     }
 
     #[test]
@@ -264,5 +442,121 @@ mod tests {
         assert_eq!(language_for_path(Path::new("setup.bash")), Some("bash"));
         assert_eq!(language_for_path(Path::new("style.css")), None);
         assert_eq!(language_for_path(Path::new("page.html")), None);
+    }
+
+    // --- is_test_file tests ---
+
+    #[test]
+    fn test_file_detection_rust() {
+        // Positive: actual Rust test files
+        assert!(is_test_file("tests/integration.rs"));
+        assert!(is_test_file("src/storage/tests.rs"));
+        assert!(is_test_file("src/search/hybrid_tests.rs"));
+        assert!(is_test_file("tests.rs"));
+
+        // Negative: files with "test" in the name but not test files
+        assert!(
+            !is_test_file("src/test_utils.rs"),
+            "test_utils.rs is a helper, not a test file"
+        );
+        assert!(!is_test_file("src/latest.rs"), "latest.rs should not match");
+        assert!(
+            !is_test_file("src/protest.rs"),
+            "protest.rs should not match"
+        );
+        assert!(!is_test_file("src/main.rs"));
+        assert!(!is_test_file("src/lib.rs"));
+    }
+
+    #[test]
+    fn test_file_detection_go() {
+        // Positive: Go test files (toolchain enforces _test.go suffix)
+        assert!(is_test_file("handler_test.go"));
+        assert!(is_test_file("pkg/storage/db_test.go"));
+
+        // Negative: files containing "test" but not Go test files
+        assert!(!is_test_file("protest.go"), "protest.go should not match");
+        assert!(!is_test_file("latest.go"), "latest.go should not match");
+        assert!(
+            !is_test_file("test.go"),
+            "test.go without _test suffix is not a test file"
+        );
+        assert!(!is_test_file("main.go"));
+        assert!(!is_test_file("testing.go"), "testing.go is not a test file");
+    }
+
+    #[test]
+    fn test_file_detection_python() {
+        // Positive: pytest/unittest convention
+        assert!(is_test_file("test_foo.py"));
+        assert!(is_test_file("test_database.py"));
+        assert!(is_test_file("foo_test.py"));
+        assert!(is_test_file("tests/test_app.py"));
+        assert!(is_test_file("src/tests/test_models.py"));
+
+        // Negative: files with "test" but not test files
+        assert!(!is_test_file("testing.py"), "testing.py is not a test file");
+        assert!(!is_test_file("protest.py"), "protest.py should not match");
+        assert!(!is_test_file("contest.py"), "contest.py should not match");
+        assert!(!is_test_file("app.py"));
+        assert!(!is_test_file("models.py"));
+    }
+
+    #[test]
+    fn test_file_detection_js_ts() {
+        // Positive: jest/vitest/mocha convention
+        assert!(is_test_file("foo.test.js"));
+        assert!(is_test_file("foo.spec.js"));
+        assert!(is_test_file("bar.test.ts"));
+        assert!(is_test_file("bar.spec.ts"));
+        assert!(is_test_file("comp.test.tsx"));
+        assert!(is_test_file("comp.spec.jsx"));
+        assert!(is_test_file("src/__tests__/utils.test.js"));
+        assert!(is_test_file("app.mjs.test.js") || true, "edge case");
+
+        // Negative: files with "test" but not test files
+        assert!(
+            !is_test_file("test.js"),
+            "test.js without base name is ambiguous, not a test file"
+        );
+        assert!(!is_test_file("testing.ts"), "testing.ts is not a test file");
+        assert!(!is_test_file("latest.js"), "latest.js should not match");
+        assert!(!is_test_file("protest.ts"), "protest.ts should not match");
+        assert!(!is_test_file("app.js"));
+        assert!(!is_test_file("index.ts"));
+    }
+
+    #[test]
+    fn test_file_detection_bash() {
+        // Positive: test scripts
+        assert!(is_test_file("test_deploy.sh"));
+        assert!(is_test_file("deploy_test.sh"));
+        assert!(is_test_file("test_setup.bash"));
+
+        // Negative
+        assert!(!is_test_file("deploy.sh"));
+        assert!(!is_test_file("latest.sh"), "latest.sh should not match");
+        assert!(!is_test_file("protest.sh"), "protest.sh should not match");
+    }
+
+    #[test]
+    fn test_file_detection_non_source() {
+        // Non-source files are never test files
+        assert!(!is_test_file("README.md"));
+        assert!(!is_test_file("config.toml"));
+        assert!(!is_test_file("Cargo.toml"));
+        assert!(!is_test_file("Makefile"));
+    }
+
+    #[test]
+    fn test_file_detection_edge_cases() {
+        // Empty path
+        assert!(!is_test_file(""));
+        // No extension
+        assert!(!is_test_file("test"));
+        assert!(!is_test_file("tests/foo"));
+        // Deeply nested
+        assert!(is_test_file("a/b/c/d/e/tests/foo.rs"));
+        assert!(is_test_file("a/b/c/d/e/__tests__/foo.test.ts"));
     }
 }

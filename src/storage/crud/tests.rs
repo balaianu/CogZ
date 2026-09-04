@@ -203,3 +203,68 @@ fn is_code_distinguishes_entity_kinds() {
     assert!(EntityType::File.is_code());
     assert!(EntityType::Module.is_code());
 }
+
+#[test]
+fn mark_entities_stale_by_ids_marks_active_only() {
+    let conn = setup();
+    insert_entity(&conn, &Entity::new("e1", "function", "foo", "c")).unwrap();
+    insert_entity(&conn, &Entity::new("e2", "function", "bar", "c")).unwrap();
+    let mut stale = Entity::new("e3", "function", "baz", "c");
+    stale.status = "stale".to_string();
+    insert_entity(&conn, &stale).unwrap();
+
+    let count = mark_entities_stale_by_ids(
+        &conn,
+        &["e1".to_string(), "e2".to_string(), "e3".to_string()],
+    )
+    .unwrap();
+
+    assert_eq!(count, 2, "only active entities should be marked stale");
+    assert_eq!(get_entity(&conn, "e1").unwrap().status, "stale");
+    assert_eq!(get_entity(&conn, "e2").unwrap().status, "stale");
+    assert_eq!(get_entity(&conn, "e3").unwrap().status, "stale");
+}
+
+#[test]
+fn mark_entities_stale_by_ids_empty_input() {
+    let conn = setup();
+    let count = mark_entities_stale_by_ids(&conn, &[]).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn mark_entities_stale_by_ids_nonexistent_ids() {
+    let conn = setup();
+    let count = mark_entities_stale_by_ids(&conn, &["nonexistent".to_string()]).unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn delete_entities_cascade_batch_removes_multiple() {
+    let conn = setup();
+    insert_entity(&conn, &Entity::new("b1", "observation", "B1", "c")).unwrap();
+    insert_entity(&conn, &Entity::new("b2", "observation", "B2", "c")).unwrap();
+    insert_entity(&conn, &Entity::new("b3", "observation", "B3", "c")).unwrap();
+
+    let removed = delete_entities_cascade_batch(
+        &conn,
+        &[
+            "b1".to_string(),
+            "b2".to_string(),
+            "nonexistent".to_string(),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(removed, 2);
+    assert!(get_entity(&conn, "b1").is_err());
+    assert!(get_entity(&conn, "b2").is_err());
+    assert!(get_entity(&conn, "b3").is_ok());
+}
+
+#[test]
+fn delete_entities_cascade_batch_empty_input() {
+    let conn = setup();
+    let removed = delete_entities_cascade_batch(&conn, &[]).unwrap();
+    assert_eq!(removed, 0);
+}

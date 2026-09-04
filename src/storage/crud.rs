@@ -279,6 +279,45 @@ pub fn mark_code_entities_stale_by_file_paths(
     Ok(total)
 }
 
+/// Mark specific entities as stale by ID. Only active entities are
+/// updated — the WHERE clause enforces the `active → stale` transition,
+/// which is legal per the status state machine. Returns the count of
+/// entities actually marked stale.
+///
+/// Used by incremental code sync when entities are removed from a
+/// changed file (renamed or deleted within a file that still exists).
+pub fn mark_entities_stale_by_ids(
+    conn: &Connection,
+    entity_ids: &[String],
+) -> Result<usize, StorageError> {
+    if entity_ids.is_empty() {
+        return Ok(0);
+    }
+
+    const CHUNK_SIZE: usize = 998;
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut total = 0;
+
+    for chunk in entity_ids.chunks(CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "UPDATE entities SET status = 'stale', updated_at = ? \
+             WHERE id IN ({placeholders}) AND status = 'active'"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + chunk.len());
+        params.push(&now);
+        for id in chunk {
+            params.push(id);
+        }
+        total += conn.execute(&sql, params.as_slice())?;
+    }
+
+    Ok(total)
+}
+
 /// Delete an entity by ID. FTS5 trigger fires automatically.
 pub fn delete_entity(conn: &Connection, id: &str) -> Result<(), StorageError> {
     conn.execute("DELETE FROM entities WHERE id = ?1", params![id])?;
@@ -339,6 +378,59 @@ pub fn delete_entity_cascade(conn: &Connection, id: &str) -> Result<(), StorageE
     )?;
     conn.execute("DELETE FROM entities WHERE id = ?1", params![id])?;
     Ok(())
+}
+
+/// Batch-delete multiple entities by ID, cascading edge and event
+/// cleanup. More efficient than calling `delete_entity_cascade` per
+/// entity when removing a batch (e.g. excess tombstones).
+pub fn delete_entities_cascade_batch(
+    conn: &Connection,
+    ids: &[String],
+) -> Result<usize, StorageError> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+
+    // 499 because the edge DELETE uses placeholders twice (2x params).
+    const CHUNK_SIZE: usize = 499;
+    let mut total = 0;
+
+    for chunk in ids.chunks(CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+
+        // Delete edges where the entity is source or target.
+        // Placeholders appear twice (source_id IN + target_id IN),
+        // so params must be duplicated.
+        let edge_params: Vec<&dyn rusqlite::ToSql> = chunk
+            .iter()
+            .chain(chunk.iter())
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .collect();
+        conn.execute(
+            &format!("DELETE FROM edges WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})"),
+            edge_params.as_slice(),
+        )?;
+
+        // Nullify event references.
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        conn.execute(
+            &format!("UPDATE events SET entity_id = NULL WHERE entity_id IN ({placeholders})"),
+            params.as_slice(),
+        )?;
+
+        // Delete entities.
+        let n = conn.execute(
+            &format!("DELETE FROM entities WHERE id IN ({placeholders})"),
+            params.as_slice(),
+        )?;
+        total += n;
+    }
+
+    Ok(total)
 }
 
 /// Count entities by type.

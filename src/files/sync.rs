@@ -118,6 +118,22 @@ pub fn sync_single_file(
         return SyncResult::default();
     }
 
+    // Defense-in-depth: verify the resolved path is inside cogz_dir.
+    // Inputs come from hook scripts and the sync layer (controlled
+    // sources), but canonicalization prevents path traversal via
+    // ../ sequences in file_path.
+    if let (Ok(canonical_abs), Ok(canonical_cogz)) =
+        (abs_path.canonicalize(), cogz_dir.canonicalize())
+        && !canonical_abs.starts_with(&canonical_cogz)
+    {
+        tracing::warn!(
+            "refusing to sync file outside .cogz/: {} (resolved to {})",
+            file_path,
+            canonical_abs.display()
+        );
+        return SyncResult::default();
+    }
+
     let mut result = SyncResult::default();
 
     // Phase 1: read and parse the file (no lock held).
@@ -410,4 +426,56 @@ fn get_file_backed_entities(conn: &rusqlite::Connection) -> Result<Vec<Entity>, 
         .map_err(|e| SyncError::Storage(e.into()))?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(|e| SyncError::Storage(e.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::Storage;
+    use tempfile::TempDir;
+
+    fn setup_storage(dir: &Path) -> Storage {
+        let db_path = dir.join("test.db");
+        Storage::open(&db_path, 768).unwrap()
+    }
+
+    #[test]
+    fn sync_single_file_rejects_path_traversal() {
+        let dir = TempDir::new().unwrap();
+        let cogz_dir = dir.path().join(".cogz");
+        std::fs::create_dir_all(&cogz_dir).unwrap();
+
+        // Create a file outside .cogz/ that we'll try to traverse to.
+        let outside = dir.path().join("secret.md");
+        std::fs::write(
+            &outside,
+            "---\nid: test\ntitle: Test\ntype: observation\n---\nbody\n",
+        )
+        .unwrap();
+
+        let storage = setup_storage(dir.path());
+
+        // Try to traverse: ../../../secret.md
+        let result = sync_single_file(&storage, &cogz_dir, "../../../secret.md");
+        assert!(
+            result.errors.is_empty(),
+            "path traversal should be silently rejected, not errored"
+        );
+        assert_eq!(
+            result.created, 0,
+            "no entity should be created from path traversal"
+        );
+    }
+
+    #[test]
+    fn sync_single_file_handles_nonexistent_file() {
+        let dir = TempDir::new().unwrap();
+        let cogz_dir = dir.path().join(".cogz");
+        std::fs::create_dir_all(&cogz_dir).unwrap();
+        let storage = setup_storage(dir.path());
+
+        let result = sync_single_file(&storage, &cogz_dir, "observations/nonexistent.md");
+        assert_eq!(result.created, 0);
+        assert_eq!(result.errors.len(), 0);
+    }
 }

@@ -52,6 +52,20 @@ pub fn update_knowledge_file(
         cogz_dir.join(file_path)
     };
 
+    // Defense-in-depth: verify the resolved path is inside cogz_dir.
+    // file_path comes from the DB, which should only contain paths
+    // written by the sync layer. But canonicalization prevents path
+    // traversal if the DB were ever corrupted.
+    if let (Ok(canonical_abs), Ok(canonical_cogz)) =
+        (abs_path.canonicalize(), cogz_dir.canonicalize())
+        && !canonical_abs.starts_with(&canonical_cogz)
+    {
+        return Err(mcp_error(
+            "invalid_path",
+            &format!("File path resolves outside .cogz/: {}", file_path),
+        ));
+    }
+
     let mut entity_file = read_entity_file(&abs_path)
         .map_err(|e| mcp_error("file_write_failed", &format!("Failed to read file: {}", e)))?;
 

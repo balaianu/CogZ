@@ -211,16 +211,38 @@ pub fn fts_search(
         param_values.push(Box::new(st.to_string()));
     }
     if exclude_tests {
-        // Exclude test code: files under tests/ or named *_tests.rs / tests.rs.
-        // Only applies to entities with a non-null file_path — knowledge
-        // entities (observations, rules, knowledge) have NULL file_path
-        // and should never be excluded by this filter.
+        // Exclude test code using language-specific path conventions.
+        // These patterns mirror `is_test_file` in `index/gitignore.rs` —
+        // keep them in sync when adding new languages. Knowledge entities
+        // (observations, rules, knowledge) have NULL file_path and are
+        // never excluded by this filter.
         sql.push_str(
             " AND (e.file_path IS NULL \
-             OR NOT (e.file_path LIKE 'tests/%' \
+             OR NOT (\
+             e.file_path LIKE 'tests/%' \
              OR e.file_path LIKE '%/tests/%' \
              OR e.file_path LIKE '%/tests.rs' \
-             OR e.file_path LIKE '%_tests.rs'))",
+             OR e.file_path LIKE '%_tests.rs' \
+             OR e.file_path LIKE '%_test.go' \
+             OR e.file_path LIKE '%/test_%.py' \
+             OR e.file_path LIKE '%/_test.py' \
+             OR e.file_path LIKE '%.test.js' \
+             OR e.file_path LIKE '%.spec.js' \
+             OR e.file_path LIKE '%.test.mjs' \
+             OR e.file_path LIKE '%.spec.mjs' \
+             OR e.file_path LIKE '%.test.cjs' \
+             OR e.file_path LIKE '%.spec.cjs' \
+             OR e.file_path LIKE '%.test.jsx' \
+             OR e.file_path LIKE '%.spec.jsx' \
+             OR e.file_path LIKE '%.test.ts' \
+             OR e.file_path LIKE '%.spec.ts' \
+             OR e.file_path LIKE '%.test.tsx' \
+             OR e.file_path LIKE '%.spec.tsx' \
+             OR e.file_path LIKE '%/__tests__/%' \
+             OR e.file_path LIKE '%/test_%.sh' \
+             OR e.file_path LIKE '%/_test.sh' \
+             OR e.file_path LIKE '%/test_%.bash' \
+             OR e.file_path LIKE '%/_test.bash'))",
         );
     }
 

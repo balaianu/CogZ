@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 
 use crate::config::Config;
 use crate::storage::Storage;
-use crate::storage::crud::{delete_entity_cascade, tombstone_entity};
+use crate::storage::crud::{delete_entities_cascade_batch, tombstone_entity};
 use crate::storage::embeddings::delete_embedding;
 use crate::storage::query::{
     count_by_status, find_prune_candidates as find_prune_candidate_rows, get_oldest_tombstone_ids,
@@ -158,12 +158,10 @@ fn enforce_tombstone_limit(conn: &rusqlite::Connection, max: usize) -> usize {
     };
 
     let mut removed = 0;
-    for id in &old_tombstones {
-        match delete_entity_cascade(conn, id) {
-            Ok(_) => removed += 1,
-            Err(e) => {
-                tracing::warn!("failed to delete tombstone {}: {}", id, e);
-            }
+    match delete_entities_cascade_batch(conn, &old_tombstones) {
+        Ok(n) => removed = n,
+        Err(e) => {
+            tracing::warn!("failed to batch delete tombstones: {}", e);
         }
     }
 

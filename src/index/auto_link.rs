@@ -164,23 +164,36 @@ pub fn sync_auto_links(storage: &storage::Storage) -> usize {
     // single transaction so a COMMIT failure rolls back both —
     // otherwise the DELETE would persist (autocommit) while the
     // INSERTs roll back, silently destroying all auto-link edges.
-    let in_transaction = conn.execute_batch("BEGIN").is_ok();
-    if !in_transaction {
-        tracing::warn!("failed to begin auto-link transaction — falling back to autocommit");
-    }
+    // conn.unchecked_transaction() provides Drop-based rollback on panic.
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!(
+                "failed to begin auto-link transaction — falling back to autocommit: {e}"
+            );
+            if let Err(e) = storage::edges::delete_edges_by_type(&conn, &["auto_references"]) {
+                tracing::warn!("failed to clear auto-link edges: {}", e);
+            }
+            for edge in &edges {
+                if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, edge) {
+                    tracing::debug!("skipped auto-link edge: {}", e);
+                }
+            }
+            return count;
+        }
+    };
 
-    if let Err(e) = storage::edges::delete_edges_by_type(&conn, &["auto_references"]) {
+    if let Err(e) = storage::edges::delete_edges_by_type(&tx, &["auto_references"]) {
         tracing::warn!("failed to clear auto-link edges: {}", e);
     }
 
     for edge in &edges {
-        if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, edge) {
+        if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&tx, edge) {
             tracing::debug!("skipped auto-link edge: {}", e);
         }
     }
-    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
+    if let Err(e) = tx.commit() {
         tracing::warn!("failed to commit auto-link transaction: {}", e);
-        // Transaction rolled back — none of the edges persisted.
         return 0;
     }
 

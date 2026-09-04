@@ -112,6 +112,68 @@ pub fn get_embedding(conn: &Connection, entity_id: &str) -> Result<Option<Vec<f3
     Ok(None)
 }
 
+/// Batch-fetch embeddings for multiple entity IDs from the knowledge
+/// embeddings table. Returns a map of entity_id → embedding. Entities
+/// without embeddings are simply absent from the map.
+///
+/// This is more efficient than calling `get_embedding` per entity when
+/// you need embeddings for a large set of entities (e.g. all active
+/// observations during merge candidate detection).
+pub fn get_knowledge_embeddings_batch(
+    conn: &Connection,
+    entity_ids: &[String],
+) -> Result<std::collections::HashMap<String, Vec<f32>>, StorageError> {
+    if entity_ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+
+    const CHUNK_SIZE: usize = 998;
+    let mut result = std::collections::HashMap::new();
+
+    for chunk in entity_ids.chunks(CHUNK_SIZE) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+        let params: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let sql = format!(
+            "SELECT entity_id, embedding FROM knowledge_embeddings WHERE entity_id IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |r| {
+            let id: String = r.get(0)?;
+            let blob: Vec<u8> = r.get(1)?;
+            if !blob.len().is_multiple_of(4) {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Blob,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "embedding blob is {} bytes, not a multiple of 4",
+                            blob.len()
+                        ),
+                    )),
+                ));
+            }
+            let floats: Vec<f32> = blob
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| f32::from_le_bytes(*chunk))
+                .collect();
+            Ok((id, floats))
+        })?;
+        for row in rows {
+            let (id, embedding) = row?;
+            result.insert(id, embedding);
+        }
+    }
+
+    Ok(result)
+}
+
 /// Count total embeddings across both tables.
 pub fn count_embeddings(conn: &Connection) -> Result<i64, StorageError> {
     let code: i64 = conn.query_row("SELECT COUNT(*) FROM code_embeddings", [], |r| r.get(0))?;
@@ -338,5 +400,35 @@ mod tests {
         insert_embedding(&conn, "o1", "observation", &vec![0.2_f32; 768]).unwrap();
 
         assert_eq!(count_embeddings(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn get_knowledge_embeddings_batch_returns_map() {
+        let conn = setup();
+        insert_entity(&conn, &Entity::new("k1", "knowledge", "K1", "c")).unwrap();
+        insert_entity(&conn, &Entity::new("k2", "knowledge", "K2", "c")).unwrap();
+        insert_entity(&conn, &Entity::new("k3", "knowledge", "K3", "c")).unwrap();
+
+        insert_embedding(&conn, "k1", "knowledge", &vec![0.1_f32; 768]).unwrap();
+        insert_embedding(&conn, "k2", "knowledge", &vec![0.2_f32; 768]).unwrap();
+        // k3 has no embedding
+
+        let map = get_knowledge_embeddings_batch(
+            &conn,
+            &["k1".to_string(), "k2".to_string(), "k3".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(map.len(), 2);
+        assert!(map.contains_key("k1"));
+        assert!(map.contains_key("k2"));
+        assert!(!map.contains_key("k3"));
+    }
+
+    #[test]
+    fn get_knowledge_embeddings_batch_empty_input() {
+        let conn = setup();
+        let map = get_knowledge_embeddings_batch(&conn, &[]).unwrap();
+        assert!(map.is_empty());
     }
 }

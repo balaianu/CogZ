@@ -15,6 +15,7 @@ use crate::files::frontmatter::FmValue;
 use crate::files::{FrontmatterError, read_entity_file, write_entity_file};
 use crate::storage::StorageError;
 use crate::storage::edges::{Edge, delete_edge, get_edges_from, get_edges_to, insert_edge};
+use crate::storage::embeddings::get_knowledge_embeddings_batch;
 use crate::storage::events::{EventType, record_event};
 use crate::storage::query::get_entities_by_type;
 use crate::storage::status::transition_status;
@@ -121,9 +122,14 @@ fn find_merge_candidates(
     // re-acquiring the mutex per observation.
     let conn = storage.conn();
 
+    // Batch-fetch all embeddings in one query instead of N queries.
+    // Observations use the knowledge embedding space.
+    let obs_ids: Vec<String> = observations.iter().map(|o| o.id.clone()).collect();
+    let embedding_map = get_knowledge_embeddings_batch(&conn, &obs_ids)?;
+
     for obs in &observations {
-        // Get this observation's embedding.
-        let own_embedding = match get_embedding(&conn, &obs.id) {
+        // Get this observation's embedding from the batch map.
+        let own_embedding = match embedding_map.get(&obs.id) {
             Some(e) => e,
             None => continue,
         };
@@ -134,7 +140,7 @@ fn find_merge_candidates(
         let neighbors = match knn_search_with_type_filter(
             &conn,
             EmbeddingSpace::Knowledge,
-            &own_embedding,
+            own_embedding,
             10,
             "observation",
         ) {
@@ -240,23 +246,47 @@ fn merge_one(
     // 3. DB: redirect edges, update status. All DB operations are in
     //    a single transaction so a failure in any step rolls back all
     //    changes — otherwise partial edge redirection would leave the
-    //    graph inconsistent with the entity status.
+    //    graph inconsistent with the entity status. unchecked_transaction()
+    //    provides Drop-based rollback on panic.
     let conn = storage.conn();
 
-    let in_transaction = conn.execute_batch("BEGIN").is_ok();
-    if !in_transaction {
-        tracing::warn!("failed to begin merge transaction — falling back to autocommit");
-    }
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!("failed to begin merge transaction — falling back to autocommit: {e}");
+            // Fall back to autocommit — each operation persists independently.
+            redirect_edges(&conn, &pair.superseded_id, &pair.survivor_id)?;
 
-    // Wrap all transactional operations in a closure so that any error
-    // triggers ROLLBACK before returning. Without this, a `?` early
-    // return would leave the transaction open on the shared connection,
-    // breaking all subsequent DB operations.
-    let tx_result: Result<(), MergeError> = (|| {
-        redirect_edges(&conn, &pair.superseded_id, &pair.survivor_id)?;
+            let mut updated = superseded_entity.clone();
+            if let Some(obj) = updated.properties.as_object_mut() {
+                obj.insert(
+                    "superseded_by".to_string(),
+                    serde_json::Value::String(pair.survivor_id.clone()),
+                );
+            }
+            updated.status = "superseded".to_string();
+            updated.updated_at = chrono::Utc::now().to_rfc3339();
+            crate::storage::crud::update_entity(&conn, &updated)?;
 
-        // Update the superseded entity's status and properties via the
-        // storage layer (no direct SQL outside storage/).
+            let payload = serde_json::json!({
+                "survivor_id": pair.survivor_id,
+                "superseded_id": pair.superseded_id,
+                "reason": pair.reason,
+            });
+            record_event(
+                &conn,
+                EventType::KnowledgeMerged,
+                Some(&pair.survivor_id),
+                &payload,
+            )?;
+            return Ok(());
+        }
+    };
+
+    // All transactional operations — errors trigger Drop-based rollback.
+    if let Err(e) = (|| -> Result<(), MergeError> {
+        redirect_edges(&tx, &pair.superseded_id, &pair.survivor_id)?;
+
         let mut updated = superseded_entity.clone();
         if let Some(obj) = updated.properties.as_object_mut() {
             obj.insert(
@@ -266,31 +296,27 @@ fn merge_one(
         }
         updated.status = "superseded".to_string();
         updated.updated_at = chrono::Utc::now().to_rfc3339();
-        crate::storage::crud::update_entity(&conn, &updated)?;
+        crate::storage::crud::update_entity(&tx, &updated)?;
 
-        // Record event.
         let payload = serde_json::json!({
             "survivor_id": pair.survivor_id,
             "superseded_id": pair.superseded_id,
             "reason": pair.reason,
         });
         record_event(
-            &conn,
+            &tx,
             EventType::KnowledgeMerged,
             Some(&pair.survivor_id),
             &payload,
         )?;
         Ok(())
-    })();
-
-    if let Err(e) = tx_result {
-        if in_transaction {
-            let _ = conn.execute_batch("ROLLBACK");
-        }
+    })() {
+        // Drop handles rollback — tx is dropped here, rolling back.
+        drop(tx);
         return Err(e);
     }
 
-    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
+    if let Err(e) = tx.commit() {
         tracing::warn!("failed to commit merge transaction: {}", e);
         // The file was already written, but the DB rolled back. The
         // next sync will reconcile: the file says "superseded" but
@@ -300,13 +326,6 @@ fn merge_one(
     }
 
     Ok(())
-}
-
-/// Get an entity's embedding from the vec0 table.
-fn get_embedding(conn: &Connection, entity_id: &str) -> Option<Vec<f32>> {
-    crate::storage::embeddings::get_embedding(conn, entity_id)
-        .ok()
-        .flatten()
 }
 
 /// Redirect all edges pointing to or from `old_id` to `new_id`.
