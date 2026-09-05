@@ -10,7 +10,7 @@ fn parse_files(
         .iter()
         .map(|(path, source, lang)| {
             let (entities, _) = extract_all(path, source, *lang);
-            (path.to_string_lossy().to_string(), entities)
+            (crate::index::path_to_string(path), entities)
         })
         .collect()
 }

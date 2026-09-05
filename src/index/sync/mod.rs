@@ -50,9 +50,12 @@ pub struct CodeSyncResult {
 ///
 /// The name is `{file_path}:{entity_type}:{qualified_name}`. This
 /// ensures the same code entity always gets the same UUID, even after
-/// a full DB rebuild.
+/// a full DB rebuild. Path separators are normalized to forward
+/// slashes so the same source file produces the same UUID on all
+/// platforms (Linux, macOS, Windows).
 pub fn code_entity_uuid(file_path: &str, entity_type: &str, qualified_name: &str) -> String {
-    let name = format!("{file_path}:{entity_type}:{qualified_name}");
+    let normalized = crate::index::normalize_path(file_path);
+    let name = format!("{normalized}:{entity_type}:{qualified_name}");
     Uuid::new_v5(&CODE_ENTITY_NAMESPACE, name.as_bytes()).to_string()
 }
 
@@ -213,7 +216,7 @@ pub fn mark_stale_for_deleted_files(
     let conn = storage.conn();
     let deleted: Vec<String> = deleted_paths
         .iter()
-        .map(|p| p.to_string_lossy().to_string())
+        .map(|p| crate::index::path_to_string(p))
         .collect();
 
     storage::crud::mark_code_entities_stale_by_file_paths(&conn, &deleted).unwrap_or(0)

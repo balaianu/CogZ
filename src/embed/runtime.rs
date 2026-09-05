@@ -1,16 +1,22 @@
 //! ONNX Runtime library discovery and auto-download.
 //!
-//! The `ort` crate with `load-dynamic` requires `libonnxruntime.so`
-//! at runtime. This module handles:
+//! The `ort` crate with `load-dynamic` requires the ONNX Runtime
+//! shared library at runtime. This module handles:
 //!
 //! 1. Checking if the library is already available (system install,
 //!    `ORT_DYLIB_PATH`, or previously downloaded to cogz's lib dir).
-//! 2. Downloading the CPU-only ONNX Runtime (~11MB) from GitHub
-//!    releases to `~/.local/share/cogz/lib/` if not found.
+//! 2. Downloading the CPU-only ONNX Runtime from GitHub releases to
+//!    `~/.local/share/cogz/lib/` if not found.
 //! 3. Initializing `ort` with the discovered path via `ort::init_from()`.
 //!
-//! This makes the out-of-box experience seamless: no system package
-//! installation, no environment variables, no manual symlinks.
+//! Supported platforms for auto-download:
+//! - Linux x86_64, Linux aarch64
+//! - macOS arm64 (Apple Silicon)
+//! - Windows x86_64
+//!
+//! macOS x86_64 (Intel) is not supported — Microsoft dropped macOS
+//! Intel binaries after ORT 1.22. Intel Mac users can use Rosetta 2
+//! or operate in FTS-only mode.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -22,14 +28,58 @@ use tracing::{info, warn};
 /// comparable inference performance.
 const ORT_VERSION: &str = "1.27.0";
 
-/// GitHub release asset name for Linux x86_64 CPU-only.
-#[cfg(target_os = "linux")]
-#[cfg(target_arch = "x86_64")]
+// ── Platform-specific constants ─────────────────────────────────────
+
+/// GitHub release asset name for the current platform.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const ORT_ASSET: &str = "onnxruntime-linux-x64-1.27.0.tgz";
 
-/// The shared library name inside the extracted archive.
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+const ORT_ASSET: &str = "onnxruntime-linux-aarch64-1.27.0.tgz";
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const ORT_ASSET: &str = "onnxruntime-osx-arm64-1.27.0.tgz";
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const ORT_ASSET: &str = "onnxruntime-win-x64-1.27.0.zip";
+
+/// Fallback for unsupported platforms (e.g. macOS Intel). The
+/// download function checks this and returns an error.
+#[cfg(not(any(
+    all(target_os = "linux", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "aarch64"),
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "windows", target_arch = "x86_64"),
+)))]
+const ORT_ASSET: &str = "";
+
+/// The shared library file name for the current platform.
 #[cfg(target_os = "linux")]
 const ORT_LIB_NAME: &str = "libonnxruntime.so";
+
+#[cfg(target_os = "macos")]
+const ORT_LIB_NAME: &str = "libonnxruntime.dylib";
+
+#[cfg(target_os = "windows")]
+const ORT_LIB_NAME: &str = "onnxruntime.dll";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const ORT_LIB_NAME: &str = "";
+
+/// Archive extension for the current platform's ORT download.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const ORT_ARCHIVE_EXT: &str = "tgz";
+
+#[cfg(target_os = "windows")]
+const ORT_ARCHIVE_EXT: &str = "zip";
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+const ORT_ARCHIVE_EXT: &str = "";
+
+/// Whether this platform supports ORT auto-download.
+const fn ort_download_supported() -> bool {
+    !ORT_ASSET.is_empty()
+}
 
 /// Static init guard — ensures `ort::init_from` is called exactly once.
 static ORT_INIT: OnceLock<bool> = OnceLock::new();
@@ -52,10 +102,55 @@ fn lib_exists(path: &Path) -> bool {
     path.exists() && path.is_file()
 }
 
+/// System library paths to check for an existing ONNX Runtime install.
+/// Returns platform-appropriate candidate paths.
+fn system_lib_candidates() -> Vec<&'static str> {
+    let mut candidates = Vec::new();
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        candidates.extend_from_slice(&[
+            "/usr/lib/x86_64-linux-gnu/libonnxruntime.so",
+            "/usr/lib/x86_64-linux-gnu/libonnxruntime.so.1",
+            "/usr/lib/x86_64-linux-gnu/libonnxruntime.so.1.23",
+            "/usr/local/lib/libonnxruntime.so",
+            "/usr/lib/libonnxruntime.so",
+        ]);
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        candidates.extend_from_slice(&[
+            "/usr/lib/aarch64-linux-gnu/libonnxruntime.so",
+            "/usr/lib/aarch64-linux-gnu/libonnxruntime.so.1",
+            "/usr/local/lib/libonnxruntime.so",
+            "/usr/lib/libonnxruntime.so",
+        ]);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        candidates.extend_from_slice(&[
+            "/opt/homebrew/lib/libonnxruntime.dylib",
+            "/usr/local/lib/libonnxruntime.dylib",
+        ]);
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.extend_from_slice(&[
+            "C:\\Program Files\\onnxruntime\\lib\\onnxruntime.dll",
+            "C:\\onnxruntime\\lib\\onnxruntime.dll",
+        ]);
+    }
+
+    candidates
+}
+
 /// Try to find an existing ONNX Runtime library. Checks:
 /// 1. `ORT_DYLIB_PATH` env var (user override)
 /// 2. cogz's lib dir (previously downloaded)
-/// 3. System library paths (via dlopen name resolution)
+/// 3. System library paths
 fn find_existing_lib() -> Option<PathBuf> {
     // 1. User override via env var
     if let Ok(path) = std::env::var("ORT_DYLIB_PATH")
@@ -71,17 +166,8 @@ fn find_existing_lib() -> Option<PathBuf> {
         return Some(cogz_path);
     }
 
-    // 3. System library — check common paths and versioned names.
-    // ort 2.0.0-rc.13 supports ORT 1.28; accepts older versions with
-    // a warning. We prefer the cogz-managed copy (checked above) but
-    // fall back to any system installation.
-    for candidate in [
-        "/usr/lib/x86_64-linux-gnu/libonnxruntime.so",
-        "/usr/lib/x86_64-linux-gnu/libonnxruntime.so.1",
-        "/usr/lib/x86_64-linux-gnu/libonnxruntime.so.1.23",
-        "/usr/local/lib/libonnxruntime.so",
-        "/usr/lib/libonnxruntime.so",
-    ] {
+    // 3. System library paths
+    for candidate in system_lib_candidates() {
         if lib_exists(Path::new(candidate)) {
             return Some(PathBuf::from(candidate));
         }
@@ -91,10 +177,17 @@ fn find_existing_lib() -> Option<PathBuf> {
 }
 
 /// Download and extract the ONNX Runtime library to cogz's lib dir.
-/// Downloads the CPU-only Linux x86_64 build (~11MB) from GitHub releases.
-/// Verifies the SHA-256 checksum from the release's SHA256SUMS file before
-/// extracting.
+/// Downloads the CPU-only build from GitHub releases.
+/// Verifies the SHA-256 checksum from the release's SHA256SUMS file
+/// before extracting.
 fn download_ort() -> Result<PathBuf, std::io::Error> {
+    if !ort_download_supported() {
+        return Err(std::io::Error::other(
+            "ONNX Runtime auto-download is not supported on this platform. \
+             Install onnxruntime manually and set ORT_DYLIB_PATH, or use FTS-only mode.",
+        ));
+    }
+
     let lib_dir = cogz_lib_dir();
     std::fs::create_dir_all(&lib_dir)?;
 
@@ -114,9 +207,10 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     let temp_dir = std::env::temp_dir().join(format!("cogz-ort-{}", std::process::id()));
     std::fs::create_dir_all(&temp_dir)?;
 
-    let archive_path = temp_dir.join("onnxruntime.tgz");
+    let archive_name = format!("onnxruntime.{}", ORT_ARCHIVE_EXT);
+    let archive_path = temp_dir.join(&archive_name);
 
-    // Download the .tgz archive using ureq (already a dependency).
+    // Download the archive using ureq (already a dependency).
     let response = ureq::get(&url)
         .call()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::NetworkUnreachable, e.to_string()))?;
@@ -153,12 +247,15 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
         warn!("ONNX Runtime SHA256SUMS not available — proceeding without checksum verification");
     }
 
-    // Extract the .tgz archive
+    // Extract the archive. `tar` is available on all supported platforms:
+    // - Linux/macOS: GNU tar (always present)
+    // - Windows 10 1803+: bsdtar (included with the OS)
+    // bsdtar on Windows handles .zip; GNU tar on Unix handles .tgz.
     let extract_dir = temp_dir.join("extracted");
     std::fs::create_dir_all(&extract_dir)?;
 
     let output = std::process::Command::new("tar")
-        .arg("xzf")
+        .arg("xf")
         .arg(&archive_path)
         .arg("-C")
         .arg(&extract_dir)
@@ -167,7 +264,7 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     if !output.status.success() {
         let _ = std::fs::remove_dir_all(&temp_dir);
         return Err(std::io::Error::other(format!(
-            "tar extraction failed: {}",
+            "archive extraction failed: {}",
             String::from_utf8_lossy(&output.stderr)
         )));
     }
@@ -192,6 +289,28 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
 
     // Copy the library to cogz's lib dir
     std::fs::copy(&src_lib, &lib_path)?;
+
+    // On Windows, the DLL may have companion libraries that need to be
+    // in the same directory. Copy all .dll files from the lib directory
+    // in the archive.
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(src_lib_dir) = src_lib.parent() {
+            if let Ok(entries) = std::fs::read_dir(src_lib_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("dll") {
+                        if let Some(name) = path.file_name() {
+                            let dest = lib_dir.join(name);
+                            if !dest.exists() {
+                                let _ = std::fs::copy(&path, &dest);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // Clean up temp dir
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -234,7 +353,7 @@ fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
 ///
 /// If the library is already available (system, env var, or previously
 /// downloaded), uses it directly. If not, downloads the CPU-only
-/// runtime (~11MB) to `~/.local/share/cogz/lib/`.
+/// runtime to `~/.local/share/cogz/lib/`.
 ///
 /// If the library cannot be found or downloaded, returns false — the
 /// caller should operate in FTS-only mode.

@@ -72,7 +72,7 @@ pub fn sync_code_edges_incremental(
         let (entities, raw_edges) =
             crate::index::tree_sitter::extract_all(rel_path, source, *language);
 
-        let file_path_str = rel_path.to_string_lossy().to_string();
+        let file_path_str = crate::index::path_to_string(rel_path);
         for ce in &entities {
             let qualified_name = if ce.entity_type == "file" {
                 file_path_str.clone()

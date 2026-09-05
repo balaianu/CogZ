@@ -20,6 +20,7 @@ on your machine, no cloud services required.
 
 ## Quick start
 
+**Linux / macOS:**
 ```bash
 # Install
 curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/main/install.sh | bash
@@ -36,6 +37,17 @@ cogz search "authentication flow"
 
 # Assemble context for an agent
 cogz context --mode task "implement rate limiting"
+```
+
+**Windows (PowerShell):**
+```powershell
+# Install
+irm https://raw.githubusercontent.com/balaianu/CogZ/main/install.ps1 | iex
+
+# Initialize in a repo
+cd your-project
+cogz init
+cogz index
 ```
 
 ## MCP integration
@@ -128,11 +140,34 @@ resource consumption profile.
   ONNX models for vector search.
 - **Files are canonical** — all entities are Markdown files. The SQLite
   DB is a derived index, disposable and rebuildable.
-- **Code-aware** — tree-sitter indexes Rust and Python source code as
-  first-class graph entities.
+- **Code-aware** — tree-sitter indexes source code as first-class
+  graph entities. Supported languages: Rust, Python, Go, JavaScript,
+  TypeScript, Bash.
 - **Graceful degradation** — works without ML models in FTS-only mode.
 - **Local-first** — no cloud, no telemetry, no accounts. The only
   network access is optional model downloads.
+
+## Compatibility
+
+| Platform | Support | Embeddings | FTS-only | Install |
+|---|---|---|---|---|
+| Linux x86_64 | Full | Auto-download | Yes | `install.sh` |
+| Linux aarch64 | Full | Auto-download | Yes | `install.sh` |
+| macOS arm64 (Apple Silicon) | Full | Auto-download | Yes | `install.sh` |
+| macOS x86_64 (Intel) | Not supported | — | — | — |
+| Windows x86_64 | Full | Auto-download | Yes | `install.ps1` |
+
+**macOS Intel** is not supported because Microsoft dropped ONNX
+Runtime macOS Intel binaries after v1.22. Intel Mac users can run
+the arm64 binary under Rosetta 2 (with a compatible ORT build) or
+use `cargo install cogz` for FTS-only mode.
+
+**Windows 10+** is required (bsdtar is bundled since build 17063,
+needed for ONNX Runtime auto-extraction).
+
+Cross-platform team collaboration is supported: code entity UUIDs
+use forward-slash path normalization so the same source file
+produces the same entity ID on all platforms.
 
 ## Documentation
 

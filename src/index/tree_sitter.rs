@@ -128,7 +128,7 @@ pub fn extract_entities(file_path: &Path, source: &str, language: Language) -> V
         }
     };
 
-    let path_str = file_path.to_string_lossy().to_string();
+    let path_str = crate::index::path_to_string(file_path);
     let root = tree.root_node();
     let source_bytes = source.as_bytes();
 
@@ -184,7 +184,7 @@ pub fn extract_all(
         }
     };
 
-    let path_str = file_path.to_string_lossy().to_string();
+    let path_str = crate::index::path_to_string(file_path);
     let root = tree.root_node();
     let source_bytes = source.as_bytes();
 

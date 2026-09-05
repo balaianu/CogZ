@@ -78,8 +78,8 @@ fn platform_asset_name() -> &'static str {
     match (os, arch) {
         ("linux", "x86_64") => "cogz-x86_64-unknown-linux-gnu",
         ("linux", "aarch64") => "cogz-aarch64-unknown-linux-gnu",
-        ("macos", "x86_64") => "cogz-x86_64-apple-darwin",
         ("macos", "aarch64") => "cogz-aarch64-apple-darwin",
+        ("windows", "x86_64") => "cogz-x86_64-pc-windows-msvc.exe",
         _ => "cogz-x86_64-unknown-linux-gnu",
     }
 }

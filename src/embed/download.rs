@@ -102,8 +102,11 @@ pub fn download_model(model_id: &str, cache_dir: &Path) -> Result<DownloadedMode
             .to_path_buf()
     };
 
-    // Create a symlink from cache_dir/{model_id} to the hf-hub snapshot
+    // Create a link from cache_dir/{model_id} to the hf-hub snapshot
     // directory so the loader finds files at a predictable flat path.
+    // On Unix, this is a symlink. On Windows, symlinks require admin
+    // privileges or Developer Mode, so we fall back to using the
+    // snapshot directory directly.
     let flat_dir = cache_dir.join(model_id);
     if flat_dir.exists() || flat_dir.is_symlink() {
         let _ = std::fs::remove_file(&flat_dir);
@@ -111,7 +114,30 @@ pub fn download_model(model_id: &str, cache_dir: &Path) -> Result<DownloadedMode
     if let Some(parent) = flat_dir.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::os::unix::fs::symlink(&snapshot_dir, &flat_dir)?;
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&snapshot_dir, &flat_dir)?;
+    }
+    #[cfg(windows)]
+    {
+        // Try symlink first (works with Developer Mode), fall back to
+        // using the snapshot directory directly.
+        match std::os::windows::fs::symlink_dir(&snapshot_dir, &flat_dir) {
+            Ok(()) => {}
+            Err(_) => {
+                // Can't create symlink — use the snapshot directory directly.
+                tracing::debug!(
+                    "could not create symlink on Windows (needs Developer Mode), \
+                     using snapshot path directly"
+                );
+                return Ok(DownloadedModel {
+                    model_dir: snapshot_dir,
+                    model_id: model_id.to_string(),
+                });
+            }
+        }
+    }
 
     tracing::info!(
         "downloaded model {} to {} (symlink: {})",

@@ -2,9 +2,9 @@
 id: e1f5a6b7-09cc-414e-831c-8f5710374d4a
 title: Checksum skip on missing entry is a security hole
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-03T11:59:00Z"
-updated_at: "2026-09-03T11:59:00Z"
+updated_at: "2026-09-05T12:20:02.821294659+00:00"
 references: []
 category: gotchas
 tags: ["security", "checksum", "update", "download", "onnx"]

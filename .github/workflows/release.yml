@@ -16,15 +16,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             asset_name: cogz-x86_64-unknown-linux-gnu
+            strip: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset_name: cogz-aarch64-unknown-linux-gnu
-          - os: macos-13
-            target: x86_64-apple-darwin
-            asset_name: cogz-x86_64-apple-darwin
+            strip: true
           - os: macos-14
             target: aarch64-apple-darwin
             asset_name: cogz-aarch64-apple-darwin
+            strip: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: cogz-x86_64-pc-windows-msvc.exe
+            strip: false
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -51,13 +55,19 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Strip binary
+        if: ${{ matrix.strip }}
         run: strip target/${{ matrix.target }}/release/cogz
 
-      - name: Rename binary
-        run: |
-          cp target/${{ matrix.target }}/release/cogz ${{ matrix.asset_name }}
+      - name: Rename binary (Unix)
+        if: runner.os != 'Windows'
+        run: cp target/${{ matrix.target }}/release/cogz ${{ matrix.asset_name }}
+
+      - name: Rename binary (Windows)
+        if: runner.os == 'Windows'
+        run: cp target/${{ matrix.target }}/release/cogz.exe ${{ matrix.asset_name }}
 
       - name: Generate checksum
+        shell: bash
         run: |
           sha256sum ${{ matrix.asset_name }} > ${{ matrix.asset_name }}.sha256
 
@@ -76,21 +86,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Download all assets
-        uses: actions/download-artifact@v5
+      - name: Download all release assets
+        uses: robinraju/release-downloader@v1
+        with:
+          tag: ${{ github.ref_name }}
+          fileName: "*.sha256"
 
       - name: Create SHA256SUMS
         run: |
-          # Download all release assets and create a combined checksum file
-          # This is done in a separate job because softprops/action-gh-release
-          # uploads assets in parallel.
-          echo "SHA256SUMS is generated from individual .sha256 files"
-          echo "uploaded by the build-and-release job."
+          cat *.sha256 > SHA256SUMS
 
       - name: Upload SHA256SUMS
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            SHA256SUMS
+          files: SHA256SUMS
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

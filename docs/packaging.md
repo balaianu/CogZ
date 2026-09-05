@@ -91,12 +91,27 @@ build-time TLS dependencies and allows graceful degradation.
 
 **Runtime discovery order:**
 1. `ORT_DYLIB_PATH` environment variable
-2. `~/.local/share/cogz/lib/libonnxruntime.so` (CogZ-managed)
-3. System library paths (`/usr/lib/x86_64-linux-gnu/libonnxruntime.so`, etc.)
+2. CogZ-managed lib dir (`~/.local/share/cogz/lib/` on Unix,
+   `%LOCALAPPDATA%\cogz\lib\` on Windows)
+3. System library paths (platform-specific)
 
-If no library is found, CogZ downloads ONNX Runtime 1.27.0 (CPU-only,
-~23 MB) from GitHub releases and installs it to
-`~/.local/share/cogz/lib/libonnxruntime.so`.
+If no library is found, CogZ downloads ONNX Runtime 1.27.0 (CPU-only)
+from GitHub releases and installs it to the CogZ lib dir.
+
+**Platform-specific downloads:**
+- Linux x86_64: `onnxruntime-linux-x64-1.27.0.tgz` (~8 MB)
+- Linux aarch64: `onnxruntime-linux-aarch64-1.27.0.tgz` (~8 MB)
+- macOS arm64: `onnxruntime-osx-arm64-1.27.0.tgz` (~30 MB)
+- Windows x86_64: `onnxruntime-win-x64-1.27.0.zip` (~74 MB)
+
+**System library paths checked:**
+- Linux: `/usr/lib/x86_64-linux-gnu/`, `/usr/lib/aarch64-linux-gnu/`,
+  `/usr/local/lib/`
+- macOS: `/opt/homebrew/lib/`, `/usr/local/lib/`
+- Windows: `C:\Program Files\onnxruntime\lib\`
+
+Archive extraction uses the `tar` command, which is available on all
+supported platforms (bundled with Windows 10 build 17063+).
 
 When no runtime is available and download fails, CogZ falls back to
 FTS-only search (graceful degradation).
@@ -109,14 +124,18 @@ FTS-only search (graceful degradation).
 
 The main distribution channel. Each release publishes:
 
-- `cogz-x86_64-unknown-linux-gnu` — statically linked binary for Linux x86_64
-- `cogz-aarch64-unknown-linux-gnu` — for ARM64 Linux (future, if needed)
-- `SHA256SUMS` — checksums for verification
-- `SHA256SUMS.sig` — GPG signature (optional, if a signing key is set up)
+- `cogz-x86_64-unknown-linux-gnu` — Linux x86_64
+- `cogz-aarch64-unknown-linux-gnu` — Linux ARM64
+- `cogz-aarch64-apple-darwin` — macOS Apple Silicon
+- `cogz-x86_64-pc-windows-msvc.exe` — Windows x86_64
+- `*.sha256` — per-asset checksums
+- `SHA256SUMS` — combined checksums for verification
 
-The binary is built with `RUSTFLAGS="-C target-feature=+crt-static"` for
-static linking where possible. If some system libraries are needed
-(SQLite is bundled via `libsqlite3-sys`), the binary has minimal
+macOS x86_64 (Intel) is not built — Microsoft dropped ONNX Runtime
+macOS Intel binaries after v1.22. Intel Mac users can use Rosetta 2
+or `cargo install cogz` for FTS-only mode.
+
+SQLite is bundled via `libsqlite3-sys`, so the binary has minimal
 runtime dependencies.
 
 ### Secondary: Cargo
@@ -129,32 +148,43 @@ Installs from crates.io (or directly from git). This requires Rust
 toolchain on the target machine — appropriate for developers, not
 end users. The binary lands in `~/.cargo/bin/cogz`.
 
-### Tertiary: Install script
+### Tertiary: Install scripts
 
+**Linux / macOS:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/main/install.sh | bash
 ```
 
 The script:
-1. Detects architecture (x86_64, aarch64)
+1. Detects architecture (x86_64, aarch64, arm64)
 2. Downloads the correct binary from GitHub releases
-3. Verifies checksum
-4. Installs to `~/.local/bin/cogz` (or `/usr/local/bin/cogz` if run as root)
-5. Creates `~/.local/share/cogz/models/` directory
-6. Prints next steps (`cogz init` in a repo)
+3. Installs to `~/.local/bin/cogz` (or `/usr/local/bin/cogz` if run as root)
+4. Creates `~/.local/share/cogz/models/` directory
+5. Prints next steps (`cogz init` in a repo)
 
-The script is signed and the checksum is verified. The user is
-prompted before installation if `~/.local/bin` is not on PATH.
+The user is prompted if `~/.local/bin` is not on PATH.
+
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/balaianu/CogZ/main/install.ps1 | iex
+```
+
+The script:
+1. Downloads the Windows x86_64 binary from GitHub releases
+2. Installs to `$HOME\.local\bin\cogz.exe`
+3. Creates `$HOME\AppData\Local\cogz\models\` directory
+4. Prints next steps
 
 ### Future: Package managers
 
 - **AUR** (`cogz-bin` package) — for Arch users, wraps the GitHub binary
-- **Homebrew tap** — for macOS users (if macOS support is added)
+- **Homebrew tap** — for macOS users
 - **.deb package** — for Debian/Ubuntu, if demand warrants
+- **winget** — for Windows users, wraps the GitHub binary
 
-These are not initial release targets. The binary + install script
-covers the primary use case (Linux, single user). Package manager
-support can be added later without changing the build process.
+These are not initial release targets. The binary + install scripts
+cover the primary use case. Package manager support can be added
+later without changing the build process.
 
 ---
 

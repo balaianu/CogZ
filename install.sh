@@ -22,11 +22,12 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "${OS}-${ARCH}" in
     linux-x86_64)  ASSET="cogz-x86_64-unknown-linux-gnu" ;;
     linux-aarch64) ASSET="cogz-aarch64-unknown-linux-gnu" ;;
-    darwin-x86_64) ASSET="cogz-x86_64-apple-darwin" ;;
     darwin-arm64)  ASSET="cogz-aarch64-apple-darwin" ;;
     *)
         echo "Unsupported platform: ${OS}-${ARCH}"
-        echo "Supported: linux-x86_64, linux-aarch64, darwin-x86_64, darwin-arm64"
+        echo "Supported: linux-x86_64, linux-aarch64, darwin-arm64 (Apple Silicon)"
+        echo "Windows: use install.ps1"
+        echo "macOS Intel: not supported (use Rosetta 2 or FTS-only mode)"
         exit 1
         ;;
 esac

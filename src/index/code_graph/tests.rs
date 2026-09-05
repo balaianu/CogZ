@@ -9,7 +9,7 @@ fn index_files(storage: &Storage, files: &[(std::path::PathBuf, String, Language
     let mut raw_edges_by_file = Vec::new();
     for (path, source, lang) in files {
         let (entities, raw_edges) = extract_all(path, source, *lang);
-        let path_str = path.to_string_lossy().to_string();
+        let path_str = crate::index::path_to_string(path);
         entities_by_file.push((path_str.clone(), entities));
         raw_edges_by_file.push((path_str, raw_edges));
     }
@@ -246,7 +246,7 @@ fn reindex_preserves_references_edges() {
     let mut raw_edges_by_file = Vec::new();
     for (path, source, lang) in &files {
         let (entities, raw_edges) = extract_all(path, source, *lang);
-        let path_str = path.to_string_lossy().to_string();
+        let path_str = crate::index::path_to_string(path);
         entities_by_file.push((path_str.clone(), entities));
         raw_edges_by_file.push((path_str, raw_edges));
     }
@@ -360,7 +360,7 @@ fn incremental_reindex_preserves_import_edges() {
     let mut entities_by_file = Vec::new();
     for (path, source, lang) in &changed {
         let (entities, _) = extract_all(path, source, *lang);
-        entities_by_file.push((path.to_string_lossy().to_string(), entities));
+        entities_by_file.push((crate::index::path_to_string(path), entities));
     }
     sync_code_entities_incremental(&storage, &entities_by_file);
     sync_code_edges_incremental(&storage, &changed);

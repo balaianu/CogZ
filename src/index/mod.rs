@@ -18,6 +18,21 @@ use crate::config::Config;
 use crate::storage;
 use crate::storage::crud::EntityType;
 
+/// Normalize a path to use forward slashes regardless of platform.
+/// Git stores paths with forward slashes internally; we do the same
+/// so that code entity UUIDs are consistent across Linux, macOS, and
+/// Windows. Without this, `src\main.rs` on Windows would produce a
+/// different UUID than `src/main.rs` on Linux, breaking cross-platform
+/// team collaboration.
+pub fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+/// Convert a Path to a normalized string with forward slashes.
+pub fn path_to_string(path: &Path) -> String {
+    normalize_path(&path.to_string_lossy())
+}
+
 pub use gitignore::is_test_file;
 pub use sync::{CodeSyncResult, mark_stale_for_deleted_files};
 
@@ -60,7 +75,7 @@ pub fn index_code(storage: &storage::Storage, repo_root: &Path, config: &Config)
         };
 
         let (entities, raw_edges) = self::tree_sitter::extract_all(rel_path, &source, language);
-        let path_str = rel_path.to_string_lossy().to_string();
+        let path_str = path_to_string(rel_path);
         entities_by_file.push((path_str.clone(), entities));
         raw_edges_by_file.push((path_str, raw_edges));
     }
@@ -211,7 +226,7 @@ fn reindex_incremental(
             },
             None => continue,
         };
-        let path_str = cf.path.to_string_lossy().to_string();
+        let path_str = path_to_string(&cf.path);
         let (entities, _) = self::tree_sitter::extract_all(&cf.path, &source, language);
         entities_by_file.push((path_str, entities));
         source_files_for_edges.push((cf.path.clone(), source, language));
@@ -261,10 +276,8 @@ fn reindex_incremental(
         for t in &code_types {
             params.push(t);
         }
-        let deleted_path_strs: Vec<String> = deleted_paths
-            .iter()
-            .map(|p| p.to_string_lossy().to_string())
-            .collect();
+        let deleted_path_strs: Vec<String> =
+            deleted_paths.iter().map(|p| path_to_string(p)).collect();
         for p in &deleted_path_strs {
             params.push(p);
         }
