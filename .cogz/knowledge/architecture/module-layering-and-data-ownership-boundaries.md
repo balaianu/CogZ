@@ -2,9 +2,9 @@
 id: a9d8f4cd-a22a-4e0c-a25a-418c92564dcd
 title: Module layering and data ownership boundaries
 type: knowledge
-status: active
-created_at: 2026-08-28T19:20:00Z
-updated_at: 2026-08-29T23:15:00Z
+status: stale
+created_at: "2026-08-28T19:20:00Z"
+updated_at: "2026-09-04T12:59:11.886747559+00:00"
 references: []
 category: architecture
 tags: ["layering", "architecture", "ownership", "invariants"]

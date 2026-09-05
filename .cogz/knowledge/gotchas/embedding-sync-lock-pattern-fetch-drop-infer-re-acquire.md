@@ -2,9 +2,9 @@
 id: 0644e3bb-3600-42ef-a7a7-3c1bbd01e119
 title: "Embedding sync lock pattern — fetch, drop, infer, re-acquire"
 type: knowledge
-status: active
-created_at: 2026-08-28T19:30:00Z
-updated_at: 2026-08-28T19:30:00Z
+status: stale
+created_at: "2026-08-28T19:30:00Z"
+updated_at: "2026-09-04T12:59:11.495518097+00:00"
 references: ["a9d8f4cd-a22a-4e0c-a25a-418c92564dcd"]
 category: gotchas
 tags: ["mutex", "concurrency", "embeddings", "onnx", "gotcha"]

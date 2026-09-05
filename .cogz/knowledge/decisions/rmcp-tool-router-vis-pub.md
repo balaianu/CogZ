@@ -1,12 +1,13 @@
 ---
 id: ed848e1e-0825-4d17-8c14-fb0f8df06073
-type: knowledge
-status: active
 title: rmcp tool_router vis=pub requirement
+type: knowledge
+status: stale
+created_at: "2026-08-29T02:40:00Z"
+updated_at: "2026-09-04T12:56:48.728025330+00:00"
+references: []
 category: decisions
-tags: [mcp, rmcp, macros, modules]
-created_at: 2026-08-29T02:40:00Z
-updated_at: 2026-08-29T02:40:00Z
+tags: ["mcp", "rmcp", "macros", "modules"]
 ---
 
 # rmcp tool_router vis=pub requirement
