@@ -839,17 +839,40 @@ fn mcp_stdio_write_then_read_roundtrip() {
     child.wait().unwrap();
 }
 
-// ── Tests: real repo (read-only, models available) ──────────────
+// ── Tests: real repo (read-only) ─────────────────────────────────
+
+/// Env vars for real-repo tests: fake HOME/LOCALAPPDATA so the MCP
+/// server doesn't try to load ONNX models from the real user dir.
+/// On CI (especially Windows), model dirs may not exist or model
+/// loading may fail, which would cause the tool to error.
+#[allow(unused_mut)]
+fn real_repo_env() -> Vec<(String, String)> {
+    let fake_home = std::env::temp_dir().join("cogz-test-fake-home");
+    std::fs::create_dir_all(&fake_home).unwrap();
+    let mut env = vec![("HOME".to_string(), fake_home.to_str().unwrap().to_string())];
+    #[cfg(windows)]
+    {
+        let fake_appdata = std::env::temp_dir().join("cogz-test-fake-appdata");
+        std::fs::create_dir_all(&fake_appdata).unwrap();
+        env.push((
+            "LOCALAPPDATA".to_string(),
+            fake_appdata.to_str().unwrap().to_string(),
+        ));
+    }
+    env
+}
 
 #[test]
 fn mcp_stdio_real_repo_get_status() {
-    let (mut client, mut child) = McpClient::spawn(&[]).expect("failed to spawn");
+    let env = real_repo_env();
+    let (mut client, mut child) = McpClient::spawn(&env).expect("failed to spawn");
     client.initialize();
 
-    let text = client.tool_text("get_status", serde_json::json!({"repo": REAL_REPO}));
+    let resp = client.call_tool("get_status", serde_json::json!({"repo": REAL_REPO}));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
     assert!(
         text.contains("db_path") && text.contains("entities"),
-        "get_status on real repo should return status, got: {text}"
+        "get_status on real repo should return status, got: {resp}"
     );
 
     child.kill().unwrap();
@@ -858,14 +881,16 @@ fn mcp_stdio_real_repo_get_status() {
 
 #[test]
 fn mcp_stdio_real_repo_query_knowledge() {
-    let (mut client, mut child) = McpClient::spawn(&[]).expect("failed to spawn");
+    let env = real_repo_env();
+    let (mut client, mut child) = McpClient::spawn(&env).expect("failed to spawn");
     client.initialize();
 
-    let text = client.tool_text("query_knowledge", serde_json::json!({"repo": REAL_REPO}));
+    let resp = client.call_tool("query_knowledge", serde_json::json!({"repo": REAL_REPO}));
+    let text = resp["result"]["content"][0]["text"].as_str().unwrap_or("");
     // The real CogZ repo has knowledge entries
     assert!(
         text.contains("knowledge") && text.contains("count"),
-        "query_knowledge on real repo should return results, got: {text}"
+        "query_knowledge on real repo should return results, got: {resp}"
     );
 
     child.kill().unwrap();

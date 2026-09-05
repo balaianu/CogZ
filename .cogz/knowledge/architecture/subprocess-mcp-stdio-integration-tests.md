@@ -2,9 +2,9 @@
 id: f32a2e47-512c-47d7-83e9-3832cff3cff7
 title: Subprocess MCP stdio integration tests
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-05T07:07:18.941342516+00:00"
-updated_at: "2026-09-05T07:07:18.941342516+00:00"
+updated_at: "2026-09-05T13:02:42.939057278+00:00"
 references: ["tests/test_mcp_stdio.rs"]
 category: architecture
 tags: ["testing", "mcp", "subprocess", "integration"]
