@@ -295,17 +295,17 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     // in the archive.
     #[cfg(target_os = "windows")]
     {
-        if let Some(src_lib_dir) = src_lib.parent() {
-            if let Ok(entries) = std::fs::read_dir(src_lib_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("dll") {
-                        if let Some(name) = path.file_name() {
-                            let dest = lib_dir.join(name);
-                            if !dest.exists() {
-                                let _ = std::fs::copy(&path, &dest);
-                            }
-                        }
+        if let Some(src_lib_dir) = src_lib.parent()
+            && let Ok(entries) = std::fs::read_dir(src_lib_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) == Some("dll")
+                    && let Some(name) = path.file_name()
+                {
+                    let dest = lib_dir.join(name);
+                    if !dest.exists() {
+                        let _ = std::fs::copy(&path, &dest);
                     }
                 }
             }
