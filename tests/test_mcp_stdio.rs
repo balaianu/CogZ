@@ -843,8 +843,8 @@ fn mcp_stdio_write_then_read_roundtrip() {
 
 /// Env vars for real-repo tests: fake HOME/LOCALAPPDATA so the MCP
 /// server doesn't try to load ONNX models from the real user dir.
-/// On CI (especially Windows), model dirs may not exist or model
-/// loading may fail, which would cause the tool to error.
+/// On CI, model dirs may not exist or model loading may fail, which
+/// would cause the tool to error.
 #[allow(unused_mut)]
 fn real_repo_env() -> Vec<(String, String)> {
     let fake_home = std::env::temp_dir().join("cogz-test-fake-home");
@@ -862,9 +862,32 @@ fn real_repo_env() -> Vec<(String, String)> {
     env
 }
 
+/// Ensure the real repo has a built DB. On CI, the checkout has no
+/// `.cogz/cogz.db` — `cogz index --no-download` builds it from the
+/// canonical Markdown files.
+fn ensure_real_repo_indexed(env: &[(String, String)]) {
+    let db_path = std::path::Path::new(REAL_REPO).join(".cogz/cogz.db");
+    if db_path.exists() {
+        return;
+    }
+    let status = Command::new(COGZ_BIN)
+        .args(["index", "--no-download", "--repo"])
+        .arg(REAL_REPO)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to run cogz index on real repo");
+    assert!(
+        status.success(),
+        "cogz index --no-download failed on real repo"
+    );
+}
+
 #[test]
 fn mcp_stdio_real_repo_get_status() {
     let env = real_repo_env();
+    ensure_real_repo_indexed(&env);
     let (mut client, mut child) = McpClient::spawn(&env).expect("failed to spawn");
     client.initialize();
 
@@ -882,6 +905,7 @@ fn mcp_stdio_real_repo_get_status() {
 #[test]
 fn mcp_stdio_real_repo_query_knowledge() {
     let env = real_repo_env();
+    ensure_real_repo_indexed(&env);
     let (mut client, mut child) = McpClient::spawn(&env).expect("failed to spawn");
     client.initialize();
 
