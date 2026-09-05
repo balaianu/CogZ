@@ -195,7 +195,7 @@ file. The DB is never a write target. It's a read index.
 |---|---|---|---|
 | knowledge | `.cogz/knowledge/<category>/` | Yes | Human (direct edit) or agent (`create_knowledge`) |
 | rule | `.cogz/rules/` | Yes | Agent (`create_rule`) or consolidation (promotion) |
-| observation | `.cogz/observations/<year-month>/` | No (gitignored) | Agent (`record_observation`) |
+| observation | `.cogz/observations/<year-month>/` | Yes | Agent (`record_observation`) |
 | function | (code file, not a .cogz file) | N/A — indexed from source | Indexer (tree-sitter) |
 | class | (code file, not a .cogz file) | N/A — indexed from source | Indexer (tree-sitter) |
 | file | (code file, not a .cogz file) | N/A — indexed from source | Indexer (tree-sitter) |
@@ -213,7 +213,7 @@ and exist only in the DB. They are rebuildable from source via
 | `.cogz/config.toml` | Yes | Shared config — project identity, search settings, consolidation thresholds. Team members need the same config. |
 | `.cogz/knowledge/` | Yes | Human-readable, curated documentation. Shared understanding of the codebase. Meant to be read, reviewed, versioned. |
 | `.cogz/rules/` | Yes | Validated knowledge. Trustworthy, stable, shared. A team should agree on rules. |
-| `.cogz/observations/` | No (gitignored) | Raw experience from a specific agent. Personal, transient, potentially wrong. Not shared. Survives on disk but not versioned. |
+| `.cogz/observations/` | Yes | Engineering discoveries — bugs, gotchas, design insights. Shared institutional memory. The observation→rule promotion trail is valuable for onboarding and context. |
 | `.cogz/cogz.db` | No (gitignored) | Binary, machine-generated, fully rebuildable from files + code. |
 
 **Principle: git tracks human-readable canonical content. Everything
@@ -310,7 +310,6 @@ A new contributor clones the repo. They get:
 - `.cogz/rules/` — validated rules
 
 They do NOT get:
-- `.cogz/observations/` — gitignored, personal to the original agent
 - `.cogz/cogz.db` — gitignored, will be rebuilt
 
 They run `cogz index`:
@@ -768,11 +767,11 @@ duplicates are surfaced for review.
 
 ## Retention and Bounded Growth
 
-Observations are append-only, gitignored, and numerous. After months
-of daily use, thousands accumulate — most stale or rejected. The
-system must not grow unboundedly (first principle #10), but memory is
-additive (first principle #8). The resolution: **explicit pruning via
-`cogz doctor`, with tombstones for graph integrity.**
+Observations are append-only and numerous. After months of daily use,
+thousands accumulate — most stale or rejected. The system must not
+grow unboundedly (first principle #10), but memory is additive (first
+principle #8). The resolution: **explicit pruning via `cogz doctor`,
+with tombstones for graph integrity.**
 
 ### What can be pruned
 
@@ -1029,7 +1028,7 @@ cogz                    — the binary (~10-20 MB)
   config.toml           — git-tracked
   knowledge/            — git-tracked
   rules/                — git-tracked
-  observations/         — gitignored
+  observations/         — git-tracked
   cogz.db               — gitignored
 ~/.local/share/cogz/    — model cache (ONNX models downloaded on first run)
 ```

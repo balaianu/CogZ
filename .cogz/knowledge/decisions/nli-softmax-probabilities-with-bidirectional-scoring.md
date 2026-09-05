@@ -2,9 +2,9 @@
 id: f3c86f25-4ef3-4b97-915b-70b3532a362b
 title: NLI softmax probabilities with bidirectional scoring
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-01T12:26:41.940383925+00:00"
-updated_at: "2026-09-01T12:26:41.940383925+00:00"
+updated_at: "2026-09-05T09:13:27.804795109+00:00"
 references: []
 category: decisions
 tags: ["nli", "contradiction", "softmax", "bidirectional"]

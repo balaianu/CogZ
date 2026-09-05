@@ -2,9 +2,9 @@
 id: 2139737d-c249-4ac9-ba08-f6880298216d
 title: "Why vector search filters in Rust, not SQL"
 type: knowledge
-status: active
-created_at: 2026-08-28T19:24:00Z
-updated_at: 2026-08-29T23:15:00Z
+status: stale
+created_at: "2026-08-28T19:24:00Z"
+updated_at: "2026-09-05T09:13:27.487256611+00:00"
 references: ["ac43ee1b-2322-4ba1-afcf-cd2464a2d065"]
 category: decisions
 tags: ["vec0", "sqlite-vec", "filtering", "trade-off"]

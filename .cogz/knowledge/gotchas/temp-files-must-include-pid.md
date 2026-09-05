@@ -2,9 +2,9 @@
 id: f2a6b7c8-09cc-414e-831c-8f5710374d4a
 title: Temp files must include PID for concurrent safety
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-03T12:00:00Z"
-updated_at: "2026-09-03T12:00:00Z"
+updated_at: "2026-09-05T09:13:27.762913405+00:00"
 references: []
 category: gotchas
 tags: ["temp-files", "concurrency", "update", "embed-bg"]

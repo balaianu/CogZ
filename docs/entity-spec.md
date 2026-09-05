@@ -452,9 +452,10 @@ referencing that code get `status = stale`. This is a lifecycle
 transition, not a content change — the observation still says what it
 always said, it's just no longer reliable.
 
-Observations are gitignored — no git history to recover the original.
-This reinforces the append-only policy: there is no safety net if
-content is overwritten.
+Observations are git-tracked. Git history provides recovery if content
+is accidentally overwritten, but the append-only policy still applies:
+no `update_observation` tool exists. Use `record_observation` to add
+new observations rather than editing existing ones.
 
 ---
 

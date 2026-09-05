@@ -2,9 +2,9 @@
 id: 06dd8275-c7a2-4b4f-b5a4-455b762062e9
 title: FTS5 external content table and trigger sync gotchas
 type: knowledge
-status: active
-created_at: 2026-08-28T19:28:00Z
-updated_at: 2026-08-28T19:28:00Z
+status: stale
+created_at: "2026-08-28T19:28:00Z"
+updated_at: "2026-09-05T09:13:27.412266182+00:00"
 references: []
 category: gotchas
 tags: ["fts5", "sqlite", "triggers", "sync", "gotcha"]

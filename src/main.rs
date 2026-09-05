@@ -24,9 +24,10 @@ enum Commands {
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         /// Gitignore all of .cogz/ — nothing is committed to git.
-        /// Use this for solo projects where knowledge and rules
-        /// should stay local. Default is team-sharing mode (knowledge
-        /// and rules are committed, observations and DB are gitignored).
+        /// Use this for solo projects where knowledge, rules, and
+        /// observations should stay local. Default is team-sharing
+        /// mode (knowledge, rules, and observations are committed;
+        /// DB is gitignored).
         #[arg(long)]
         local_only: bool,
     },
