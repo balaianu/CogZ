@@ -122,7 +122,12 @@ impl OnnxEmbeddingModel {
     /// Try to load the model and tokenizer.
     fn try_load(&self) -> EmbeddingResult<()> {
         // Fast path: model already loaded.
-        if self.session.lock().unwrap().is_some() {
+        if self
+            .session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             self.idle_tracker.touch();
             return Ok(());
         }
@@ -211,7 +216,10 @@ impl OnnxEmbeddingModel {
             .inputs()
             .iter()
             .any(|i| i.name() == "token_type_ids");
-        *self.has_token_type_ids.lock().unwrap() = has_tti;
+        *self
+            .has_token_type_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = has_tti;
 
         let tokenizer = tokenizers::Tokenizer::from_file(&tokenizer_path).map_err(|e| {
             warn!("tokenizer load failed: {}", e);
@@ -240,18 +248,24 @@ impl OnnxEmbeddingModel {
         }));
         let tokenizer = tokenizer;
 
-        *self.session.lock().unwrap() = Some(session);
-        *self.tokenizer.lock().unwrap() = Some(tokenizer);
-        *self.available.lock().unwrap() = true;
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+        *self.tokenizer.lock().unwrap_or_else(|e| e.into_inner()) = Some(tokenizer);
+        *self.available.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.idle_tracker.touch();
         Ok(())
     }
 
     /// Drop the loaded model and tokenizer, freeing memory.
     pub fn unload(&self) {
-        self.session.lock().unwrap().take();
-        self.tokenizer.lock().unwrap().take();
-        *self.available.lock().unwrap() = false;
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        self.tokenizer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        *self.available.lock().unwrap_or_else(|e| e.into_inner()) = false;
     }
 
     /// Find the ONNX model file in the model directory, trying all
@@ -315,7 +329,7 @@ impl EmbeddingModel for OnnxEmbeddingModel {
     }
 
     fn is_available(&self) -> bool {
-        *self.available.lock().unwrap()
+        *self.available.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn embed_query(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
@@ -333,11 +347,14 @@ impl OnnxEmbeddingModel {
     /// Embed a single chunk of texts (≤ CHUNK_SIZE). Holds the session
     /// and tokenizer locks for the duration of inference.
     fn embed_chunk(&self, texts: &[&str]) -> EmbeddingResult<Vec<Vec<f32>>> {
-        let mut session_guard = self.session.lock().unwrap();
-        let tokenizer_guard = self.tokenizer.lock().unwrap();
+        let mut session_guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        let tokenizer_guard = self.tokenizer.lock().unwrap_or_else(|e| e.into_inner());
         let session = session_guard.as_mut().unwrap();
         let tokenizer = tokenizer_guard.as_ref().unwrap();
-        let has_tti = *self.has_token_type_ids.lock().unwrap();
+        let has_tti = *self
+            .has_token_type_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         run_inference(session, tokenizer, texts, self.dimension, has_tti)
     }

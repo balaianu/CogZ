@@ -43,8 +43,8 @@ impl EmbeddingCache {
         let key = (model_name.to_string(), content_hash(text));
         let result = self.entries.lock().ok()?.get(&key).cloned();
         match &result {
-            Some(_) => *self.hits.lock().unwrap() += 1,
-            None => *self.misses.lock().unwrap() += 1,
+            Some(_) => *self.hits.lock().unwrap_or_else(|e| e.into_inner()) += 1,
+            None => *self.misses.lock().unwrap_or_else(|e| e.into_inner()) += 1,
         }
         result
     }
@@ -118,12 +118,12 @@ impl EmbeddingCache {
 
     /// Number of cache hits since creation.
     pub fn hits(&self) -> u64 {
-        *self.hits.lock().unwrap()
+        *self.hits.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Number of cache misses since creation.
     pub fn misses(&self) -> u64 {
-        *self.misses.lock().unwrap()
+        *self.misses.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Total entries in the cache.

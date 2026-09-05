@@ -44,7 +44,7 @@ impl IdleTracker {
 
     /// Mark the model as used right now.
     pub fn touch(&self) {
-        *self.last_used.lock().unwrap() = Some(Instant::now());
+        *self.last_used.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
     }
 
     /// Returns true if the model has been idle longer than the TTL.
@@ -53,7 +53,7 @@ impl IdleTracker {
         if self.ttl.is_zero() {
             return false;
         }
-        match *self.last_used.lock().unwrap() {
+        match *self.last_used.lock().unwrap_or_else(|e| e.into_inner()) {
             Some(last) => last.elapsed() >= self.ttl,
             None => false,
         }

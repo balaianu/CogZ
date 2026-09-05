@@ -57,6 +57,32 @@ TMP_FILE=$(mktemp /tmp/cogz-download-XXXXXX)
 echo "Downloading ${ASSET}..."
 curl -fsSL -o "${TMP_FILE}" "${DOWNLOAD_URL}"
 
+# Verify checksum from SHA256SUMS.
+CHECKSUM_URL=$(curl -fsSL "${GITHUB_API}" | grep -o "browser_download_url.*SHA256SUMS\"" | head -1 | sed 's/browser_download_url: "//;s/"$//')
+if [ -n "${CHECKSUM_URL}" ]; then
+    TMP_SUMS=$(mktemp /tmp/cogz-sums-XXXXXX)
+    curl -fsSL -o "${TMP_SUMS}" "${CHECKSUM_URL}"
+    EXPECTED_HASH=$(grep "  ${ASSET}$" "${TMP_SUMS}" | awk '{print $1}')
+    if [ -z "${EXPECTED_HASH}" ]; then
+        echo "Error: SHA256SUMS downloaded but no entry for ${ASSET}."
+        echo "Refusing to install unverified binary."
+        rm -f "${TMP_FILE}" "${TMP_SUMS}"
+        exit 1
+    fi
+    ACTUAL_HASH=$(sha256sum "${TMP_FILE}" | awk '{print $1}')
+    if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then
+        echo "Error: checksum mismatch."
+        echo "  Expected: ${EXPECTED_HASH}"
+        echo "  Actual:   ${ACTUAL_HASH}"
+        rm -f "${TMP_FILE}" "${TMP_SUMS}"
+        exit 1
+    fi
+    echo "Checksum verified."
+    rm -f "${TMP_SUMS}"
+else
+    echo "WARNING: SHA256SUMS not found in release. Installing without checksum verification."
+fi
+
 # Make executable.
 chmod +x "${TMP_FILE}"
 

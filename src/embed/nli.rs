@@ -107,9 +107,15 @@ impl OnnxNliModel {
 
     /// Drop the loaded model and tokenizer, freeing memory.
     pub fn unload(&self) {
-        self.session.lock().unwrap().take();
-        self.tokenizer.lock().unwrap().take();
-        *self.available.lock().unwrap() = false;
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        self.tokenizer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        *self.available.lock().unwrap_or_else(|e| e.into_inner()) = false;
     }
 
     /// Find the ONNX model file, trying all known layouts.
@@ -126,7 +132,12 @@ impl OnnxNliModel {
 
     fn try_load(&self) -> EmbeddingResult<()> {
         // Fast path: model already loaded.
-        if self.session.lock().unwrap().is_some() {
+        if self
+            .session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
+        {
             self.idle_tracker.touch();
             return Ok(());
         }
@@ -175,7 +186,7 @@ impl OnnxNliModel {
         if let Ok(config_json) = std::fs::read_to_string(&config_path)
             && let Some(map) = LabelMap::from_config_json(&config_json)
         {
-            *self.label_map.lock().unwrap() = map;
+            *self.label_map.lock().unwrap_or_else(|e| e.into_inner()) = map;
         }
 
         let session = {
@@ -213,9 +224,9 @@ impl OnnxNliModel {
             })?;
         let tokenizer = tokenizer;
 
-        *self.session.lock().unwrap() = Some(session);
-        *self.tokenizer.lock().unwrap() = Some(tokenizer);
-        *self.available.lock().unwrap() = true;
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Some(session);
+        *self.tokenizer.lock().unwrap_or_else(|e| e.into_inner()) = Some(tokenizer);
+        *self.available.lock().unwrap_or_else(|e| e.into_inner()) = true;
         self.idle_tracker.touch();
         Ok(())
     }
@@ -238,8 +249,8 @@ impl NliModel for OnnxNliModel {
     fn classify(&self, premise: &str, hypothesis: &str) -> EmbeddingResult<NliProbabilities> {
         self.try_load()?;
 
-        let mut session_guard = self.session.lock().unwrap();
-        let tokenizer_guard = self.tokenizer.lock().unwrap();
+        let mut session_guard = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        let tokenizer_guard = self.tokenizer.lock().unwrap_or_else(|e| e.into_inner());
         let session: &mut Session = session_guard.as_mut().unwrap();
         let tokenizer = tokenizer_guard.as_ref().unwrap();
 
@@ -281,7 +292,7 @@ impl NliModel for OnnxNliModel {
             )));
         }
 
-        let map = *self.label_map.lock().unwrap();
+        let map = *self.label_map.lock().unwrap_or_else(|e| e.into_inner());
 
         // Softmax: exp(x - max) / sum(exp(x - max)) for numerical stability.
         let max_logit = data[0..3].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
@@ -305,7 +316,7 @@ impl NliModel for OnnxNliModel {
     }
 
     fn is_available(&self) -> bool {
-        *self.available.lock().unwrap()
+        *self.available.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 

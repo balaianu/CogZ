@@ -49,13 +49,38 @@ $TempFile = [System.IO.Path]::GetTempFileName()
 Write-Host "Downloading $Asset..."
 Invoke-WebRequest -Uri $DownloadUrl -OutFile $TempFile
 
+# Verify checksum from SHA256SUMS.
+$ChecksumAsset = $Release.assets | Where-Object { $_.name -eq "SHA256SUMS" } | Select-Object -First 1
+if ($ChecksumAsset) {
+    $TempSums = [System.IO.Path]::GetTempFileName()
+    Invoke-WebRequest -Uri $ChecksumAsset.browser_download_url -OutFile $TempSums
+    $SumsContent = Get-Content $TempSums -Raw
+    $ExpectedLine = ($SumsContent -split "`n" | Where-Object { $_ -match "  $Asset$" }) -replace "^\s+", ""
+    if (-not $ExpectedLine) {
+        Write-Error "SHA256SUMS downloaded but no entry for $Asset. Refusing to install unverified binary."
+        Remove-Item $TempFile, $TempSums -Force
+        exit 1
+    }
+    $ExpectedHash = ($ExpectedLine -split "\s+")[0]
+    $ActualHash = (Get-FileHash $TempFile -Algorithm SHA256).Hash.ToLower()
+    if ($ExpectedHash.ToLower() -ne $ActualHash) {
+        Write-Error "Checksum mismatch. Expected: $ExpectedHash, Actual: $ActualHash"
+        Remove-Item $TempFile, $TempSums -Force
+        exit 1
+    }
+    Write-Host "Checksum verified."
+    Remove-Item $TempSums -Force
+} else {
+    Write-Host "WARNING: SHA256SUMS not found in release. Installing without checksum verification."
+}
+
 # Install.
 $DestPath = Join-Path $InstallDir "cogz.exe"
 Move-Item -Path $TempFile -Destination $DestPath -Force
 Write-Host "Installed to $DestPath"
 
 # Create model cache directory.
-$ModelDir = "$HOME\AppData\Local\cogz\models"
+$ModelDir = Join-Path $env:LOCALAPPDATA "cogz\models"
 if (-not (Test-Path $ModelDir)) {
     New-Item -ItemType Directory -Path $ModelDir -Force | Out-Null
 }
