@@ -2,9 +2,9 @@
 id: e1f5a6b7-09cc-414e-831c-8f5710374d4a
 title: Checksum skip on missing entry is a security hole
 type: knowledge
-status: stale
+status: active
 created_at: "2026-09-03T11:59:00Z"
-updated_at: "2026-09-05T12:20:02.821294659+00:00"
+updated_at: "2026-09-05T20:25:00Z"
 references: []
 category: gotchas
 tags: ["security", "checksum", "update", "download", "onnx"]
@@ -30,21 +30,23 @@ downloaded binary to be installed without any integrity check.
   error**
 - SHA256SUMS downloaded, entry found, hash matches: proceed
 
-## Two affected paths
+## Both paths now enforce the rule
 
-1. **Self-update** (`src/update.rs`): Added `ChecksumEntryNotFound`
-   error variant. Fails the update if the SHA256SUMS file doesn't
-   contain an entry for the platform asset.
+1. **Self-update** (`src/update.rs`): `ChecksumEntryNotFound` error
+   variant. Fails the update if SHA256SUMS doesn't contain an entry
+   for the platform asset.
 
-2. **ONNX Runtime download** (`src/embed/runtime.rs`): Downloads
-   SHA256SUMS from the release, verifies the archive hash before
-   extraction. Falls back to warn-only if SHA256SUMS is unavailable
-   (ONNX Runtime is not a CogZ asset — it's Microsoft's release).
+2. **ONNX Runtime download** (`src/embed/runtime.rs`): Returns an
+   error if SHA256SUMS is downloaded but has no entry for the ORT
+   asset. Only falls back to warn-only when SHA256SUMS itself is
+   unavailable (network error, 404) — that's degraded mode, not a
+   security bypass.
 
-## Why warn-only for ONNX Runtime unavailable
+## Why warn-only for SHA256SUMS unavailable (not missing entry)
 
 ONNX Runtime is optional (FTS-only mode works without it). Blocking
-`cogz index` because Microsoft's SHA256SUMS is temporarily
-unavailable would be worse than proceeding without verification.
-The self-update path is stricter because a corrupted binary is
-always worse than no update.
+`cogz index` because Microsoft's SHA256SUMS endpoint is temporarily
+unavailable would be worse than proceeding without verification —
+the download is still over HTTPS. But if the file IS available and
+doesn't mention the asset we're downloading, that's suspicious and
+must fail.

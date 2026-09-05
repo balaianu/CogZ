@@ -220,31 +220,47 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     drop(file);
 
     // Verify checksum from the release's SHA256SUMS file.
+    // Per the checksum verification rule: if SHA256SUMS is available
+    // but has no entry for the target asset, fail — this is a
+    // security hole, not degraded mode. If SHA256SUMS is unavailable
+    // (network error, 404), warn and proceed (degraded mode).
     let checksum_url = format!(
         "https://github.com/microsoft/onnxruntime/releases/download/v{}/SHA256SUMS",
         ORT_VERSION
     );
-    if let Ok(checksum_resp) = ureq::get(&checksum_url).call() {
-        if let Ok(sums_content) = checksum_resp.into_body().read_to_string() {
-            if let Some(expected_hash) = find_ort_checksum(&sums_content, ORT_ASSET) {
-                let actual_hash = sha256_file(&archive_path)?;
-                if expected_hash != actual_hash {
+    match ureq::get(&checksum_url).call() {
+        Ok(checksum_resp) => {
+            let sums_content = checksum_resp
+                .into_body()
+                .read_to_string()
+                .map_err(|e| std::io::Error::other(format!("failed to read SHA256SUMS: {e}")))?;
+            match find_ort_checksum(&sums_content, ORT_ASSET) {
+                Some(expected_hash) => {
+                    let actual_hash = sha256_file(&archive_path)?;
+                    if expected_hash != actual_hash {
+                        let _ = std::fs::remove_dir_all(&temp_dir);
+                        return Err(std::io::Error::other(format!(
+                            "ONNX Runtime checksum mismatch: expected {expected_hash}, got {actual_hash}"
+                        )));
+                    }
+                    info!("ONNX Runtime checksum verified");
+                }
+                None => {
                     let _ = std::fs::remove_dir_all(&temp_dir);
                     return Err(std::io::Error::other(format!(
-                        "ONNX Runtime checksum mismatch: expected {expected_hash}, got {actual_hash}"
+                        "ONNX Runtime SHA256SUMS downloaded but no entry for {ORT_ASSET} — \
+                         refusing to install unverified binary"
                     )));
                 }
-                info!("ONNX Runtime checksum verified");
-            } else {
-                warn!(
-                    "ONNX Runtime SHA256SUMS downloaded but no entry for {} — \
-                     proceeding without checksum verification",
-                    ORT_ASSET
-                );
             }
         }
-    } else {
-        warn!("ONNX Runtime SHA256SUMS not available — proceeding without checksum verification");
+        Err(e) => {
+            warn!(
+                "ONNX Runtime SHA256SUMS not available ({}): \
+                 proceeding without checksum verification (degraded mode)",
+                e
+            );
+        }
     }
 
     // Extract the archive. `tar` is available on all supported platforms:

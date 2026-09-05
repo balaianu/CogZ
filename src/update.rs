@@ -24,6 +24,8 @@ pub enum UpdateError {
     ChecksumEntryNotFound(String),
     #[error("no suitable asset found in release")]
     NoAsset,
+    #[error("self-update is not supported on {0}")]
+    UnsupportedPlatform(String),
 }
 
 /// GitHub release response (partial).
@@ -72,21 +74,23 @@ pub fn check_latest_version() -> Result<VersionStatus, UpdateError> {
 }
 
 /// Detect the current platform's asset name.
-fn platform_asset_name() -> &'static str {
+/// Returns None for unsupported platforms — the caller should fail
+/// with a clear error rather than downloading a wrong-arch binary.
+fn platform_asset_name() -> Option<&'static str> {
     let arch = std::env::consts::ARCH;
     let os = std::env::consts::OS;
     match (os, arch) {
-        ("linux", "x86_64") => "cogz-x86_64-unknown-linux-gnu",
-        ("linux", "aarch64") => "cogz-aarch64-unknown-linux-gnu",
-        ("macos", "aarch64") => "cogz-aarch64-apple-darwin",
-        ("windows", "x86_64") => "cogz-x86_64-pc-windows-msvc.exe",
-        _ => "cogz-x86_64-unknown-linux-gnu",
+        ("linux", "x86_64") => Some("cogz-x86_64-unknown-linux-gnu"),
+        ("linux", "aarch64") => Some("cogz-aarch64-unknown-linux-gnu"),
+        ("macos", "aarch64") => Some("cogz-aarch64-apple-darwin"),
+        ("windows", "x86_64") => Some("cogz-x86_64-pc-windows-msvc.exe"),
+        _ => None,
     }
 }
 
 /// Find the download URL for the current platform's binary.
 fn find_asset_url(release: &Release) -> Option<&str> {
-    let target = platform_asset_name();
+    let target = platform_asset_name()?;
     release
         .assets
         .iter()
@@ -168,7 +172,13 @@ pub fn run_update() -> Result<String, UpdateError> {
                 .read_json()
                 .map_err(|e| UpdateError::Network(e.to_string()))?;
 
-            let asset_name = platform_asset_name();
+            let asset_name = platform_asset_name().ok_or_else(|| {
+                UpdateError::UnsupportedPlatform(format!(
+                    "{} {}",
+                    std::env::consts::OS,
+                    std::env::consts::ARCH
+                ))
+            })?;
             let asset_url = find_asset_url(&release).ok_or(UpdateError::NoAsset)?;
 
             // Download to a temp file. Include PID to avoid collisions
@@ -270,6 +280,21 @@ mod tests {
         assert_eq!(
             find_checksum(sums, "cogz-x86_64-unknown-linux-gnu"),
             Some("abc123".to_string())
+        );
+    }
+
+    #[test]
+    fn platform_asset_name_returns_some_on_supported_platforms() {
+        // This test runs on the current platform. It verifies that
+        // platform_asset_name returns a value (the current platform
+        // is always supported since CI runs on supported OSes).
+        let result = platform_asset_name();
+        assert!(
+            result.is_some(),
+            "platform_asset_name returned None on {} {} — \
+             this platform should be supported or CI should not run here",
+            std::env::consts::OS,
+            std::env::consts::ARCH
         );
     }
 }
