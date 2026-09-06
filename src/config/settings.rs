@@ -251,7 +251,7 @@ impl Config {
                 source_balance_enabled: false,
             },
             consolidation: ConsolidationConfig {
-                dedup_threshold: 0.92,
+                dedup_threshold: 0.85,
                 title_match_threshold: 0.85,
                 contradiction_check: true,
                 promotion_threshold: 3,

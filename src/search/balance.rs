@@ -134,15 +134,14 @@ fn fts_pool_signal(
 }
 
 /// Convert vec0 L2 distances to relative similarities and average the
-/// top-k. sqlite-vec returns L2 (Euclidean) distances, which for
-/// high-dimensional vectors are typically 10-25 — not bounded to [0, 2]
-/// like cosine distances. To make distances comparable across different
-/// embedding spaces (code vs knowledge use different models), we
-/// normalize each batch to [0, 1] by dividing by the max distance, then
-/// convert to similarity: `1.0 - d/d_max`. The nearest neighbor gets
-/// similarity ~1.0, the farthest gets ~0.0. This is a relative measure
-/// of how close the query is to the nearest entities in this space
-/// compared to the farthest in the same batch.
+/// top-k. Embeddings are L2-normalized at inference time, so distances
+/// range [0, 2] (0 = identical, 2 = opposite). We normalize each batch
+/// to [0, 1] by dividing by the max distance, then convert to
+/// similarity: `1.0 - d/d_max`. The nearest neighbor gets similarity
+/// ~1.0, the farthest gets ~0.0. This is a relative measure of how
+/// close the query is to the nearest entities in this space compared
+/// to the farthest in the same batch — it detects distance *gradient*
+/// (strong vs weak match), not absolute similarity.
 fn mean_top_k_similarity(distances: &[f32], k: usize) -> f64 {
     if distances.is_empty() {
         return 0.0;

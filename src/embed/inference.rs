@@ -1,5 +1,5 @@
 //! Batched ONNX inference — tokenization, tensor construction, and
-//! embedding extraction with mean pooling.
+//! embedding extraction with mean pooling and L2 normalization.
 
 use ort::session::Session;
 use ort::value::Tensor;
@@ -94,7 +94,7 @@ pub fn run_inference(
         for i in 0..batch {
             let row = &data[i * row_size..(i + 1) * row_size];
             let mask = &all_attention_masks[i];
-            let embedding = mean_pool_with_mask(row, mask, seq, dim);
+            let mut embedding = mean_pool_with_mask(row, mask, seq, dim);
 
             if embedding.len() != dimension {
                 return Err(EmbeddingError::DimensionMismatch {
@@ -102,6 +102,7 @@ pub fn run_inference(
                     actual: embedding.len(),
                 });
             }
+            l2_normalize(&mut embedding);
             results.push(embedding);
         }
     } else if shape.len() == 2 {
@@ -110,13 +111,14 @@ pub fn run_inference(
         let batch = shape[0] as usize;
 
         for i in 0..batch {
-            let embedding = data[i * dim..(i + 1) * dim].to_vec();
+            let mut embedding = data[i * dim..(i + 1) * dim].to_vec();
             if embedding.len() != dimension {
                 return Err(EmbeddingError::DimensionMismatch {
                     expected: dimension,
                     actual: embedding.len(),
                 });
             }
+            l2_normalize(&mut embedding);
             results.push(embedding);
         }
     } else {
@@ -127,4 +129,17 @@ pub fn run_inference(
     }
 
     Ok(results)
+}
+
+/// L2-normalize a vector in place (divide by its Euclidean norm).
+/// Unit vectors make L2 distance directly convertible to cosine
+/// similarity via `cos = 1 - L2² / 2`, and ensure KNN ordering is
+/// by direction, not magnitude.
+fn l2_normalize(vec: &mut [f32]) {
+    let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > 0.0 {
+        for x in vec.iter_mut() {
+            *x /= norm;
+        }
+    }
 }

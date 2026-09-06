@@ -2,9 +2,9 @@
 id: c9d3e4f5-09cc-414e-831c-8f5710374d4a
 title: Dedup must filter to active entities only
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-03T11:57:00Z"
-updated_at: "2026-09-03T11:57:00Z"
+updated_at: "2026-09-06T20:50:06.005718566+00:00"
 references: []
 category: gotchas
 tags: ["dedup", "consolidation", "status-filter", "knn"]

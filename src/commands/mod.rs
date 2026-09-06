@@ -293,6 +293,22 @@ pub fn run_consolidate(repo: &Path, dry_run: bool) -> anyhow::Result<()> {
 
     let storage = cogz::storage::Storage::open(&db_path, config.embedding.dimension)?;
 
+    // Load the NLI model for merge confirmation. The model is
+    // lazy-loaded — always pass it so NLI can load on demand.
+    // If the model can't load, confirm_duplicate_nli returns false
+    // and candidates are skipped (conservative — no merge without
+    // confirmation).
+    let nli_model = {
+        let models_dir = crate::cli_embed::models_dir();
+        cogz::embed::OnnxNliModel::with_resource_config(
+            &models_dir,
+            &config.embedding.nli_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
+        )
+    };
+    let nli_ref: Option<&dyn cogz::embed::NliModel> = Some(&nli_model);
+
     println!(
         "Consolidating{}...",
         if dry_run { " (dry run)" } else { "" }
@@ -319,8 +335,13 @@ pub fn run_consolidate(repo: &Path, dry_run: bool) -> anyhow::Result<()> {
         }
     }
 
-    let merged =
-        cogz::consolidate::merge::run_merge(&storage, &cogz_dir, &config.consolidation, dry_run)?;
+    let merged = cogz::consolidate::merge::run_merge(
+        &storage,
+        &cogz_dir,
+        &config.consolidation,
+        nli_ref,
+        dry_run,
+    )?;
     println!("\n  Merged: {}", merged.len());
     for m in &merged {
         println!(

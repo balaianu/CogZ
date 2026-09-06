@@ -11,6 +11,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::ConsolidationConfig;
+use crate::consolidate::dedup::confirm_duplicate_nli;
+use crate::embed::NliModel;
+use crate::embed::similarity::l2_to_cosine;
 use crate::files::frontmatter::FmValue;
 use crate::files::{FrontmatterError, read_entity_file, write_entity_file};
 use crate::storage::StorageError;
@@ -40,13 +43,20 @@ pub struct MergeResult {
 
 /// Run merge across all active observations. Returns the list of
 /// merged pairs. When `dry_run` is true, no changes are made.
+///
+/// NLI confirmation gates auto-merge: embedding similarity finds
+/// candidates, then bidirectional NLI entailment confirms true
+/// duplicates before any merge occurs. When `nli_model` is `None`,
+/// falls back to embedding-only (candidates are reported but not
+/// merged in non-dry-run mode — a warning is logged).
 pub fn run_merge(
     storage: &crate::storage::Storage,
     cogz_dir: &Path,
     config: &ConsolidationConfig,
+    nli_model: Option<&dyn NliModel>,
     dry_run: bool,
 ) -> Result<Vec<MergeResult>, StorageError> {
-    let pairs = find_merge_candidates(storage, config)?;
+    let pairs = find_merge_candidates(storage, config, nli_model)?;
 
     if dry_run {
         return Ok(pairs
@@ -97,11 +107,20 @@ struct MergeCandidate {
     reason: String,
 }
 
-/// Find duplicate observation pairs via embedding similarity. The
-/// earlier-created entity survives; the later one is superseded.
+/// Find duplicate observation pairs via embedding similarity, confirmed
+/// by NLI bidirectional entailment. The earlier-created entity survives;
+/// the later one is superseded.
+///
+/// Embedding similarity (cosine ≥ `dedup_threshold`) finds candidates.
+/// NLI confirmation (`confirm_duplicate_nli` with `dedup_nli_threshold`)
+/// filters out related-but-distinct pairs and contradictions — only
+/// true semantic duplicates survive. When the NLI model is unavailable,
+/// candidates are still reported (for dry-run visibility) but the reason
+/// notes that NLI confirmation was skipped.
 fn find_merge_candidates(
     storage: &crate::storage::Storage,
     config: &ConsolidationConfig,
+    nli_model: Option<&dyn NliModel>,
 ) -> Result<Vec<MergeCandidate>, StorageError> {
     use crate::storage::embeddings::{EmbeddingSpace, knn_search_with_type_filter};
 
@@ -117,6 +136,19 @@ fn find_merge_candidates(
     let mut seen_pairs = std::collections::HashSet::new();
     let mut candidates = Vec::new();
 
+    // Probe the NLI model with a trivial classification to trigger
+    // lazy loading. If the model can't load (missing files, ONNX
+    // runtime error), fall back to embedding-only merge. This
+    // distinguishes "NLI configured but unavailable" from "NLI
+    // available but didn't confirm" — without it, a broken NLI
+    // model would silently disable all merges.
+    let nli_available = if let Some(model) = nli_model {
+        model.classify("test", "test").is_ok()
+    } else {
+        false
+    };
+    let nli_model = if nli_available { nli_model } else { None };
+
     // Acquire the connection once for all KNN searches, instead of
     // re-acquiring the mutex per observation.
     let conn = storage.conn();
@@ -127,7 +159,6 @@ fn find_merge_candidates(
     let embedding_map = get_knowledge_embeddings_batch(&conn, &obs_ids)?;
 
     for obs in &observations {
-        // Get this observation's embedding from the batch map.
         let own_embedding = match embedding_map.get(&obs.id) {
             Some(e) => e,
             None => continue,
@@ -151,19 +182,16 @@ fn find_merge_candidates(
             if neighbor_id == &obs.id {
                 continue;
             }
-            let similarity = 1.0 / (1.0 + *distance as f64);
+            let similarity = l2_to_cosine(*distance as f64);
             if similarity < config.dedup_threshold {
                 continue;
             }
 
-            // Look up the neighbor in our observations list to get
-            // created_at for survivor/superseded ordering.
             let neighbor = match observations.iter().find(|o| o.id == *neighbor_id) {
                 Some(o) => o,
                 None => continue,
             };
 
-            // Survivor = earlier created. Superseded = later created.
             let (survivor, superseded) = if obs.created_at <= neighbor.created_at {
                 (obs, neighbor)
             } else {
@@ -176,10 +204,37 @@ fn find_merge_candidates(
             }
             seen_pairs.insert(pair_key);
 
+            // NLI confirmation: only merge if both directions entail
+            // each other above the NLI threshold. This filters out
+            // related-but-distinct pairs and contradictions that have
+            // high embedding similarity but aren't true duplicates.
+            let nli_confirmed = confirm_duplicate_nli(
+                nli_model,
+                &survivor.content,
+                &superseded.content,
+                config.dedup_nli_threshold,
+            );
+
+            if !nli_confirmed && nli_model.is_some() {
+                tracing::debug!(
+                    "merge candidate {} ↔ {} skipped: NLI not confirmed (sim={:.2})",
+                    survivor.id,
+                    superseded.id,
+                    similarity
+                );
+                continue;
+            }
+
+            let reason = if nli_model.is_some() {
+                format!("{:.2} embedding similarity (NLI confirmed)", similarity)
+            } else {
+                format!("{:.2} embedding similarity (NLI unavailable)", similarity)
+            };
+
             candidates.push(MergeCandidate {
                 survivor_id: survivor.id.clone(),
                 superseded_id: superseded.id.clone(),
-                reason: format!("{:.2} embedding similarity", similarity),
+                reason,
             });
         }
     }

@@ -12,7 +12,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::embed::{ModelType, OnnxEmbeddingModel};
+use crate::embed::{ModelType, NliModel, OnnxEmbeddingModel, OnnxNliModel};
 use crate::hooks::lifecycle::{
     LifecycleError, LifecycleEvent, LifecycleInput, handle_lifecycle_event,
 };
@@ -149,13 +149,20 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
     // making hook calls fast (~2s vs ~40s with model loading).
     // Models are lazy-loaded — creating the objects is cheap; the
     // actual ONNX runtime loads on first embed call.
-    let (query_model, code_model) = if input.fts_only {
+    let (query_model, code_model, nli_model) = if input.fts_only {
         (
             OnnxEmbeddingModel::unavailable(),
             OnnxEmbeddingModel::unavailable(),
+            None,
         )
     } else {
         let models_dir = crate::embed::models_dir();
+        let nli = OnnxNliModel::with_resource_config(
+            &models_dir,
+            &config.embedding.nli_model,
+            config.embedding.model_idle_ttl,
+            config.embedding.model_min_free_mb,
+        );
         (
             OnnxEmbeddingModel::with_resource_config(
                 ModelType::Knowledge,
@@ -173,8 +180,10 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
                 config.embedding.model_idle_ttl,
                 config.embedding.model_min_free_mb,
             ),
+            Some(nli),
         )
     };
+    let nli_ref: Option<&dyn NliModel> = nli_model.as_ref().map(|m| m as &dyn NliModel);
 
     let lifecycle_input = LifecycleInput {
         event,
@@ -190,6 +199,7 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
         &cogz_dir,
         &query_model,
         &code_model,
+        nli_ref,
         &lifecycle_input,
     )?;
 
