@@ -7,7 +7,7 @@
 use rusqlite::Connection;
 
 use crate::config::ConsolidationConfig;
-use crate::embed::{EmbeddingModel, NliModel};
+use crate::embed::{EmbeddingModel, NliModel, similarity::cosine_similarity};
 use crate::storage::crud::Entity;
 use crate::storage::query::get_entities_by_type;
 
@@ -201,17 +201,6 @@ pub fn classify_candidates(
         }
     }
     contradicts_ids
-}
-
-/// Cosine similarity between two vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    (dot / (norm_a * norm_b)) as f64
 }
 
 /// Record `contradicts` edges from the new entity to each

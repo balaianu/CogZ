@@ -1,4 +1,5 @@
 use super::*;
+use crate::embed::MockNliModel;
 use crate::files::frontmatter::Frontmatter;
 use crate::storage::crud::{Entity, insert_entity};
 use crate::storage::edges::{Edge, insert_edge};
@@ -12,7 +13,7 @@ fn setup() -> crate::storage::Storage {
 
 fn config() -> ConsolidationConfig {
     ConsolidationConfig {
-        dedup_threshold: 0.92,
+        dedup_threshold: 0.85,
         title_match_threshold: 0.85,
         contradiction_check: true,
         promotion_threshold: 3,
@@ -74,7 +75,7 @@ fn dry_run_reports_candidates_without_changes() {
         }
     }
 
-    let results = run_merge(&storage, &cogz_dir, &config(), true).unwrap();
+    let results = run_merge(&storage, &cogz_dir, &config(), None, true).unwrap();
     assert_eq!(results.len(), 1);
     // obs-1 created first → survivor.
     assert_eq!(results[0].survivor_id, "obs-1");
@@ -149,7 +150,7 @@ fn merge_redirects_edges_and_marks_superseded() {
         }
     }
 
-    let results = run_merge(&storage, &cogz_dir, &config(), false).unwrap();
+    let results = run_merge(&storage, &cogz_dir, &config(), None, false).unwrap();
     assert_eq!(results.len(), 1);
 
     let conn = storage.conn();
@@ -186,6 +187,139 @@ fn no_merge_without_embeddings() {
         insert_entity(&conn, &Entity::new("obs-2", "observation", "B", "c")).unwrap();
     }
 
-    let results = run_merge(&storage, &cogz_dir, &config(), false).unwrap();
+    let results = run_merge(&storage, &cogz_dir, &config(), None, false).unwrap();
     assert!(results.is_empty());
+}
+
+#[test]
+fn nli_rejects_non_duplicate_pairs() {
+    let storage = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cogz_dir = dir.path().join(".cogz");
+    let obs_dir = cogz_dir.join("observations").join("2026-01");
+    std::fs::create_dir_all(&obs_dir).unwrap();
+
+    let embedding = vec![0.1_f32; 768];
+    {
+        let conn = storage.conn();
+        // Two observations with identical embeddings but different
+        // content — MockNliModel classifies based on text content.
+        let mut e1 = Entity::new(
+            "obs-1",
+            "observation",
+            "A",
+            "The cache uses a content hash key",
+        );
+        e1.created_at = "2026-01-01T00:00:00Z".to_string();
+        e1.file_path = Some("observations/2026-01/obs-1.md".to_string());
+        insert_entity(&conn, &e1).unwrap();
+        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
+
+        let mut e2 = Entity::new(
+            "obs-2",
+            "observation",
+            "B",
+            "The bug is not in the search module",
+        );
+        e2.created_at = "2026-02-01T00:00:00Z".to_string();
+        e2.file_path = Some("observations/2026-01/obs-2.md".to_string());
+        insert_entity(&conn, &e2).unwrap();
+        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
+
+        for (id, title) in [("obs-1", "A"), ("obs-2", "B")] {
+            let path = obs_dir.join(format!("{id}.md"));
+            let mut fm = Frontmatter::new();
+            fm.insert("id", FmValue::String(id.to_string()));
+            fm.insert("title", FmValue::String(title.to_string()));
+            fm.insert("type", FmValue::String("observation".to_string()));
+            fm.insert("status", FmValue::String("active".to_string()));
+            fm.insert(
+                "created_at",
+                FmValue::String("2026-01-01T00:00:00Z".to_string()),
+            );
+            fm.insert(
+                "updated_at",
+                FmValue::String("2026-01-01T00:00:00Z".to_string()),
+            );
+            fm.insert("references", FmValue::Array(vec![]));
+            std::fs::write(
+                &path,
+                format!(
+                    "---\n{}---\n\ncontent",
+                    crate::files::frontmatter::serialize(&fm)
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    // With NLI model: the two texts are unrelated, so NLI should
+    // reject the merge despite identical embeddings.
+    let results = run_merge(&storage, &cogz_dir, &config(), Some(&MockNliModel), true).unwrap();
+    assert!(results.is_empty(), "NLI should reject non-duplicate pair");
+}
+
+#[test]
+fn nli_confirms_true_duplicate_pairs() {
+    let storage = setup();
+    let dir = tempfile::tempdir().unwrap();
+    let cogz_dir = dir.path().join(".cogz");
+    let obs_dir = cogz_dir.join("observations").join("2026-01");
+    std::fs::create_dir_all(&obs_dir).unwrap();
+
+    let embedding = vec![0.1_f32; 768];
+    {
+        let conn = storage.conn();
+        let mut e1 = Entity::new(
+            "obs-1",
+            "observation",
+            "A",
+            "The cache uses a content hash key",
+        );
+        e1.created_at = "2026-01-01T00:00:00Z".to_string();
+        e1.file_path = Some("observations/2026-01/obs-1.md".to_string());
+        insert_entity(&conn, &e1).unwrap();
+        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
+
+        let mut e2 = Entity::new(
+            "obs-2",
+            "observation",
+            "B",
+            "The cache uses a content hash key",
+        );
+        e2.created_at = "2026-02-01T00:00:00Z".to_string();
+        e2.file_path = Some("observations/2026-01/obs-2.md".to_string());
+        insert_entity(&conn, &e2).unwrap();
+        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
+
+        for (id, title) in [("obs-1", "A"), ("obs-2", "B")] {
+            let path = obs_dir.join(format!("{id}.md"));
+            let mut fm = Frontmatter::new();
+            fm.insert("id", FmValue::String(id.to_string()));
+            fm.insert("title", FmValue::String(title.to_string()));
+            fm.insert("type", FmValue::String("observation".to_string()));
+            fm.insert("status", FmValue::String("active".to_string()));
+            fm.insert(
+                "created_at",
+                FmValue::String("2026-01-01T00:00:00Z".to_string()),
+            );
+            fm.insert(
+                "updated_at",
+                FmValue::String("2026-01-01T00:00:00Z".to_string()),
+            );
+            fm.insert("references", FmValue::Array(vec![]));
+            std::fs::write(
+                &path,
+                format!(
+                    "---\n{}---\n\ncontent",
+                    crate::files::frontmatter::serialize(&fm)
+                ),
+            )
+            .unwrap();
+        }
+    }
+
+    // Identical text → MockNliModel classifies as entailment → merge confirmed.
+    let results = run_merge(&storage, &cogz_dir, &config(), Some(&MockNliModel), true).unwrap();
+    assert_eq!(results.len(), 1, "NLI should confirm true duplicate pair");
 }

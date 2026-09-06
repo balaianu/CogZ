@@ -37,6 +37,7 @@ pub async fn consolidate(
     let storage = repo.storage.clone();
     let config = repo.config.clone();
     let cogz_dir = repo.cogz_dir.clone();
+    let nli_model = repo.nli_model.clone();
     let dry_run = params.dry_run;
 
     let result = tokio::task::spawn_blocking(move || {
@@ -52,6 +53,7 @@ pub async fn consolidate(
             &storage,
             &cogz_dir,
             &config.consolidation,
+            Some(&*nli_model),
             dry_run,
         )
         .map_err(|e| mcp_internal_error("consolidate", &e.to_string()))?;
@@ -90,6 +92,7 @@ pub async fn capture_event(
     let cogz_dir = repo.cogz_dir.clone();
     let query_model = repo.query_model.clone();
     let code_model = repo.code_model.clone();
+    let nli_model = repo.nli_model.clone();
     let prompt = params.prompt.clone();
     let tool_name = params.tool_name.clone();
     let tool_result = params.tool_result.clone();
@@ -109,6 +112,7 @@ pub async fn capture_event(
             &cogz_dir,
             &query_model,
             &code_model,
+            Some(&*nli_model),
             &input,
         )
     })

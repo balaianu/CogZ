@@ -740,7 +740,7 @@ Every insert triggers lightweight consolidation:
 
 | Phase | When | What |
 |---|---|---|
-| Dedup | On insert | Compare new entity to existing entities of same type via embedding similarity + title match. Flag if similarity > threshold (0.92). Return `duplicate_warning` to caller. |
+| Dedup | On insert | Compare new entity to existing entities of same type via embedding similarity + title match. Flag if similarity > threshold (0.85). Return `duplicate_warning` to caller. |
 | Contradict | On insert | NLI model checks new entity against related existing entities. Flag contradictions. |
 | Promote | Background | Observation with sufficient support (multiple supporting observations, code structure validation) → promoted to rule. |
 | Merge | Background | Confirmed duplicates merged: one entity superseded, edges redirected to survivor. |
@@ -755,7 +755,7 @@ merge happen in the background when thresholds are met.
 |---|---|---|---|
 | Exact title match | On create | Negligible | Same title, almost certainly duplicate |
 | Fuzzy title match | On create | Low | Similar titles, likely related |
-| Embedding similarity > 0.92 | On create (dedup hook) | One embedding + KNN query | Semantic duplicates |
+| Embedding similarity > 0.85 | On create (dedup hook) | One embedding + KNN query | Semantic duplicates |
 | Embedding similarity > 0.80 | On `cogz doctor` | Pairwise, expensive | Near-duplicates that slipped through |
 
 Knowledge duplicates are flagged, not auto-resolved — knowledge is
@@ -989,7 +989,7 @@ rrf_k = 60
 max_results = 20
 
 [consolidation]
-dedup_threshold = 0.92
+dedup_threshold = 0.85
 title_match_threshold = 0.85     # Levenshtein-based fuzzy title match
 contradiction_check = true
 promotion_threshold = 3          # min supporting observations to promote

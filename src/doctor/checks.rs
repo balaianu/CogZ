@@ -5,6 +5,7 @@ use std::path::Path;
 use rusqlite::Connection;
 
 use crate::config::Config;
+use crate::embed::similarity::cosine_similarity;
 use crate::storage::Storage;
 
 /// A single issue found by the doctor.
@@ -399,16 +400,6 @@ fn fetch_embeddings_batch(conn: &Connection, ids: &[String]) -> (Vec<(String, Ve
     }
 
     (result, failed)
-}
-
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
-    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if norm_a == 0.0 || norm_b == 0.0 {
-        return 0.0;
-    }
-    dot / (norm_a * norm_b)
 }
 
 /// Check that vec0 tables' declared dimensions match the configured

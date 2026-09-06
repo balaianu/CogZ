@@ -4,7 +4,8 @@ title: Dedup compares active entities only
 type: knowledge
 status: stale
 created_at: "2026-09-03T12:02:00Z"
-updated_at: "2026-09-05T09:13:27.587455885+00:00"
+updated_at: "2026-09-05T11:09:28.258087041+00:00"
+updated_at: "2026-09-05T11:09:28.258087041+00:00"
 references: []
 category: decisions
 tags: ["dedup", "consolidation", "status-filter", "design-decision"]

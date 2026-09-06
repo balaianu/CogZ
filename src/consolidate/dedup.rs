@@ -3,8 +3,8 @@
 //! Two checks run on every insert:
 //! 1. Title match — exact (case-insensitive) or fuzzy (normalized
 //!    comparison). Returns a `DuplicateWarning` with a suggestion.
-//! 2. Embedding similarity — cosine similarity via KNN search, if
-//!    the new entity has an embedding and the model is available.
+//! 2. Embedding similarity — cosine similarity from KNN L2 distance,
+//!    if the new entity has an embedding and the model is available.
 //!    Sets `dedup_flagged` if similarity exceeds the configured
 //!    threshold.
 //!
@@ -15,6 +15,7 @@ use rusqlite::Connection;
 
 use crate::config::ConsolidationConfig;
 use crate::embed::NliModel;
+use crate::embed::similarity::l2_to_cosine;
 use crate::storage::crud::Entity;
 use crate::storage::embeddings::{EmbeddingSpace, knn_search};
 use crate::storage::query::get_entities_by_type;
@@ -192,9 +193,9 @@ fn check_embedding_similarity(
             continue;
         };
 
-        // sqlite-vec returns L2 distance. Convert to similarity:
-        // similarity = 1 / (1 + distance)
-        let similarity = 1.0 / (1.0 + *distance as f64);
+        // Embeddings are L2-normalized at inference time, so L2
+        // distance directly converts to cosine similarity.
+        let similarity = l2_to_cosine(*distance as f64);
 
         if similarity >= dedup_threshold {
             dedup_flagged = true;

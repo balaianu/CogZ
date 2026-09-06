@@ -26,7 +26,7 @@ fn setup() -> Storage {
 
 fn config() -> ConsolidationConfig {
     ConsolidationConfig {
-        dedup_threshold: 0.92,
+        dedup_threshold: 0.85,
         title_match_threshold: 0.85,
         contradiction_check: true,
         promotion_threshold: 3,
@@ -375,7 +375,7 @@ fn merge_supersedes_duplicate_and_redirects_edges() {
     write_observation_file(&cogz_dir, "obs-1", "A", "2026-01-01T00:00:00Z");
     write_observation_file(&cogz_dir, "obs-2", "B", "2026-02-01T00:00:00Z");
 
-    let results = run_merge(&storage, &cogz_dir, &config(), false).unwrap();
+    let results = run_merge(&storage, &cogz_dir, &config(), None, false).unwrap();
     assert_eq!(results.len(), 1);
 
     let conn = storage.conn();
@@ -413,7 +413,7 @@ fn merge_dry_run_makes_no_changes() {
         insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
     }
 
-    let results = run_merge(&storage, &cogz_dir, &config(), true).unwrap();
+    let results = run_merge(&storage, &cogz_dir, &config(), None, true).unwrap();
     assert_eq!(results.len(), 1);
 
     let conn = storage.conn();
@@ -432,7 +432,7 @@ fn full_consolidation_works_without_nli_model() {
 
     // No NLI model — promotion and merge should still work.
     let promoted = run_promotion(&storage, &cogz_dir, &config(), false).unwrap();
-    let merged = run_merge(&storage, &cogz_dir, &config(), false).unwrap();
+    let merged = run_merge(&storage, &cogz_dir, &config(), None, false).unwrap();
     assert!(promoted.is_empty());
     assert!(merged.is_empty());
 }

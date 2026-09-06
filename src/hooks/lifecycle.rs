@@ -18,7 +18,7 @@ use serde_json::json;
 
 use crate::config::Config;
 use crate::context::{AssembleParams, ContextMode, ContextPack, assemble_context};
-use crate::embed::OnnxEmbeddingModel;
+use crate::embed::{NliModel, OnnxEmbeddingModel};
 use crate::storage::{Storage, events};
 
 /// Which lifecycle event triggered the hook.
@@ -131,6 +131,7 @@ pub fn handle_lifecycle_event(
     cogz_dir: &Path,
     query_model: &OnnxEmbeddingModel,
     code_model: &OnnxEmbeddingModel,
+    nli_model: Option<&dyn NliModel>,
     input: &LifecycleInput,
 ) -> Result<LifecycleOutput, LifecycleError> {
     let event_type = input.event.event_type();
@@ -217,7 +218,7 @@ pub fn handle_lifecycle_event(
     // (not deleted) and remain in the graph.
     let consolidation_summary = if input.event == LifecycleEvent::SessionEnd {
         Some(crate::hooks::handlers::handle_session_end(
-            storage, config, cogz_dir,
+            storage, config, cogz_dir, nli_model,
         ))
     } else {
         None

@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::Config;
-use crate::embed::{EmbeddingCache, EmbeddingModel, OnnxEmbeddingModel};
+use crate::embed::{EmbeddingCache, EmbeddingModel, NliModel, OnnxEmbeddingModel};
 use crate::files::embed_sync::{embed_entities, store_embeddings};
 use crate::files::sync_single_file;
 use crate::hooks::lifecycle::{ConsolidationSummary, ReindexSummary};
@@ -178,6 +178,7 @@ pub fn handle_session_end(
     storage: &Arc<Storage>,
     config: &Config,
     cogz_dir: &Path,
+    nli_model: Option<&dyn NliModel>,
 ) -> ConsolidationSummary {
     let promoted = match crate::consolidate::promote::run_promotion(
         storage,
@@ -192,15 +193,19 @@ pub fn handle_session_end(
         }
     };
 
-    let merged =
-        match crate::consolidate::merge::run_merge(storage, cogz_dir, &config.consolidation, false)
-        {
-            Ok(m) => m.len(),
-            Err(e) => {
-                tracing::warn!("session_end consolidation (merge) failed: {}", e);
-                0
-            }
-        };
+    let merged = match crate::consolidate::merge::run_merge(
+        storage,
+        cogz_dir,
+        &config.consolidation,
+        nli_model,
+        false,
+    ) {
+        Ok(m) => m.len(),
+        Err(e) => {
+            tracing::warn!("session_end consolidation (merge) failed: {}", e);
+            0
+        }
+    };
 
     ConsolidationSummary {
         promotions: promoted,
