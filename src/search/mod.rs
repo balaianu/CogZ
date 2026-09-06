@@ -37,9 +37,10 @@ pub struct SearchResult {
 }
 
 /// How the search was executed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SearchMode {
     /// FTS5 + knowledge vector + code vector, fused via RRF.
+    #[default]
     Hybrid,
     /// FTS5 + knowledge vector only (code model unavailable).
     KnowledgeHybrid,
@@ -124,7 +125,7 @@ impl Default for SearchParams {
 }
 
 /// Complete search results.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SearchResults {
     pub results: Vec<SearchResult>,
     pub search_mode: SearchMode,

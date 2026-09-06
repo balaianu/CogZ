@@ -23,8 +23,11 @@ pub fn sync_code_edges_incremental(
     source_files: &[(std::path::PathBuf, String, Language)],
 ) {
     // Build name → UUID map from ALL code entities in the DB.
+    // One-to-many: duplicate names produce multiple candidates,
+    // and resolve_edges skips ambiguous names.
     let conn = storage.conn();
-    let mut name_to_uuid: HashMap<String, String> = HashMap::new();
+    let mut name_to_uuid: HashMap<String, Vec<String>> = HashMap::new();
+    let mut simple_name_candidates: HashMap<String, Vec<String>> = HashMap::new();
     let code_types = ["function", "class", "file", "module"];
     for entity_type in &code_types {
         if let Ok(entities) =
@@ -39,19 +42,31 @@ pub fn sync_code_edges_incremental(
                 if entity.r#type == "file"
                     && let Some(ref fp) = entity.file_path
                 {
-                    name_to_uuid.insert(fp.clone(), entity.id.clone());
+                    name_to_uuid
+                        .entry(fp.clone())
+                        .or_default()
+                        .push(entity.id.clone());
                 }
                 if let Some(ref title) = entity.title {
-                    name_to_uuid.insert(title.clone(), entity.id.clone());
+                    name_to_uuid
+                        .entry(title.clone())
+                        .or_default()
+                        .push(entity.id.clone());
+                    // Use a set to avoid double-counting when the title
+                    // has no separator (both rsplit("::") and rsplit('.')
+                    // return the whole string).
+                    let mut simples = std::collections::HashSet::new();
                     if let Some(simple) = title.rsplit("::").next() {
-                        name_to_uuid
-                            .entry(simple.to_string())
-                            .or_insert_with(|| entity.id.clone());
+                        simples.insert(simple.to_string());
                     }
                     if let Some(simple) = title.rsplit('.').next() {
-                        name_to_uuid
-                            .entry(simple.to_string())
-                            .or_insert_with(|| entity.id.clone());
+                        simples.insert(simple.to_string());
+                    }
+                    for simple in simples {
+                        simple_name_candidates
+                            .entry(simple)
+                            .or_default()
+                            .push(entity.id.clone());
                     }
                 }
             }
@@ -102,7 +117,11 @@ pub fn sync_code_edges_incremental(
     // Resolve raw edges using the global name map.
     let mut edges: Vec<CodeEdge> = Vec::new();
     for (_, raw_edges) in &all_raw_edges {
-        edges.extend(resolve_edges(raw_edges, &name_to_uuid));
+        edges.extend(resolve_edges(
+            raw_edges,
+            &name_to_uuid,
+            &simple_name_candidates,
+        ));
     }
 
     // Build `contains` edges from file entities to their functions/classes.
@@ -112,15 +131,20 @@ pub fn sync_code_edges_incremental(
     // Both are in a single transaction so a COMMIT failure rolls back
     // the DELETE too — otherwise changed files would lose all their
     // structural edges with no recovery.
+    // Use unchecked_transaction so the guard rolls back on drop.
     let conn = storage.conn();
 
-    let in_transaction = conn.execute_batch("BEGIN").is_ok();
-    if !in_transaction {
-        tracing::warn!("failed to begin edge transaction — falling back to autocommit");
-    }
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!("failed to begin edge transaction: {}", e);
+            return;
+        }
+    };
 
-    if let Err(e) = storage::edges::delete_structural_edges_by_sources(&conn, &changed_entity_ids) {
+    if let Err(e) = storage::edges::delete_structural_edges_by_sources(&tx, &changed_entity_ids) {
         tracing::warn!("failed to clear structural edges for changed files: {}", e);
+        return;
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -133,11 +157,11 @@ pub fn sync_code_edges_incremental(
             weight: 1.0,
             created_at: now.clone(),
         };
-        if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, &db_edge) {
+        if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&tx, &db_edge) {
             tracing::debug!("skipped edge {}: {}", edge.edge_type, e);
         }
     }
-    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
+    if let Err(e) = tx.commit() {
         tracing::warn!("failed to commit edge transaction: {}", e);
     }
 }

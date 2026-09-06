@@ -5,7 +5,7 @@ type: knowledge
 status: active
 created_at: "2026-09-05T07:41:48.634115327+00:00"
 updated_at: "2026-09-05T07:41:48.634115327+00:00"
-references: ["src/search/mod.rs", "src/context/assemble.rs", "src/mcp/server.rs"]
+references: []
 category: decisions
 tags: ["benchmark", "dogfooding", "quality", "metrics"]
 ---

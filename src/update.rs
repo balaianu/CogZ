@@ -22,6 +22,8 @@ pub enum UpdateError {
     ChecksumMismatch { expected: String, actual: String },
     #[error("checksum file downloaded but no entry found for asset {0}")]
     ChecksumEntryNotFound(String),
+    #[error("no SHA256SUMS checksum manifest in release — refusing to install unverified binary")]
+    ChecksumManifestNotFound,
     #[error("no suitable asset found in release")]
     NoAsset,
     #[error("self-update is not supported on {0}")]
@@ -190,24 +192,28 @@ pub fn run_update() -> Result<String, UpdateError> {
 
             download_file(asset_url, &temp_binary)?;
 
-            // Download and verify checksum if available.
-            if let Some(checksum_url) = find_checksum_url(&release) {
-                download_file(checksum_url, &temp_checksum)?;
-                let sums_content = std::fs::read_to_string(&temp_checksum)?;
-                let expected_hash = find_checksum(&sums_content, asset_name).ok_or_else(|| {
-                    let _ = std::fs::remove_file(&temp_binary);
-                    let _ = std::fs::remove_file(&temp_checksum);
-                    UpdateError::ChecksumEntryNotFound(asset_name.to_string())
-                })?;
-                let actual_hash = sha256_file(&temp_binary)?;
-                if expected_hash != actual_hash {
-                    let _ = std::fs::remove_file(&temp_binary);
-                    let _ = std::fs::remove_file(&temp_checksum);
-                    return Err(UpdateError::ChecksumMismatch {
-                        expected: expected_hash,
-                        actual: actual_hash,
-                    });
-                }
+            // Download and verify checksum. The checksum asset is
+            // required — a missing manifest is a supply-chain bypass,
+            // not a degraded mode.
+            let checksum_url = find_checksum_url(&release).ok_or_else(|| {
+                let _ = std::fs::remove_file(&temp_binary);
+                UpdateError::ChecksumManifestNotFound
+            })?;
+            download_file(checksum_url, &temp_checksum)?;
+            let sums_content = std::fs::read_to_string(&temp_checksum)?;
+            let expected_hash = find_checksum(&sums_content, asset_name).ok_or_else(|| {
+                let _ = std::fs::remove_file(&temp_binary);
+                let _ = std::fs::remove_file(&temp_checksum);
+                UpdateError::ChecksumEntryNotFound(asset_name.to_string())
+            })?;
+            let actual_hash = sha256_file(&temp_binary)?;
+            if expected_hash != actual_hash {
+                let _ = std::fs::remove_file(&temp_binary);
+                let _ = std::fs::remove_file(&temp_checksum);
+                return Err(UpdateError::ChecksumMismatch {
+                    expected: expected_hash,
+                    actual: actual_hash,
+                });
             }
 
             // Make the new binary executable.
@@ -223,17 +229,68 @@ pub fn run_update() -> Result<String, UpdateError> {
             let bin_path = current_binary_path()?;
             let backup = bin_path.with_extension("bak");
 
-            // Backup current binary.
+            // Backup current binary — required, not best-effort.
+            // If backup fails, leave the original untouched.
             if bin_path.exists() {
-                let _ = std::fs::copy(&bin_path, &backup);
+                std::fs::copy(&bin_path, &backup).map_err(|e| {
+                    let _ = std::fs::remove_file(&temp_binary);
+                    let _ = std::fs::remove_file(&temp_checksum);
+                    UpdateError::Io(std::io::Error::other(format!(
+                        "failed to backup current binary: {}",
+                        e
+                    )))
+                })?;
             }
 
-            // Replace with the new binary.
-            if let Err(e) = std::fs::rename(&temp_binary, &bin_path) {
-                // rename can fail across filesystems — fall back to copy + remove.
-                std::fs::copy(&temp_binary, &bin_path)?;
+            // Stage the new binary in the destination directory, then
+            // atomically rename over the target. This avoids truncating
+            // the live executable if the copy is interrupted — the
+            // staged temp file is the only thing at risk.
+            let staged = bin_path.with_extension("new");
+            if let Err(e) = std::fs::rename(&temp_binary, &staged) {
+                // rename can fail across filesystems — copy to the
+                // staged temp in the destination directory instead.
+                std::fs::copy(&temp_binary, &staged).map_err(|e2| {
+                    let _ = std::fs::remove_file(&temp_binary);
+                    let _ = std::fs::remove_file(&temp_checksum);
+                    let _ = std::fs::remove_file(&staged);
+                    UpdateError::Io(std::io::Error::other(format!(
+                        "rename failed ({}), copy to staged also failed: {}",
+                        e, e2
+                    )))
+                })?;
                 let _ = std::fs::remove_file(&temp_binary);
-                tracing::debug!("rename failed, used copy: {}", e);
+            }
+
+            // Flush the staged file before replacing.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&staged)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&staged, perms)?;
+            }
+
+            // Atomic rename: staged → bin_path. On Unix this is
+            // atomic. On Windows, rename-over-existing may fail; if
+            // so, remove the target first, then rename.
+            if let Err(e) = std::fs::rename(&staged, &bin_path) {
+                // On Windows, rename over an existing file can fail.
+                // Remove the old binary and retry. The backup exists
+                // so we can restore on failure.
+                let _ = std::fs::remove_file(&bin_path);
+                if let Err(e2) = std::fs::rename(&staged, &bin_path) {
+                    // Restore from backup.
+                    if backup.exists() {
+                        let _ = std::fs::rename(&backup, &bin_path);
+                    }
+                    let _ = std::fs::remove_file(&staged);
+                    let _ = std::fs::remove_file(&temp_checksum);
+                    return Err(UpdateError::Io(std::io::Error::other(format!(
+                        "failed to replace binary (rename1: {}, rename2: {})",
+                        e, e2
+                    ))));
+                }
             }
 
             // Clean up.

@@ -218,18 +218,27 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
 /// contradicted existing entity, write them to the entity's file
 /// frontmatter (file-first invariant), and record a
 /// `contradiction_found` domain event.
+///
+/// File I/O happens outside the storage lock. The lock is acquired
+/// only for DB sync (which updates content_hash and creates edges
+/// via sync_references) and event recording.
 pub fn record_contradictions(
-    conn: &Connection,
+    storage: &crate::storage::Storage,
+    cogz_dir: &std::path::Path,
     new_id: &str,
     contradicts_ids: &[String],
     file_path: &std::path::Path,
 ) -> Result<(), crate::storage::StorageError> {
     use crate::files::frontmatter::FmValue;
     use crate::files::{read_entity_file, write_entity_file};
-    use crate::storage::edges::{Edge, insert_edge};
     use crate::storage::events::{EventType, record_event};
 
     // 1. Update the file frontmatter with contradicts field (file-first).
+    // Hold the canonical-file write lock across the read-modify-write
+    // sequence to prevent concurrent writers from clobbering the
+    // contradicts frontmatter.
+    let _file_lock = storage.file_lock();
+
     let mut entity_file = read_entity_file(file_path).map_err(|e| {
         crate::storage::StorageError::File(format!(
             "failed to read entity file {}: {}",
@@ -249,26 +258,31 @@ pub fn record_contradictions(
         ))
     })?;
 
-    // 2. Insert contradicts edges in the DB.
-    let now = chrono::Utc::now().to_rfc3339();
-    for target_id in contradicts_ids {
-        insert_edge(
-            conn,
-            &Edge {
-                source_id: new_id.to_string(),
-                target_id: target_id.clone(),
-                edge_type: "contradicts".to_string(),
-                weight: 1.0,
-                created_at: now.clone(),
-            },
-        )?;
+    // 2. Sync the updated file to the DB. This updates the entity's
+    // content_hash and properties, and sync_references creates the
+    // contradicts edges from the frontmatter. The lock is acquired
+    // inside sync_single_file.
+    let relative_path = file_path
+        .strip_prefix(cogz_dir)
+        .unwrap_or(file_path)
+        .to_string_lossy()
+        .to_string();
+    let sync_result = crate::files::sync_single_file(storage, cogz_dir, &relative_path);
+    if let Some(err) = sync_result.errors.first() {
+        return Err(crate::storage::StorageError::File(format!(
+            "sync failed for {}: {}",
+            file_path.display(),
+            err.error
+        )));
     }
 
+    // 3. Record the contradiction_found event (under lock).
+    let conn = storage.conn();
     let payload = serde_json::json!({
         "contradicts_ids": contradicts_ids,
         "model": "nli",
     });
-    record_event(conn, EventType::ContradictionFound, Some(new_id), &payload)?;
+    record_event(&conn, EventType::ContradictionFound, Some(new_id), &payload)?;
     Ok(())
 }
 

@@ -2,10 +2,10 @@
 id: e1606dc8-e66d-454d-a665-c1508f4fb493
 title: Subprocess tests required for MCP stdio servers
 type: rule
-status: active
+status: stale
 created_at: "2026-09-05T07:08:25.935098836+00:00"
-updated_at: "2026-09-05T07:08:25.935098836+00:00"
-references: ["tests/test_mcp_stdio.rs"]
+updated_at: "2026-09-06T20:13:03.710553099+00:00"
+references: []
 confidence: 0.85
 ---
 

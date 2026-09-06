@@ -70,6 +70,10 @@ tree-sitter = "0.25"
 tree-sitter-language = "0.1"
 tree-sitter-rust = "0.24"
 tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-bash = "0.25"
 ignore = "0.4"
 globset = "0.4"
 ```
@@ -202,7 +206,7 @@ feature which is enabled by default in recent versions.
 ### Utilities
 
 ```toml
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4", "v5"] }
 sha2 = "0.10"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
@@ -211,6 +215,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 slug = "0.1"
 zerocopy = "0.8"
+ndarray = "0.16"
+fs2 = "0.4.3"
+regex = "1.13.1"
+aho-corasick = "1.1.5"
 ```
 
 | Crate | Purpose |
@@ -225,6 +233,9 @@ zerocopy = "0.8"
 | `slug` | Slug generation for file naming (knowledge, rules) |
 | `zerocopy` | Zero-copy byte conversion for sqlite-vec vector I/O |
 | `ndarray` | Tensor operations for ONNX embedding (pinned to match ort) |
+| `fs2` | Cross-platform file locking for `.cogz/.lock` (cross-process safety) |
+| `regex` | Regex patterns for secret scanning and self-update |
+| `aho-corasick` | Multi-pattern matching for secret scanning |
 
 ### HuggingFace Hub client (Phase 12 — model download)
 

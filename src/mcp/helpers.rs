@@ -3,21 +3,19 @@
 //! File-first write logic, response builders, and error helpers.
 //! Separated from `tools.rs` to keep file sizes under 400 lines.
 
-use std::sync::Arc;
-
 use rmcp::ErrorData as McpError;
 use serde_json::json;
 
-use crate::config::Config;
-use crate::consolidate::contradict::{
-    classify_candidates, fetch_contradiction_candidates, record_contradictions,
-};
-use crate::embed::{EmbeddingModel, NliModel, OnnxEmbeddingModel};
-use crate::files::embed_sync::store_embeddings;
-use crate::files::{EntityFile, sync_single_file, write_entity_file};
-use crate::mcp::dedup::check_duplicate;
+#[path = "entity_helpers.rs"]
+mod entity_helpers;
+
+pub use crate::mcp::update_knowledge::update_knowledge_file;
+pub use entity_helpers::{create_entity_file, write_and_sync};
+
+use crate::embed::{EmbeddingModel, OnnxEmbeddingModel};
+use crate::files::EntityFile;
 use crate::storage::crud::Entity;
-use crate::storage::{Storage, events, query};
+use crate::storage::query;
 
 // Re-export error helpers and response builders for backward-compatible imports.
 pub use crate::mcp::errors::{mcp_error, mcp_internal_error, mcp_invalid_parameter};
@@ -29,8 +27,160 @@ pub use crate::mcp::status::build_status_response;
 /// provided, matching the MCP contract.
 pub const DEFAULT_QUERY_STATUS: &str = "active";
 
+/// Maximum number of entities a single query can return. Prevents
+/// unbounded result materialization from malformed or runaway MCP
+/// calls.
+pub const MAX_QUERY_LIMIT: i64 = 500;
+
+/// Validate and clamp a query limit. Negative values, zero, and
+/// values exceeding MAX_QUERY_LIMIT are rejected. Returns the
+/// clamped limit or an MCP parameter error.
+pub fn validate_query_limit(limit: i64) -> Result<i64, McpError> {
+    if limit <= 0 {
+        return Err(mcp_error(
+            "invalid_params",
+            &format!("limit must be a positive integer, got {limit}"),
+        ));
+    }
+    if limit > MAX_QUERY_LIMIT {
+        return Err(mcp_error(
+            "invalid_params",
+            &format!("limit {limit} exceeds maximum of {MAX_QUERY_LIMIT}"),
+        ));
+    }
+    Ok(limit)
+}
+
 /// Type alias for the query result: entities with their references map.
 pub type QueryWithRefs = (Vec<Entity>, std::collections::HashMap<String, Vec<String>>);
+
+/// Write an entity file atomically using temp-file + rename. This
+/// never truncates the canonical file in place — the original is
+/// untouched until the new content is fully written and renamed into
+/// place. For new files, uses `create_new` to prevent concurrent
+/// writers from overwriting each other. If the path is taken by
+/// another thread's write between `file_path_safe` and this call,
+/// retries with `file_path_safe` to get a collision-free path.
+/// Never falls back to overwriting a path owned by another entity.
+pub fn write_entity_file_atomic(
+    initial_path: &std::path::Path,
+    entity: &EntityFile,
+    cogz_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, std::io::Error> {
+    use crate::files::read_entity_file;
+
+    let content = entity.to_file_content();
+
+    // If the file already exists and belongs to this entity, it's an
+    // update — write to a unique temp file in the same directory, then
+    // rename. The temp file uses exclusive creation (create_new) with
+    // a unique name to prevent symlink-based overwrite attacks: a
+    // deterministic temp name could be a symlink pointing outside .cogz.
+    if initial_path.exists()
+        && let Ok(existing) = read_entity_file(initial_path)
+        && existing.id == entity.id
+    {
+        let parent = initial_path.parent().unwrap_or(std::path::Path::new("."));
+        let temp_name = format!(
+            ".{}.{}.tmp",
+            initial_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("entity"),
+            chrono::Utc::now().timestamp_millis(),
+        );
+        let temp_path = parent.join(&temp_name);
+        {
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)?;
+            file.write_all(content.as_bytes())?;
+            file.sync_all()?;
+        }
+        // Platform-aware atomic replace: on Unix, rename overwrites
+        // atomically. On Windows, rename fails if the destination
+        // exists, so remove it first.
+        if cfg!(windows) {
+            let _ = std::fs::remove_file(initial_path);
+        }
+        std::fs::rename(&temp_path, initial_path)?;
+        return Ok(initial_path.to_path_buf());
+        // File exists but belongs to a different entity — file_path_safe
+        // should have caught this. Fall through to create_new retry.
+    }
+
+    // New file: use create_new for atomic creation. Retry up to 5
+    // times if another thread creates the file between our check and
+    // write. Each retry recalculates a collision-free path.
+    let mut current_path = initial_path.to_path_buf();
+    for _ in 0..5 {
+        if let Some(parent) = current_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&current_path)
+        {
+            Ok(mut file) => {
+                use std::io::Write;
+                if let Err(e) = file.write_all(content.as_bytes()) {
+                    // Clean up partial file on write failure.
+                    let _ = std::fs::remove_file(&current_path);
+                    return Err(e);
+                }
+                return Ok(current_path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Another thread created the file. Re-run file_path_safe
+                // to get a collision-free path.
+                let new_path = entity.file_path_safe(cogz_dir);
+                if new_path == current_path {
+                    // Path didn't change — the collision is persistent.
+                    // Add a unique suffix to break it.
+                    let unique = format!(
+                        "{}-{}",
+                        entity.id.get(..8).unwrap_or(&entity.id),
+                        chrono::Utc::now().timestamp_millis()
+                    );
+                    let slug = crate::files::entities::slugify(&entity.title);
+                    let hashed = format!("{}-{}", slug, unique);
+                    current_path = match entity.entity_type {
+                        crate::files::FileEntityType::Knowledge => {
+                            let category = entity
+                                .frontmatter
+                                .get("category")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("uncategorized");
+                            let safe_category = crate::files::entities::sanitize_category(category);
+                            cogz_dir
+                                .join("knowledge")
+                                .join(safe_category)
+                                .join(format!("{}.md", hashed))
+                        }
+                        crate::files::FileEntityType::Rule => {
+                            cogz_dir.join("rules").join(format!("{}.md", hashed))
+                        }
+                        crate::files::FileEntityType::Observation => current_path,
+                    };
+                    continue;
+                }
+                current_path = new_path;
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        format!(
+            "could not find a collision-free path after 5 retries: {}",
+            initial_path.display()
+        ),
+    ))
+}
 
 /// Query entities by type with status defaulting to "active", optional
 /// reference filtering, and batch-fetched references for the response.
@@ -121,166 +271,6 @@ pub(crate) fn embed_entity_text(
 /// Create an entity file, write it, sync to DB, embed, and run dedup
 /// and contradiction checks. The `EntityFile` is built by the caller
 /// with all frontmatter set.
-pub fn create_entity_file(
-    storage: &Arc<Storage>,
-    config: &Config,
-    cogz_dir: &std::path::Path,
-    entity: &EntityFile,
-    embed_model: Option<&OnnxEmbeddingModel>,
-    nli_model: Option<&dyn NliModel>,
-) -> Result<serde_json::Value, McpError> {
-    write_and_sync(
-        storage,
-        config,
-        cogz_dir,
-        entity,
-        entity.entity_type.as_str(),
-        embed_model,
-        nli_model,
-    )
-}
-
-/// Write an entity file and sync it to the DB. Returns the tool
-/// response JSON with id, file_path, status, dedup results, and
-/// contradiction flag.
-pub fn write_and_sync(
-    storage: &Arc<Storage>,
-    config: &Config,
-    cogz_dir: &std::path::Path,
-    entity: &EntityFile,
-    entity_type: &str,
-    embed_model: Option<&OnnxEmbeddingModel>,
-    nli_model: Option<&dyn NliModel>,
-) -> Result<serde_json::Value, McpError> {
-    // 0. Scan for secrets before writing to disk. Knowledge and rules
-    // are committed to git — a secret there is nearly impossible to
-    // remove from version history.
-    if let Some(scan) = crate::security::scan_content(&entity.title, &entity.body) {
-        return Err(mcp_error(
-            "secret_detected",
-            &format!(
-                "Content contains a suspected {} (starting with \"{}...\"). \
-                 Remove the secret before recording this entity.",
-                scan.kind, scan.preview
-            ),
-        ));
-    }
-
-    // 1. Write file first (file-first invariant). Use file_path_safe
-    // to avoid silent overwrites when titles slugify identically.
-    let path = entity.file_path_safe(cogz_dir);
-    write_entity_file(&path, entity).map_err(|e| {
-        mcp_error(
-            "file_write_failed",
-            &format!("Failed to write entity file: {}", e),
-        )
-    })?;
-
-    // 2. Sync to DB — only the single new/changed file, not the
-    // entire .cogz/ directory. This avoids O(n) filesystem reads on
-    // every MCP write call.
-    let relative_path = path.strip_prefix(cogz_dir).unwrap_or(&path);
-    let sync_result = sync_single_file(storage, cogz_dir, &relative_path.to_string_lossy());
-    if !sync_result.errors.is_empty() {
-        let err = &sync_result.errors[0];
-        return Err(mcp_error(
-            "db_error",
-            &format!("Sync failed: {}", err.error),
-        ));
-    }
-
-    // 3. Embed (no DB lock held during ONNX inference)
-    let embedding = embed_model.and_then(|m| embed_entity_text(m, &entity.title, &entity.body));
-
-    // 4. Store embedding + run dedup (under lock, no I/O)
-    let dedup = {
-        let mut conn = storage.conn();
-        if let Some(ref emb) = embedding {
-            store_embeddings(
-                &mut conn,
-                &[(entity.id.clone(), entity_type.to_string(), emb.clone())],
-            );
-        }
-        check_duplicate(
-            &conn,
-            &entity.id,
-            &entity.title,
-            entity_type,
-            embedding.as_deref(),
-            &config.consolidation,
-        )
-    };
-
-    // 5. Contradiction check — NLI inference is blocking I/O, so it
-    // must not hold the DB mutex. Fetch candidates under the lock,
-    // drop the lock, run NLI, then re-acquire to record results.
-    let contradiction_flagged = if matches!(
-        entity.entity_type,
-        crate::files::FileEntityType::Observation | crate::files::FileEntityType::Rule
-    ) {
-        let candidates = {
-            let conn = storage.conn();
-            fetch_contradiction_candidates(
-                &conn,
-                &entity.id,
-                &entity.body,
-                entity_type,
-                &config.consolidation,
-            )
-        };
-
-        // NLI classification outside the lock.
-        let contradicts_ids = classify_candidates(
-            candidates,
-            &entity.body,
-            nli_model,
-            embed_model.map(|m| m as &dyn crate::embed::EmbeddingModel),
-            &config.consolidation,
-        );
-
-        if !contradicts_ids.is_empty() {
-            let conn = storage.conn();
-            if let Err(e) = record_contradictions(&conn, &entity.id, &contradicts_ids, &path) {
-                tracing::warn!("failed to record contradictions for {}: {}", entity.id, e);
-            }
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-
-    // Sync already records the creation event via files::events::record_create_event.
-    // We only need to record an additional event if dedup flagged something.
-    if dedup.dedup_flagged {
-        let conn = storage.conn();
-        let event_type = match entity.entity_type {
-            crate::files::FileEntityType::Observation => events::EventType::ObservationCreated,
-            crate::files::FileEntityType::Rule => events::EventType::RuleCreated,
-            crate::files::FileEntityType::Knowledge => events::EventType::KnowledgeCreated,
-        };
-        let payload = json!({"dedup_flagged": true});
-        let _ = events::record_event(&conn, event_type, Some(&entity.id), &payload);
-    }
-
-    Ok(json!({
-        "id": entity.id,
-        "file_path": relative_path.display().to_string(),
-        "status": entity.status,
-        "dedup_flagged": dedup.dedup_flagged,
-        "contradiction_flagged": contradiction_flagged,
-        "duplicate_warning": dedup.duplicate_warning,
-    }))
-}
-
-/// Update a knowledge file in-place: read existing, modify, write, sync.
-/// Implementation in `update_knowledge.rs`.
-pub use crate::mcp::update_knowledge::update_knowledge_file;
-
-// ─── Response builders ─────────────────────────────────────────────
-// Response builder functions live in `responses.rs` and are re-exported above.
-
 /// Embed a query string for hybrid search. Returns None if the
 /// embedding model is unavailable (graceful degradation to FTS-only).
 /// Uses the provided persistent model to avoid reloading from disk
@@ -357,11 +347,14 @@ pub fn parse_context_mode(
             mode_str
         ))
     })?;
-    if mode.requires_query() && query.is_none() {
-        return Err(mcp_invalid_parameter(&format!(
-            "query is required for {} mode",
-            mode
-        )));
+    if mode.requires_query() {
+        let q = query.unwrap_or("").trim();
+        if q.is_empty() {
+            return Err(mcp_invalid_parameter(&format!(
+                "query is required for {} mode",
+                mode
+            )));
+        }
     }
     Ok(mode)
 }

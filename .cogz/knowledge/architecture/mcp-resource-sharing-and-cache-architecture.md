@@ -2,10 +2,10 @@
 id: a77468ff-07d1-451d-a14d-702760586875
 title: MCP resource sharing and cache architecture
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-05T07:07:28.257259896+00:00"
-updated_at: "2026-09-05T07:07:28.257259896+00:00"
-references: ["src/mcp/repo_cache.rs", "src/mcp/server.rs"]
+updated_at: "2026-09-06T10:31:59.920890297+00:00"
+references: []
 category: architecture
 tags: ["mcp", "cache", "resources", "concurrency"]
 ---

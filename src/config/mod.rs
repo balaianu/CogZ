@@ -41,6 +41,48 @@ pub fn default_toml(project_name: &str) -> String {
     toml::to_string(&config).expect("default config serializes")
 }
 
+/// Resolve and verify the DB path against the repository root.
+///
+/// Joins `db_path` (from config) with `repo_root`, canonicalizes the
+/// nearest existing parent, and verifies the result is beneath the
+/// canonical `.cogz` directory. This is a defense-in-depth check that
+/// catches symlinks pointing outside the repository — the structural
+/// validation in `Config::validate()` already rejects absolute paths
+/// and `..` components, but a symlink inside `.cogz/` could still
+/// escape.
+pub fn resolve_db_path(repo_root: &Path, db_path: &str) -> Result<std::path::PathBuf, ConfigError> {
+    let cogz_dir = repo_root.join(".cogz");
+    let resolved = repo_root.join(db_path);
+
+    // Canonicalize the .cogz directory (must exist).
+    let canonical_cogz = cogz_dir.canonicalize().map_err(|_| {
+        ConfigError::Validation(format!(
+            ".cogz/ directory not found at {}",
+            cogz_dir.display()
+        ))
+    })?;
+
+    // Canonicalize the nearest existing parent of the DB path.
+    let parent = resolved.parent().unwrap_or(&cogz_dir);
+    let canonical_parent = parent.canonicalize().map_err(|_| {
+        ConfigError::Validation(format!(
+            "DB parent directory not found: {}",
+            parent.display()
+        ))
+    })?;
+
+    // Verify the canonical parent is beneath the canonical .cogz dir.
+    if !canonical_parent.starts_with(&canonical_cogz) {
+        return Err(ConfigError::Validation(format!(
+            "DB path resolves outside .cogz/ (symlink escape?): {} -> {}",
+            resolved.display(),
+            canonical_parent.display()
+        )));
+    }
+
+    Ok(resolved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

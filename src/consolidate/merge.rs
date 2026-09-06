@@ -1,20 +1,19 @@
-//! Duplicate merging — edge redirection and superseded marking.
+//! Duplicate merging — superseded marking via canonical frontmatter.
 //!
 //! Confirmed duplicate observations are merged: one entity survives,
-//! the other is marked `superseded` with a `superseded_by` property.
-//! All edges pointing to or from the superseded entity are redirected
-//! to the survivor. Knowledge is flagged, not auto-merged (human-curated).
-//! Rules are surfaced for review, not auto-merged.
+//! the other is marked `superseded` with a `superseded_by` field in
+//! its frontmatter. The superseded entity's original edges are
+//! preserved in its frontmatter; graph expansion follows the
+//! `superseded_by` edge to reach the survivor. Knowledge is flagged,
+//! not auto-merged (human-curated). Rules are surfaced for review,
+//! not auto-merged.
 
 use std::path::{Path, PathBuf};
-
-use rusqlite::Connection;
 
 use crate::config::ConsolidationConfig;
 use crate::files::frontmatter::FmValue;
 use crate::files::{FrontmatterError, read_entity_file, write_entity_file};
 use crate::storage::StorageError;
-use crate::storage::edges::{Edge, delete_edge, get_edges_from, get_edges_to, insert_edge};
 use crate::storage::embeddings::get_knowledge_embeddings_batch;
 use crate::storage::events::{EventType, record_event};
 use crate::storage::query::get_entities_by_type;
@@ -231,6 +230,12 @@ fn merge_one(
         .ok_or_else(|| StorageError::EntityNotFound(pair.superseded_id.clone()))?;
 
     let path = resolve_file_path(file_path, cogz_dir);
+
+    // Hold the canonical-file write lock across the read-modify-write
+    // sequence to prevent concurrent writers from clobbering the
+    // superseded entity's frontmatter.
+    let _file_lock = storage.file_lock();
+
     let mut entity_file = read_entity_file(&path)?;
 
     // Set superseded_by in frontmatter.
@@ -243,148 +248,42 @@ fn merge_one(
     // Write file first.
     write_entity_file(&path, &entity_file)?;
 
-    // 3. DB: redirect edges, update status. All DB operations are in
-    //    a single transaction so a failure in any step rolls back all
-    //    changes — otherwise partial edge redirection would leave the
-    //    graph inconsistent with the entity status. unchecked_transaction()
-    //    provides Drop-based rollback on panic.
+    // 3. Sync the superseded file to the DB. This updates the entity
+    //    status to "superseded" and creates the `superseded_by` edge
+    //    from frontmatter via sync_references. The superseded entity's
+    //    original edges (references, supports, etc.) are preserved in
+    //    its frontmatter and recreated on sync. Graph expansion follows
+    //    the `superseded_by` edge to reach the survivor, so no DB-only
+    //    edge redirection is needed — everything is canonical and
+    //    rebuildable.
+    let relative_path = path
+        .strip_prefix(cogz_dir)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .to_string();
+    let sync_result = crate::files::sync_single_file(storage, cogz_dir, &relative_path);
+    if let Some(err) = sync_result.errors.first() {
+        return Err(StorageError::File(format!(
+            "sync failed for superseded entity {}: {}",
+            path.display(),
+            err.error
+        ))
+        .into());
+    }
+
+    // 4. Record the merge event.
     let conn = storage.conn();
-
-    let tx = match conn.unchecked_transaction() {
-        Ok(tx) => tx,
-        Err(e) => {
-            tracing::warn!("failed to begin merge transaction — falling back to autocommit: {e}");
-            // Fall back to autocommit — each operation persists independently.
-            redirect_edges(&conn, &pair.superseded_id, &pair.survivor_id)?;
-
-            let mut updated = superseded_entity.clone();
-            if let Some(obj) = updated.properties.as_object_mut() {
-                obj.insert(
-                    "superseded_by".to_string(),
-                    serde_json::Value::String(pair.survivor_id.clone()),
-                );
-            }
-            updated.status = "superseded".to_string();
-            updated.updated_at = chrono::Utc::now().to_rfc3339();
-            crate::storage::crud::update_entity(&conn, &updated)?;
-
-            let payload = serde_json::json!({
-                "survivor_id": pair.survivor_id,
-                "superseded_id": pair.superseded_id,
-                "reason": pair.reason,
-            });
-            record_event(
-                &conn,
-                EventType::KnowledgeMerged,
-                Some(&pair.survivor_id),
-                &payload,
-            )?;
-            return Ok(());
-        }
-    };
-
-    // All transactional operations — errors trigger Drop-based rollback.
-    if let Err(e) = (|| -> Result<(), MergeError> {
-        redirect_edges(&tx, &pair.superseded_id, &pair.survivor_id)?;
-
-        let mut updated = superseded_entity.clone();
-        if let Some(obj) = updated.properties.as_object_mut() {
-            obj.insert(
-                "superseded_by".to_string(),
-                serde_json::Value::String(pair.survivor_id.clone()),
-            );
-        }
-        updated.status = "superseded".to_string();
-        updated.updated_at = chrono::Utc::now().to_rfc3339();
-        crate::storage::crud::update_entity(&tx, &updated)?;
-
-        let payload = serde_json::json!({
-            "survivor_id": pair.survivor_id,
-            "superseded_id": pair.superseded_id,
-            "reason": pair.reason,
-        });
-        record_event(
-            &tx,
-            EventType::KnowledgeMerged,
-            Some(&pair.survivor_id),
-            &payload,
-        )?;
-        Ok(())
-    })() {
-        // Drop handles rollback — tx is dropped here, rolling back.
-        drop(tx);
-        return Err(e);
-    }
-
-    if let Err(e) = tx.commit() {
-        tracing::warn!("failed to commit merge transaction: {}", e);
-        // The file was already written, but the DB rolled back. The
-        // next sync will reconcile: the file says "superseded" but
-        // the DB still says "active". sync_parsed_file will update
-        // the DB to match the file on the next index pass.
-        return Err(StorageError::File(format!("merge transaction commit failed: {e}")).into());
-    }
-
-    Ok(())
-}
-
-/// Redirect all edges pointing to or from `old_id` to `new_id`.
-/// Edges that would create duplicates (same source, target, type) are
-/// skipped. Self-loops are removed.
-///
-/// The original edge is only deleted after the redirected edge is
-/// successfully inserted. If the insert fails, the original edge is
-/// preserved to avoid data loss.
-fn redirect_edges(conn: &Connection, old_id: &str, new_id: &str) -> Result<(), StorageError> {
-    // Redirect incoming edges: old_id as target → new_id as target.
-    let incoming = get_edges_to(conn, old_id)?;
-    for edge in &incoming {
-        // Skip self-loops.
-        if edge.source_id == new_id {
-            delete_edge(conn, &edge.source_id, old_id, &edge.edge_type)?;
-            continue;
-        }
-        // Insert the redirected edge first. Only delete the original
-        // if the insert succeeds — otherwise we'd lose the edge.
-        let inserted = insert_edge(
-            conn,
-            &Edge {
-                source_id: edge.source_id.clone(),
-                target_id: new_id.to_string(),
-                edge_type: edge.edge_type.clone(),
-                weight: edge.weight,
-                created_at: edge.created_at.clone(),
-            },
-        )
-        .is_ok();
-        if inserted {
-            delete_edge(conn, &edge.source_id, old_id, &edge.edge_type)?;
-        }
-    }
-
-    // Redirect outgoing edges: old_id as source → new_id as source.
-    let outgoing = get_edges_from(conn, old_id)?;
-    for edge in &outgoing {
-        // Skip self-loops.
-        if edge.target_id == new_id {
-            delete_edge(conn, old_id, &edge.target_id, &edge.edge_type)?;
-            continue;
-        }
-        let inserted = insert_edge(
-            conn,
-            &Edge {
-                source_id: new_id.to_string(),
-                target_id: edge.target_id.clone(),
-                edge_type: edge.edge_type.clone(),
-                weight: edge.weight,
-                created_at: edge.created_at.clone(),
-            },
-        )
-        .is_ok();
-        if inserted {
-            delete_edge(conn, old_id, &edge.target_id, &edge.edge_type)?;
-        }
-    }
+    let payload = serde_json::json!({
+        "survivor_id": pair.survivor_id,
+        "superseded_id": pair.superseded_id,
+        "reason": pair.reason,
+    });
+    record_event(
+        &conn,
+        EventType::KnowledgeMerged,
+        Some(&pair.survivor_id),
+        &payload,
+    )?;
 
     Ok(())
 }

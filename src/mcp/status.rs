@@ -74,21 +74,31 @@ pub fn build_status_response(
         _ => 0,
     };
 
-    let conn = storage.conn();
-    let counts = crate::storage::query::entity_counts_by_type(&conn)?;
-    let total = crud::count_all(&conn)?;
-    let stale = crate::storage::query::count_stale(&conn)?;
-    let edges = crate::storage::edges::count_edges(&conn)?;
-    let events_count = events::count_events(&conn)?;
-    let schema_version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    let last_index = crate::storage::get_meta(&conn, "last_index");
+    // Complete all DB queries in a scoped block, then drop the guard
+    // before probing model files on disk. This avoids blocking all DB
+    // work during filesystem metadata calls.
+    let (counts, total, stale, edges, events_count, schema_version, last_index) = {
+        let conn = storage.conn();
+        (
+            crate::storage::query::entity_counts_by_type(&conn)?,
+            crud::count_all(&conn)?,
+            crate::storage::query::count_stale(&conn)?,
+            crate::storage::edges::count_edges(&conn)?,
+            events::count_events(&conn)?,
+            conn.query_row::<u32, _, _>("PRAGMA user_version", [], |r| r.get(0))?,
+            crate::storage::get_meta(&conn, "last_index"),
+        )
+    };
+
+    // Model availability probes filesystem — no DB lock held.
+    let models = model_availability(config);
 
     Ok(json!({
         "version": env!("CARGO_PKG_VERSION"),
         "schema_version": schema_version,
         "db_path": db_path.unwrap_or_default(),
         "db_size_bytes": db_size,
-        "models": model_availability(config),
+        "models": models,
         "entities": counts.into_iter().collect::<std::collections::HashMap<_, _>>(),
         "total_entities": total,
         "stale_count": stale,

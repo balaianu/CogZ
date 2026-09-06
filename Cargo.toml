@@ -61,6 +61,11 @@ ndarray = "0.16"
 ureq = { version = "3", features = ["rustls", "json"] }
 regex = "1.13.1"
 aho-corasick = "1.1.5"
+fs2 = "0.4.3"
+
+# Unix-only: stderr suppression during ONNX Runtime init
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

@@ -29,7 +29,7 @@ pub fn run_search(
     }
 
     let config = cogz::config::load(&config_path)?;
-    let db_path = repo.join(&config.storage.db_path);
+    let db_path = cogz::config::resolve_db_path(repo, &config.storage.db_path)?;
 
     if !db_path.exists() {
         anyhow::bail!(
@@ -138,7 +138,7 @@ pub fn run_context(
     }
 
     let config = cogz::config::load(&config_path)?;
-    let db_path = repo.join(&config.storage.db_path);
+    let db_path = cogz::config::resolve_db_path(repo, &config.storage.db_path)?;
 
     if !db_path.exists() {
         anyhow::bail!(

@@ -9,9 +9,9 @@ use serde_json::json;
 use crate::embed::OnnxEmbeddingModel;
 use crate::files::embed_sync::store_embeddings;
 use crate::files::frontmatter::FmValue;
-use crate::files::{read_entity_file, sync_single_file, write_entity_file};
+use crate::files::{read_entity_file, sync_single_file};
 use crate::mcp::errors::mcp_error;
-use crate::mcp::helpers::embed_entity_text;
+use crate::mcp::helpers::{embed_entity_text, write_entity_file_atomic};
 use crate::mcp::params::UpdateKnowledgeParams;
 use crate::storage::{Storage, crud, events};
 
@@ -66,83 +66,96 @@ pub fn update_knowledge_file(
         ));
     }
 
-    let mut entity_file = read_entity_file(&abs_path)
-        .map_err(|e| mcp_error("file_write_failed", &format!("Failed to read file: {}", e)))?;
+    // Scope the canonical-file write lock to the read-modify-write-
+    // sync sequence only. Releasing it before embedding avoids
+    // blocking other canonical writers during slow ONNX inference.
+    let (entity_file, updated_fields, relative_new) = {
+        let _file_lock = storage.file_lock();
 
-    // 3. Modify fields
-    let mut updated_fields = Vec::new();
-    entity_file.body = params.content.clone();
-    updated_fields.push("content");
-    if let Some(ref title) = params.title {
-        entity_file.title = title.clone();
-        updated_fields.push("title");
-    }
-    if let Some(ref category) = params.category {
-        entity_file
-            .frontmatter
-            .insert("category", FmValue::String(category.clone()));
-        updated_fields.push("category");
-    }
-    if let Some(ref tags) = params.tags {
-        entity_file
-            .frontmatter
-            .insert("tags", FmValue::Array(tags.clone()));
-        updated_fields.push("tags");
-    }
-    if let Some(ref refs) = params.references {
-        entity_file.references = refs.clone();
-        updated_fields.push("references");
-    }
-    entity_file.updated_at = chrono::Utc::now().to_rfc3339();
+        let mut entity_file = read_entity_file(&abs_path)
+            .map_err(|e| mcp_error("file_write_failed", &format!("Failed to read file: {}", e)))?;
 
-    // 3.5. Scan for secrets before writing. Knowledge files are
-    // committed to git — a secret there is nearly impossible to
-    // remove from version history.
-    if let Some(scan) = crate::security::scan_content(&entity_file.title, &entity_file.body) {
-        return Err(mcp_error(
-            "secret_detected",
-            &format!(
-                "Content contains a suspected {} (starting with \"{}...\"). \
-                 Remove the secret before updating this entity.",
-                scan.kind, scan.preview
-            ),
-        ));
-    }
+        // 3. Modify fields
+        let mut updated_fields = Vec::new();
+        entity_file.body = params.content.clone();
+        updated_fields.push("content");
+        if let Some(ref title) = params.title {
+            entity_file.title = title.clone();
+            updated_fields.push("title");
+        }
+        if let Some(ref category) = params.category {
+            entity_file
+                .frontmatter
+                .insert("category", FmValue::String(category.clone()));
+            updated_fields.push("category");
+        }
+        if let Some(ref tags) = params.tags {
+            entity_file
+                .frontmatter
+                .insert("tags", FmValue::Array(tags.clone()));
+            updated_fields.push("tags");
+        }
+        if let Some(ref refs) = params.references {
+            entity_file.references = refs.clone();
+            updated_fields.push("references");
+        }
+        entity_file.updated_at = chrono::Utc::now().to_rfc3339();
 
-    // 4. Write the file (may move to new path if category changed).
-    // Use file_path_safe to avoid silent overwrites when the new
-    // title/category slug collides with a different entity's file.
-    let new_path = entity_file.file_path_safe(cogz_dir);
-    if new_path != abs_path
-        && let Err(e) = std::fs::remove_file(&abs_path)
-    {
-        tracing::warn!(
-            "failed to remove old entity file {}: {}",
-            abs_path.display(),
-            e
-        );
-    }
-    write_entity_file(&new_path, &entity_file)
-        .map_err(|e| mcp_error("file_write_failed", &format!("Failed to write file: {}", e)))?;
+        // 3.5. Scan for secrets before writing. Knowledge files are
+        // committed to git — a secret there is nearly impossible to
+        // remove from version history.
+        if let Some(scan) = crate::security::scan_content(&entity_file.title, &entity_file.body) {
+            return Err(mcp_error(
+                "secret_detected",
+                &format!(
+                    "Content contains a suspected {} (starting with \"{}...\"). \
+                     Remove the secret before updating this entity.",
+                    scan.kind, scan.preview
+                ),
+            ));
+        }
 
-    // 5. Sync to DB — only the single changed file, not the entire
-    // .cogz/ directory. This avoids O(n) filesystem reads on every
-    // MCP update call.
-    let relative_new = new_path.strip_prefix(cogz_dir).unwrap_or(&new_path);
-    let sync_result = sync_single_file(storage, cogz_dir, &relative_new.to_string_lossy());
-    if !sync_result.errors.is_empty() {
-        let err = &sync_result.errors[0];
-        return Err(mcp_error(
-            "db_error",
-            &format!("Sync failed: {}", err.error),
-        ));
-    }
+        // 4. Write the new file first, then remove the old file. This
+        // ensures canonical content is never lost if the write fails.
+        // Use file_path_safe + atomic write to avoid silent overwrites
+        // when the new title/category slug collides with a different
+        // entity's file (including concurrent creates).
+        let new_path = entity_file.file_path_safe(cogz_dir);
+        let new_path = write_entity_file_atomic(&new_path, &entity_file, cogz_dir)
+            .map_err(|e| mcp_error("file_write_failed", &format!("Failed to write file: {}", e)))?;
 
-    // 6. Re-embed (no DB lock during ONNX inference)
+        // Remove the old file only after the new one is safely written.
+        if new_path != abs_path
+            && let Err(e) = std::fs::remove_file(&abs_path)
+        {
+            tracing::warn!(
+                "failed to remove old entity file {}: {}",
+                abs_path.display(),
+                e
+            );
+        }
+
+        // 5. Sync to DB — only the single changed file, not the entire
+        // .cogz/ directory. This avoids O(n) filesystem reads on every
+        // MCP update call.
+        let relative_new = new_path.strip_prefix(cogz_dir).unwrap_or(&new_path);
+        let sync_result = sync_single_file(storage, cogz_dir, &relative_new.to_string_lossy());
+        if !sync_result.errors.is_empty() {
+            let err = &sync_result.errors[0];
+            return Err(mcp_error(
+                "db_error",
+                &format!("Sync failed: {}", err.error),
+            ));
+        }
+
+        (entity_file, updated_fields, relative_new.to_path_buf())
+    };
+
+    // 6. Re-embed (no file lock during ONNX inference)
     let embedding =
         embed_model.and_then(|m| embed_entity_text(m, &entity_file.title, &entity_file.body));
 
-    // 7. Store embedding + record update event (under lock)
+    // 7. Store embedding + record update event (under DB lock only)
     {
         let mut conn = storage.conn();
         if let Some(ref emb) = embedding {

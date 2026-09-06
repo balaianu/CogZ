@@ -3,6 +3,15 @@
 use serde_json::json;
 use tree_sitter::Node;
 
+#[path = "js_ts_types.rs"]
+mod js_ts_types;
+
+#[path = "js_edges.rs"]
+mod js_edges;
+
+use js_edges::{collect_js_calls, collect_js_imports, collect_js_variable_calls};
+use js_ts_types::{extract_ts_enum, extract_ts_interface};
+
 use super::{CodeEntity, RawEdge, node_text, walk_descendants};
 
 pub(super) fn extract_javascript(
@@ -243,60 +252,6 @@ fn extract_js_variable_declarations(
     }
 }
 
-fn extract_ts_interface(
-    node: &Node,
-    source: &[u8],
-    file_path: &str,
-    language: &str,
-) -> Option<CodeEntity> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(&name_node, source)?;
-    let line_start = node.start_position().row + 1;
-    let line_end = node.end_position().row + 1;
-    let content = node_text(node, source)?;
-
-    Some(CodeEntity {
-        entity_type: "class",
-        title: name.clone(),
-        content,
-        properties: json!({
-            "file_path": file_path,
-            "line_start": line_start,
-            "line_end": line_end,
-            "language": language,
-            "qualified_name": name,
-            "kind": "interface",
-        }),
-    })
-}
-
-fn extract_ts_enum(
-    node: &Node,
-    source: &[u8],
-    file_path: &str,
-    language: &str,
-) -> Option<CodeEntity> {
-    let name_node = node.child_by_field_name("name")?;
-    let name = node_text(&name_node, source)?;
-    let line_start = node.start_position().row + 1;
-    let line_end = node.end_position().row + 1;
-    let content = node_text(node, source)?;
-
-    Some(CodeEntity {
-        entity_type: "class",
-        title: name.clone(),
-        content,
-        properties: json!({
-            "file_path": file_path,
-            "line_start": line_start,
-            "line_end": line_end,
-            "language": language,
-            "qualified_name": name,
-            "kind": "enum",
-        }),
-    })
-}
-
 // ── JS/TS raw edge extraction ──────────────────────────────────────
 
 pub(super) fn extract_javascript_raw_edges(
@@ -319,6 +274,9 @@ pub(super) fn extract_javascript_raw_edges(
                 if !func_name.is_empty() {
                     collect_js_calls(&node, source, "function", &func_name, edges);
                 }
+            }
+            "variable_declaration" | "lexical_declaration" => {
+                collect_js_variable_calls(&node, source, edges);
             }
             "class_declaration" => {
                 let class_name = node
@@ -413,6 +371,9 @@ pub(super) fn extract_javascript_raw_edges(
                         "import_statement" => {
                             collect_js_imports(&inner, source, file_path, edges);
                         }
+                        "variable_declaration" | "lexical_declaration" => {
+                            collect_js_variable_calls(&inner, source, edges);
+                        }
                         _ => {}
                     }
                 }
@@ -420,55 +381,4 @@ pub(super) fn extract_javascript_raw_edges(
             _ => {}
         }
     }
-}
-
-fn collect_js_imports(node: &Node, source: &[u8], file_path: &str, edges: &mut Vec<RawEdge>) {
-    // import_statement children: import_clause (named), string (source)
-    // The string is the module path — use last segment as import name
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if child.kind() == "string" {
-            let path = node_text(&child, source)
-                .unwrap_or_default()
-                .trim_matches(|c: char| c == '"' || c == '\'')
-                .to_string();
-            if !path.is_empty() {
-                let name = path.rsplit('/').next().unwrap_or(&path).to_string();
-                // Remove file extension
-                let name = name.split('.').next().unwrap_or(&name).to_string();
-                edges.push(RawEdge {
-                    source_type: "file",
-                    source_name: file_path.to_string(),
-                    target_name: name,
-                    edge_type: "imports",
-                });
-            }
-        }
-    }
-}
-
-fn collect_js_calls(
-    node: &Node,
-    source: &[u8],
-    source_type: &'static str,
-    source_name: &str,
-    edges: &mut Vec<RawEdge>,
-) {
-    let mut f = |desc: &Node| {
-        if desc.kind() == "call_expression"
-            && let Some(func_node) = desc.child_by_field_name("function")
-        {
-            let call_name = node_text(&func_node, source).unwrap_or_default();
-            if !call_name.is_empty() {
-                edges.push(RawEdge {
-                    source_type,
-                    source_name: source_name.to_string(),
-                    target_name: call_name,
-                    edge_type: "calls",
-                });
-            }
-        }
-        true
-    };
-    walk_descendants(node, &mut f);
 }

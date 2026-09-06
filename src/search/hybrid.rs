@@ -14,11 +14,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+#[path = "hybrid_helpers.rs"]
+mod hybrid_helpers;
+
 use rusqlite::Connection;
 
 use crate::config::SearchConfig;
-use crate::storage::crud::{Entity, EntityType, get_entities_batch};
-use crate::storage::embeddings::{EmbeddingSpace, knn_search};
+use crate::storage::crud::{Entity, get_entities_batch};
+use crate::storage::embeddings::{EmbeddingSpace, knn_search_with_filters};
 use crate::storage::query::{count_active_code, count_active_knowledge, fts_search};
 
 use super::QueryEmbeddings;
@@ -45,9 +48,16 @@ pub fn search(
     params: &SearchParams,
     config: &SearchConfig,
 ) -> Result<SearchResults, SearchError> {
+    // Reject empty or whitespace-only queries early. An empty MATCH
+    // expression causes an FTS5 syntax error — return an empty result
+    // set instead of propagating a DB error.
+    if query.trim().is_empty() {
+        return Ok(SearchResults::default());
+    }
+
     let limit = params.limit as i64;
     let type_filter = params.entity_type.as_deref();
-    let status_filter = resolve_status_filter(params.status.as_deref());
+    let status_filter = hybrid_helpers::resolve_status_filter(params.status.as_deref());
 
     // 1. FTS search — returns full entities, cached to avoid re-fetching
     let fts_entities = fts_search(
@@ -66,7 +76,7 @@ pub fn search(
         .collect();
 
     // 2. Split FTS results by entity type (code vs knowledge)
-    let (code_fts_ids, knowledge_fts_ids) = split_fts_by_type(&fts_entities);
+    let (code_fts_ids, knowledge_fts_ids) = hybrid_helpers::split_fts_by_type(&fts_entities);
 
     // 3. Knowledge vector search (returns IDs + distances for proportion detection)
     let (knowledge_ids, knowledge_distances) = if let Some(k_emb) = embeddings.knowledge {
@@ -307,8 +317,19 @@ fn knn_channel(
     include_tests: bool,
     limit: i64,
 ) -> Result<(Vec<String>, Vec<f32>), SearchError> {
+    // Push type, status, and test-path filters into the KNN query so
+    // non-matching entities don't consume KNN slots. All filtering is
+    // done in SQL to prevent starvation in bounded KNN windows.
     let knn_limit = limit * 3;
-    let knn_results = knn_search(conn, space, query, knn_limit)?;
+    let knn_results = knn_search_with_filters(
+        conn,
+        space,
+        query,
+        knn_limit,
+        type_filter,
+        status_filter,
+        !include_tests,
+    )?;
 
     let uncached_ids: Vec<String> = knn_results
         .iter()
@@ -320,21 +341,14 @@ fn knn_channel(
         entity_map.insert(entity.id.clone(), entity);
     }
 
+    // All filters applied in SQL — just collect results up to limit.
     let mut filtered_ids = Vec::new();
     let mut filtered_distances = Vec::new();
     for (id, dist) in knn_results {
-        let Some(entity) = entity_map.get(&id) else {
-            continue;
-        };
-        if type_filter.is_none_or(|t| entity.r#type == t)
-            && status_filter.is_none_or(|s| entity.status == s)
-            && (include_tests || !is_test_entity(entity))
-        {
-            filtered_ids.push(id);
-            filtered_distances.push(dist);
-            if filtered_ids.len() >= limit as usize {
-                break;
-            }
+        filtered_ids.push(id);
+        filtered_distances.push(dist);
+        if filtered_ids.len() >= limit as usize {
+            break;
         }
     }
     Ok((filtered_ids, filtered_distances))
@@ -355,47 +369,6 @@ fn normalize_scores(scores: &[(String, f64)]) -> Vec<(String, f64)> {
         .iter()
         .map(|(id, s)| (id.clone(), s / max_score))
         .collect()
-}
-
-/// Split FTS results into code and knowledge entity ID lists.
-/// Code entities: function, class, file, module.
-/// Knowledge entities: observation, rule, knowledge.
-fn split_fts_by_type(fts_entities: &[Entity]) -> (Vec<String>, Vec<String>) {
-    let mut code = Vec::new();
-    let mut knowledge = Vec::new();
-    for entity in fts_entities {
-        let etype = match EntityType::parse(&entity.r#type) {
-            Ok(t) => t,
-            Err(_) => continue,
-        };
-        if etype.is_code() {
-            code.push(entity.id.clone());
-        } else {
-            knowledge.push(entity.id.clone());
-        }
-    }
-    (code, knowledge)
-}
-
-/// Check if an entity is test code based on its file_path.
-fn is_test_entity(entity: &Entity) -> bool {
-    let Some(ref fp) = entity.file_path else {
-        return false;
-    };
-    fp.starts_with("tests/")
-        || fp.contains("/tests/")
-        || fp.ends_with("/tests.rs")
-        || fp.ends_with("_tests.rs")
-}
-
-/// Resolve the status filter: None and "active" → Some("active"),
-/// "all" → None (no filter), anything else → Some(value).
-fn resolve_status_filter(status: Option<&str>) -> Option<&str> {
-    match status {
-        None => Some("active"),
-        Some("all") => None,
-        Some(s) => Some(s),
-    }
 }
 
 #[cfg(test)]

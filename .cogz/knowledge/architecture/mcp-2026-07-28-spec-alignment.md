@@ -5,7 +5,7 @@ type: knowledge
 status: active
 created_at: "2026-09-05T07:07:11.328112049+00:00"
 updated_at: "2026-09-05T07:07:11.328112049+00:00"
-references: ["src/mcp/server.rs", "src/main.rs"]
+references: []
 category: architecture
 tags: ["mcp", "protocol", "spec", "alignment"]
 ---

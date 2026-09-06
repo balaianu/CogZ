@@ -9,6 +9,7 @@ use rmcp::{ErrorData as McpError, handler::server::wrapper::Parameters, model::C
 
 use crate::mcp::helpers::{
     list_entities_response, mcp_internal_error, query_by_type_with_refs, query_knowledge_with_refs,
+    validate_query_limit,
 };
 use crate::mcp::params::*;
 use crate::mcp::responses::{query_response, tool_success};
@@ -20,6 +21,7 @@ pub async fn query_observations(
 ) -> Result<CallToolResult, McpError> {
     let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
+    let limit = validate_query_limit(params.limit.unwrap_or(20))?;
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = storage.conn();
@@ -27,7 +29,7 @@ pub async fn query_observations(
             &conn,
             "observation",
             params.status.as_deref(),
-            params.limit.unwrap_or(20),
+            limit,
             params.references.as_deref(),
         )
     })
@@ -49,6 +51,7 @@ pub async fn query_rules(
 ) -> Result<CallToolResult, McpError> {
     let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
+    let limit = validate_query_limit(params.limit.unwrap_or(20))?;
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = storage.conn();
@@ -56,7 +59,7 @@ pub async fn query_rules(
             &conn,
             "rule",
             params.status.as_deref(),
-            params.limit.unwrap_or(20),
+            limit,
             params.references.as_deref(),
         )
     })
@@ -74,6 +77,7 @@ pub async fn query_knowledge(
 ) -> Result<CallToolResult, McpError> {
     let repo = server.resolve_repo(&params.repo)?;
     let storage = repo.storage.clone();
+    let limit = validate_query_limit(params.limit.unwrap_or(20))?;
 
     let result = tokio::task::spawn_blocking(move || {
         let conn = storage.conn();
@@ -82,7 +86,7 @@ pub async fn query_knowledge(
             params.status.as_deref(),
             params.category.as_deref(),
             params.tags.as_deref(),
-            params.limit.unwrap_or(20),
+            limit,
         )
     })
     .await

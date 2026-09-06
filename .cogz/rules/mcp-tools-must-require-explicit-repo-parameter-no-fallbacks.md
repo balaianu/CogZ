@@ -5,7 +5,7 @@ type: rule
 status: active
 created_at: "2026-09-05T07:08:13.895469759+00:00"
 updated_at: "2026-09-05T07:08:13.895469759+00:00"
-references: ["src/mcp/params.rs", "src/mcp/server.rs"]
+references: []
 confidence: 0.9
 ---
 

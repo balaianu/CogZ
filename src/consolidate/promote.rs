@@ -10,8 +10,7 @@ use std::path::Path;
 
 use crate::config::ConsolidationConfig;
 use crate::files::frontmatter::{FmValue, Frontmatter};
-use crate::files::refs::sync_references;
-use crate::files::{EntityFile, FileEntityType, write_entity_file};
+use crate::files::{EntityFile, FileEntityType};
 use crate::storage::StorageError;
 use crate::storage::crud::Entity;
 use crate::storage::events::{EventType, record_event};
@@ -150,8 +149,6 @@ fn promote_one(
     cogz_dir: &Path,
     candidate: &PromotionCandidate,
 ) -> Result<String, StorageError> {
-    use crate::files::content_hash;
-
     let title = candidate
         .observation
         .title
@@ -195,55 +192,35 @@ fn promote_one(
     }
 
     // Write the file first (file-first invariant). Use file_path_safe
-    // to avoid collisions with existing rules.
+    // to avoid collisions with existing rules. Use atomic write to
+    // prevent concurrent consolidations from overwriting each other.
     let file_path = rule_file.file_path_safe(cogz_dir);
-    write_entity_file(&file_path, &rule_file)
+    let file_path = crate::mcp::helpers::write_entity_file_atomic(&file_path, &rule_file, cogz_dir)
         .map_err(|e| StorageError::File(format!("{}: {}", file_path.display(), e)))?;
 
     let rule_id = rule_file.id.clone();
-    let now = chrono::Utc::now().to_rfc3339();
 
-    // Compute content hash from the file content (same as sync.rs).
-    let file_content = rule_file.to_file_content();
-    let hash = content_hash(&file_content);
-
-    // Path relative to .cogz, matching sync.rs convention.
+    // Sync the file to the DB via sync_single_file. This ensures the
+    // DB entity (properties, content_hash, edges) exactly matches the
+    // canonical file, and survives `cogz reset` + `cogz index`.
+    // sync_single_file calls sync_references internally, which creates
+    // the derived_from and supports edges from the frontmatter.
     let relative_path = file_path
         .strip_prefix(cogz_dir)
         .unwrap_or(&file_path)
         .to_string_lossy()
         .to_string();
-
-    // Sync to DB: insert the rule entity.
-    let conn = storage.conn();
-    let entity = Entity {
-        id: rule_id.clone(),
-        r#type: "rule".to_string(),
-        title: Some(title.to_string()),
-        content: candidate.observation.content.clone(),
-        properties: serde_json::json!({
-            "confidence": 0.7,
-            "validation_count": 0,
-            "supporting_ids": candidate.supporting_ids,
-            "promoted_from": candidate.observation.id,
-        }),
-        file_path: Some(relative_path),
-        status: "active".to_string(),
-        content_hash: Some(hash),
-        created_at: now.clone(),
-        updated_at: now,
-    };
-    crate::storage::crud::insert_entity(&conn, &entity)?;
-
-    // Sync all file-backed edges from frontmatter (references, supports,
-    // contradicts, derived_from). This creates the supports edges from
-    // supporting_ids and the derived_from edge — both are in the rule
-    // file's frontmatter. Using sync_references (the same function
-    // sync.rs uses) ensures the DB edges match the file and survive
-    // incremental reindexes.
-    sync_references(&conn, &rule_file)?;
+    let sync_result = crate::files::sync_single_file(storage, cogz_dir, &relative_path);
+    if let Some(err) = sync_result.errors.first() {
+        return Err(StorageError::File(format!(
+            "sync failed for promoted rule {}: {}",
+            file_path.display(),
+            err.error
+        )));
+    }
 
     // Record the promotion event.
+    let conn = storage.conn();
     let payload = serde_json::json!({
         "observation_id": candidate.observation.id,
         "supporting_ids": candidate.supporting_ids,

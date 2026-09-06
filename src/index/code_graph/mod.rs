@@ -30,11 +30,28 @@ pub use incremental::sync_code_edges_incremental;
 /// Maps both qualified names and simple names (last segment after
 /// `::` or `.`) so that cross-file calls can be resolved by either
 /// the full path or the short name.
+///
+/// Qualified names are unique by construction (they include the file
+/// path or module path), so they are stored directly. Simple names
+/// may collide across files (e.g. `parse` in two different modules);
+/// for those, we store all candidates and skip resolution when the
+/// name is ambiguous rather than picking an arbitrary target.
+#[allow(clippy::type_complexity)]
 pub fn build_name_map(
     entities_by_file: &[(String, Vec<CodeEntity>)],
-) -> (HashMap<String, String>, HashMap<String, Vec<String>>) {
-    let mut name_to_uuid: HashMap<String, String> = HashMap::new();
+) -> (
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<String>>,
+    HashMap<String, Vec<String>>,
+) {
+    // Qualified name → all candidate UUIDs. One-to-many to detect
+    // ambiguity: duplicate top-level names (e.g. two `helper`
+    // functions in different JS files) produce multiple candidates.
+    // Direct lookup only resolves when there's exactly one candidate.
+    let mut name_to_uuid: HashMap<String, Vec<String>> = HashMap::new();
     let mut file_to_children: HashMap<String, Vec<String>> = HashMap::new();
+    // Simple name → all candidate UUIDs. Used for fallback resolution.
+    let mut simple_name_candidates: HashMap<String, Vec<String>> = HashMap::new();
 
     for (file_path_str, entities) in entities_by_file {
         for ce in entities {
@@ -51,17 +68,27 @@ pub fn build_name_map(
 
             let id = code_entity_uuid(file_path_str, ce.entity_type, &qualified_name);
 
-            name_to_uuid.insert(qualified_name.clone(), id.clone());
+            name_to_uuid
+                .entry(qualified_name.clone())
+                .or_default()
+                .push(id.clone());
+            // Collect simple-name candidates for ambiguity detection.
+            // Use a set to avoid double-counting when the qualified name
+            // has no separator (both rsplit("::") and rsplit('.') return
+            // the whole string, producing the same simple name).
+            let mut simples = std::collections::HashSet::new();
             if let Some(simple) = qualified_name.rsplit("::").next() {
-                name_to_uuid
-                    .entry(simple.to_string())
-                    .or_insert_with(|| id.clone());
+                simples.insert(simple.to_string());
             }
             // Python uses dot separators in qualified names.
             if let Some(simple) = qualified_name.rsplit('.').next() {
-                name_to_uuid
-                    .entry(simple.to_string())
-                    .or_insert_with(|| id.clone());
+                simples.insert(simple.to_string());
+            }
+            for simple in simples {
+                simple_name_candidates
+                    .entry(simple)
+                    .or_default()
+                    .push(id.clone());
             }
 
             if ce.entity_type == "function" || ce.entity_type == "class" {
@@ -73,39 +100,51 @@ pub fn build_name_map(
         }
     }
 
-    (name_to_uuid, file_to_children)
+    (name_to_uuid, file_to_children, simple_name_candidates)
+}
+
+/// Resolve a name to a single UUID via the one-to-many map.
+/// Returns None when the name is ambiguous (multiple candidates)
+/// or not found.
+fn resolve_one<'a>(name: &str, name_to_uuid: &'a HashMap<String, Vec<String>>) -> Option<&'a str> {
+    match name_to_uuid.get(name) {
+        Some(candidates) if candidates.len() == 1 => Some(&candidates[0]),
+        _ => None,
+    }
 }
 
 /// Resolve raw edges to UUID-based CodeEdges using the name map.
 ///
 /// Tries the full target name first, then the last segment (after
-/// `::` or `.`) as a fallback. Unresolved edges are silently dropped.
+/// `::` or `.`) as a fallback. Both direct and fallback lookups
+/// skip ambiguous names (multiple candidates) — picking one would
+/// create an arbitrary, non-rebuildable edge. Unresolved edges are
+/// silently dropped.
 pub fn resolve_edges(
     raw_edges: &[RawEdge],
-    name_to_uuid: &HashMap<String, String>,
+    name_to_uuid: &HashMap<String, Vec<String>>,
+    simple_name_candidates: &HashMap<String, Vec<String>>,
 ) -> Vec<CodeEdge> {
     let mut edges = Vec::new();
     for raw in raw_edges {
-        let source_id = name_to_uuid.get(&raw.source_name);
-        let target_id = name_to_uuid
-            .get(&raw.target_name)
-            .or_else(|| {
-                raw.target_name
-                    .rsplit("::")
-                    .next()
-                    .and_then(|last| name_to_uuid.get(last))
-            })
-            .or_else(|| {
-                raw.target_name
-                    .rsplit('.')
-                    .next()
-                    .and_then(|last| name_to_uuid.get(last))
-            });
+        let source_id = resolve_one(&raw.source_name, name_to_uuid);
+        let target_id = resolve_one(&raw.target_name, name_to_uuid).or_else(|| {
+            // Try simple-name fallback only if unambiguous.
+            let simple = raw
+                .target_name
+                .rsplit("::")
+                .next()
+                .or_else(|| raw.target_name.rsplit('.').next())?;
+            match simple_name_candidates.get(simple) {
+                Some(candidates) if candidates.len() == 1 => Some(&candidates[0]),
+                _ => None,
+            }
+        });
 
         if let (Some(src), Some(tgt)) = (source_id, target_id) {
             edges.push(CodeEdge {
-                source_id: src.clone(),
-                target_id: tgt.clone(),
+                source_id: src.to_string(),
+                target_id: tgt.to_string(),
                 edge_type: raw.edge_type,
             });
         }
@@ -143,12 +182,16 @@ pub fn sync_code_edges(
     raw_edges_by_file: &[(String, Vec<RawEdge>)],
 ) {
     // Phase 1: build name → UUID map and file → children map.
-    let (name_to_uuid, file_to_children) = build_name_map(entities_by_file);
+    let (name_to_uuid, file_to_children, simple_name_candidates) = build_name_map(entities_by_file);
 
     // Phase 2: resolve raw edges to UUID-based edges.
     let mut edges: Vec<CodeEdge> = Vec::new();
     for (_, raw_edges) in raw_edges_by_file {
-        edges.extend(resolve_edges(raw_edges, &name_to_uuid));
+        edges.extend(resolve_edges(
+            raw_edges,
+            &name_to_uuid,
+            &simple_name_candidates,
+        ));
     }
 
     // Phase 2b: build `contains` edges.
@@ -158,17 +201,24 @@ pub fn sync_code_edges(
     // single transaction so a COMMIT failure rolls back both —
     // otherwise the DELETE would persist (autocommit) while the
     // INSERTs roll back, silently destroying the graph.
+    // Use unchecked_transaction so the guard rolls back on drop
+    // if any error occurs before commit.
     let conn = storage.conn();
 
-    let in_transaction = conn.execute_batch("BEGIN").is_ok();
-    if !in_transaction {
-        tracing::warn!("failed to begin edge transaction — falling back to autocommit");
-    }
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!("failed to begin edge transaction: {}", e);
+            return;
+        }
+    };
 
     if let Err(e) =
-        storage::edges::delete_edges_by_type(&conn, &["calls", "imports", "extends", "contains"])
+        storage::edges::delete_edges_by_type(&tx, &["calls", "imports", "extends", "contains"])
     {
         tracing::warn!("failed to clear structural edges: {}", e);
+        // tx drops here → automatic ROLLBACK.
+        return;
     }
 
     let now = chrono::Utc::now().to_rfc3339();
@@ -181,12 +231,12 @@ pub fn sync_code_edges(
             weight: 1.0,
             created_at: now.clone(),
         };
-        if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&conn, &db_edge) {
+        if let Err(e) = storage::edges::insert_edge_skip_fk_violation(&tx, &db_edge) {
             tracing::debug!("skipped edge {}: {}", edge.edge_type, e);
         }
     }
 
-    if in_transaction && let Err(e) = conn.execute_batch("COMMIT") {
+    if let Err(e) = tx.commit() {
         tracing::warn!("failed to commit edge transaction: {}", e);
     }
 }

@@ -1,11 +1,12 @@
 ---
 id: 35cfc0d9-a3e6-4210-9e67-89ee82ae85aa
-type: observation
-status: active
 title: update_knowledge file path resolution
+type: observation
+status: stale
+created_at: "2026-08-29T02:45:00Z"
+updated_at: "2026-09-06T07:32:43.323531547+00:00"
+references: []
 source: agent
-created_at: 2026-08-29T02:45:00Z
-updated_at: 2026-08-29T02:45:00Z
 ---
 
 The `file_path` stored in the DB for entities synced from `.cogz/` files

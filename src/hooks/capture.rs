@@ -110,7 +110,7 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
     }
 
     let config = crate::config::load(&config_path)?;
-    let db_path = input.repo.join(&config.storage.db_path);
+    let db_path = crate::config::resolve_db_path(input.repo, &config.storage.db_path)?;
 
     if !db_path.exists() {
         if input.hook_json {
@@ -243,7 +243,10 @@ fn parse_hook_stdin() -> (
             let remaining = MAX_STDIN_BYTES - stdin.len();
             stdin.push_str(&String::from_utf8_lossy(&buf[..remaining]));
             // Drain remaining stdin so the pipe doesn't break.
-            let _ = stdin_buf.read_to_end(&mut Vec::new());
+            // Use io::sink() to avoid materializing the remaining
+            // bytes in memory — read_to_end(&mut Vec::new()) would
+            // allocate the full remaining payload.
+            let _ = std::io::copy(&mut stdin_buf, &mut std::io::sink());
             break;
         }
         stdin.push_str(&String::from_utf8_lossy(&buf[..n]));

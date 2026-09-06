@@ -60,18 +60,28 @@ fn dedup_exact_title_match_via_consolidate_module() {
     let conn = storage.conn();
     insert_entity(
         &conn,
-        &Entity::new("u1", "observation", "FTS5 ranking bug", "c"),
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000051",
+            "observation",
+            "FTS5 ranking bug",
+            "c",
+        ),
     )
     .unwrap();
     insert_entity(
         &conn,
-        &Entity::new("u2", "observation", "FTS5 ranking bug", "c"),
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000052",
+            "observation",
+            "FTS5 ranking bug",
+            "c",
+        ),
     )
     .unwrap();
 
     let result = check_duplicate(
         &conn,
-        "u2",
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
         "FTS5 ranking bug",
         "observation",
         None,
@@ -85,13 +95,44 @@ fn dedup_exact_title_match_via_consolidate_module() {
 fn dedup_embedding_similarity_flagged() {
     let storage = setup();
     let conn = storage.conn();
-    insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-    insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000051",
+            "observation",
+            "A",
+            "c",
+        ),
+    )
+    .unwrap();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000052",
+            "observation",
+            "B",
+            "c",
+        ),
+    )
+    .unwrap();
 
     let embedding = vec![0.1_f32; 768];
-    insert_embedding(&conn, "u1", "observation", &embedding).unwrap();
+    insert_embedding(
+        &conn,
+        "a1b2c3d4-e5f6-4789-abcd-000000000051",
+        "observation",
+        &embedding,
+    )
+    .unwrap();
 
-    let result = check_duplicate(&conn, "u2", "B", "observation", Some(&embedding), &config());
+    let result = check_duplicate(
+        &conn,
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
+        "B",
+        "observation",
+        Some(&embedding),
+        &config(),
+    );
     assert!(result.dedup_flagged);
 }
 
@@ -101,13 +142,18 @@ fn dedup_no_false_positive_for_different_titles() {
     let conn = storage.conn();
     insert_entity(
         &conn,
-        &Entity::new("u1", "observation", "Bug in search", "c"),
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000051",
+            "observation",
+            "Bug in search",
+            "c",
+        ),
     )
     .unwrap();
 
     let result = check_duplicate(
         &conn,
-        "u2",
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
         "Feature request: dark mode",
         "observation",
         None,
@@ -123,11 +169,23 @@ fn dedup_ignores_non_active_entities() {
     // duplicate warning for a new entity.
     let storage = setup();
     let conn = storage.conn();
-    let mut rejected = Entity::new("u1", "observation", "Same title", "c");
+    let mut rejected = Entity::new(
+        "a1b2c3d4-e5f6-4789-abcd-000000000051",
+        "observation",
+        "Same title",
+        "c",
+    );
     rejected.status = "rejected".to_string();
     insert_entity(&conn, &rejected).unwrap();
 
-    let result = check_duplicate(&conn, "u2", "Same title", "observation", None, &config());
+    let result = check_duplicate(
+        &conn,
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
+        "Same title",
+        "observation",
+        None,
+        &config(),
+    );
     assert!(
         result.duplicate_warning.is_none(),
         "rejected entities should not trigger dedup"
@@ -143,13 +201,18 @@ fn contradiction_detected_with_mock_nli() {
     let conn = storage.conn();
     insert_entity(
         &conn,
-        &Entity::new("u1", "observation", "A", "The bug is in search"),
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000051",
+            "observation",
+            "A",
+            "The bug is in search",
+        ),
     )
     .unwrap();
 
     let result = check_contradiction(
         &conn,
-        "u2",
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
         "The bug is not in search",
         "observation",
         Some(&MockNliModel),
@@ -157,7 +220,10 @@ fn contradiction_detected_with_mock_nli() {
         &config(),
     );
     assert!(result.contradiction_flagged);
-    assert_eq!(result.contradicts_ids, vec!["u1".to_string()]);
+    assert_eq!(
+        result.contradicts_ids,
+        vec!["a1b2c3d4-e5f6-4789-abcd-000000000051".to_string()]
+    );
 }
 
 #[test]
@@ -166,13 +232,18 @@ fn contradiction_skipped_when_nli_unavailable() {
     let conn = storage.conn();
     insert_entity(
         &conn,
-        &Entity::new("u1", "observation", "A", "The bug is in search"),
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000051",
+            "observation",
+            "A",
+            "The bug is in search",
+        ),
     )
     .unwrap();
 
     let result = check_contradiction(
         &conn,
-        "u2",
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
         "The bug is not in search",
         "observation",
         None,
@@ -184,16 +255,41 @@ fn contradiction_skipped_when_nli_unavailable() {
 
 #[test]
 fn contradiction_records_edges_and_event() {
-    let storage = setup();
-    let conn = storage.conn();
-    insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-    insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let cogz_dir = dir.path().join(".cogz");
+    std::fs::create_dir_all(&cogz_dir).unwrap();
+    let storage = Storage::open(&cogz_dir.join("test.db"), 768).unwrap();
+    {
+        let conn = storage.conn();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000051",
+                "observation",
+                "A",
+                "c",
+            ),
+        )
+        .unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000052",
+                "observation",
+                "B",
+                "c",
+            ),
+        )
+        .unwrap();
+    }
 
     // Write a file for u2 so record_contradictions can update it.
-    let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path().join("u2.md");
+    let file_path = cogz_dir.join("u2.md");
     let mut fm = Frontmatter::new();
-    fm.insert("id", FmValue::String("u2".to_string()));
+    fm.insert(
+        "id",
+        FmValue::String("a1b2c3d4-e5f6-4789-abcd-000000000052".to_string()),
+    );
     fm.insert("title", FmValue::String("B".to_string()));
     fm.insert("type", FmValue::String("observation".to_string()));
     fm.insert("status", FmValue::String("active".to_string()));
@@ -208,13 +304,20 @@ fn contradiction_records_edges_and_event() {
     fm.insert("references", FmValue::Array(vec![]));
     std::fs::write(&file_path, format!("---\n{}---\n\nc", serialize_fm(&fm))).unwrap();
 
-    record_contradictions(&conn, "u2", &["u1".to_string()], &file_path).unwrap();
+    record_contradictions(
+        &storage,
+        &cogz_dir,
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
+        &["a1b2c3d4-e5f6-4789-abcd-000000000051".to_string()],
+        &file_path,
+    )
+    .unwrap();
 
-    let edges = get_edges_from(&conn, "u2").unwrap();
+    let conn = storage.conn();
+    let edges = get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000052").unwrap();
     assert!(
-        edges
-            .iter()
-            .any(|e| e.edge_type == "contradicts" && e.target_id == "u1")
+        edges.iter().any(|e| e.edge_type == "contradicts"
+            && e.target_id == "a1b2c3d4-e5f6-4789-abcd-000000000051")
     );
 
     // Verify the file was updated with contradicts frontmatter.
@@ -236,7 +339,7 @@ fn promotion_creates_rule_file_and_derived_from_edge() {
         insert_entity(
             &conn,
             &Entity::new(
-                "obs-1",
+                "a1b2c3d4-e5f6-4789-abcd-000000000061",
                 "observation",
                 "Test Obs",
                 "Always use batched queries",
@@ -253,7 +356,7 @@ fn promotion_creates_rule_file_and_derived_from_edge() {
                 &conn,
                 &Edge {
                     source_id: format!("sup-{i}"),
-                    target_id: "obs-1".to_string(),
+                    target_id: "a1b2c3d4-e5f6-4789-abcd-000000000061".to_string(),
                     edge_type: "supports".to_string(),
                     weight: 1.0,
                     created_at: chrono::Utc::now().to_rfc3339(),
@@ -272,9 +375,8 @@ fn promotion_creates_rule_file_and_derived_from_edge() {
 
     let edges = get_edges_from(&conn, &results[0].new_rule_id).unwrap();
     assert!(
-        edges
-            .iter()
-            .any(|e| e.edge_type == "derived_from" && e.target_id == "obs-1")
+        edges.iter().any(|e| e.edge_type == "derived_from"
+            && e.target_id == "a1b2c3d4-e5f6-4789-abcd-000000000061")
     );
 
     // Verify the rule file contains derived_from in frontmatter (file-backed edge).
@@ -288,7 +390,7 @@ fn promotion_creates_rule_file_and_derived_from_edge() {
     };
     let file_content = std::fs::read_to_string(&abs_path).unwrap();
     assert!(file_content.contains("derived_from"));
-    assert!(file_content.contains("obs-1"));
+    assert!(file_content.contains("a1b2c3d4-e5f6-4789-abcd-000000000061"));
 }
 
 #[test]
@@ -300,7 +402,16 @@ fn promotion_dry_run_makes_no_changes() {
 
     {
         let conn = storage.conn();
-        insert_entity(&conn, &Entity::new("obs-1", "observation", "Obs 1", "c")).unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000061",
+                "observation",
+                "Obs 1",
+                "c",
+            ),
+        )
+        .unwrap();
         for i in 2..=4 {
             insert_entity(
                 &conn,
@@ -311,7 +422,7 @@ fn promotion_dry_run_makes_no_changes() {
                 &conn,
                 &Edge {
                     source_id: format!("sup-{i}"),
-                    target_id: "obs-1".to_string(),
+                    target_id: "a1b2c3d4-e5f6-4789-abcd-000000000061".to_string(),
                     edge_type: "supports".to_string(),
                     weight: 1.0,
                     created_at: chrono::Utc::now().to_rfc3339(),
@@ -345,25 +456,58 @@ fn merge_supersedes_duplicate_and_redirects_edges() {
     let embedding = vec![0.1_f32; 768];
     {
         let conn = storage.conn();
-        let mut e1 = Entity::new("obs-1", "observation", "A", "content");
+        let mut e1 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000061",
+            "observation",
+            "A",
+            "content",
+        );
         e1.created_at = "2026-01-01T00:00:00Z".to_string();
         // Relative path as stored by sync.rs (relative to .cogz).
-        e1.file_path = Some("observations/2026-01/obs-1.md".to_string());
+        e1.file_path =
+            Some("observations/2026-01/a1b2c3d4-e5f6-4789-abcd-000000000061.md".to_string());
         insert_entity(&conn, &e1).unwrap();
-        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000061",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
 
-        let mut e2 = Entity::new("obs-2", "observation", "B", "content");
+        let mut e2 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000062",
+            "observation",
+            "B",
+            "content",
+        );
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
-        e2.file_path = Some("observations/2026-01/obs-2.md".to_string());
+        e2.file_path =
+            Some("observations/2026-01/a1b2c3d4-e5f6-4789-abcd-000000000062.md".to_string());
         insert_entity(&conn, &e2).unwrap();
-        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000062",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
 
-        insert_entity(&conn, &Entity::new("kn-1", "knowledge", "K", "c")).unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000063",
+                "knowledge",
+                "K",
+                "c",
+            ),
+        )
+        .unwrap();
         insert_edge(
             &conn,
             &Edge {
-                source_id: "kn-1".to_string(),
-                target_id: "obs-2".to_string(),
+                source_id: "a1b2c3d4-e5f6-4789-abcd-000000000063".to_string(),
+                target_id: "a1b2c3d4-e5f6-4789-abcd-000000000062".to_string(),
                 edge_type: "references".to_string(),
                 weight: 1.0,
                 created_at: chrono::Utc::now().to_rfc3339(),
@@ -372,25 +516,43 @@ fn merge_supersedes_duplicate_and_redirects_edges() {
         .unwrap();
     }
 
-    write_observation_file(&cogz_dir, "obs-1", "A", "2026-01-01T00:00:00Z");
-    write_observation_file(&cogz_dir, "obs-2", "B", "2026-02-01T00:00:00Z");
+    write_observation_file(
+        &cogz_dir,
+        "a1b2c3d4-e5f6-4789-abcd-000000000061",
+        "A",
+        "2026-01-01T00:00:00Z",
+    );
+    write_observation_file(
+        &cogz_dir,
+        "a1b2c3d4-e5f6-4789-abcd-000000000062",
+        "B",
+        "2026-02-01T00:00:00Z",
+    );
 
     let results = run_merge(&storage, &cogz_dir, &config(), false).unwrap();
     assert_eq!(results.len(), 1);
 
     let conn = storage.conn();
-    let e2 = cogz::storage::crud::get_entity(&conn, "obs-2").unwrap();
+    let e2 =
+        cogz::storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000062").unwrap();
     assert_eq!(e2.status, "superseded");
 
-    let edges = get_edges_to(&conn, "obs-1").unwrap();
+    // The superseded_by edge connects obs-2 to obs-1 (canonical).
+    let edges_from = get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000062").unwrap();
     assert!(
-        edges
-            .iter()
-            .any(|e| e.source_id == "kn-1" && e.edge_type == "references")
+        edges_from.iter().any(|e| e.edge_type == "superseded_by"
+            && e.target_id == "a1b2c3d4-e5f6-4789-abcd-000000000061")
     );
 
-    let old_edges = get_edges_to(&conn, "obs-2").unwrap();
-    assert!(old_edges.is_empty());
+    // Original edges to obs-2 are preserved (not redirected).
+    // Graph expansion follows superseded_by to reach the survivor.
+    let old_edges = get_edges_to(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000062").unwrap();
+    assert!(
+        old_edges
+            .iter()
+            .any(|e| e.source_id == "a1b2c3d4-e5f6-4789-abcd-000000000063"
+                && e.edge_type == "references")
+    );
 }
 
 #[test]
@@ -402,22 +564,45 @@ fn merge_dry_run_makes_no_changes() {
     let embedding = vec![0.1_f32; 768];
     {
         let conn = storage.conn();
-        let mut e1 = Entity::new("obs-1", "observation", "A", "content");
+        let mut e1 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000061",
+            "observation",
+            "A",
+            "content",
+        );
         e1.created_at = "2026-01-01T00:00:00Z".to_string();
         insert_entity(&conn, &e1).unwrap();
-        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000061",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
 
-        let mut e2 = Entity::new("obs-2", "observation", "B", "content");
+        let mut e2 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000062",
+            "observation",
+            "B",
+            "content",
+        );
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
         insert_entity(&conn, &e2).unwrap();
-        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000062",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
     }
 
     let results = run_merge(&storage, &cogz_dir, &config(), true).unwrap();
     assert_eq!(results.len(), 1);
 
     let conn = storage.conn();
-    let e2 = cogz::storage::crud::get_entity(&conn, "obs-2").unwrap();
+    let e2 =
+        cogz::storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000062").unwrap();
     assert_eq!(e2.status, "active");
 }
 
@@ -441,9 +626,25 @@ fn full_consolidation_works_without_nli_model() {
 fn dedup_works_without_embeddings() {
     let storage = setup();
     let conn = storage.conn();
-    insert_entity(&conn, &Entity::new("u1", "observation", "Same title", "c")).unwrap();
+    insert_entity(
+        &conn,
+        &Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000051",
+            "observation",
+            "Same title",
+            "c",
+        ),
+    )
+    .unwrap();
 
-    let result = check_duplicate(&conn, "u2", "Same title", "observation", None, &config());
+    let result = check_duplicate(
+        &conn,
+        "a1b2c3d4-e5f6-4789-abcd-000000000052",
+        "Same title",
+        "observation",
+        None,
+        &config(),
+    );
     assert!(result.duplicate_warning.is_some());
     assert!(!result.dedup_flagged);
 }

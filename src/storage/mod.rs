@@ -66,8 +66,22 @@ pub(crate) fn ensure_vec_extension() {
 }
 
 /// The storage layer. Owns a single SQLite connection behind a Mutex.
+///
+/// Also owns a `file_mutex` that serializes canonical file
+/// read-modify-write sequences (knowledge updates, stale flagging,
+/// merging, contradiction recording, promotion, pruning). Callers
+/// that read a canonical file, modify it, and write it back must
+/// hold `file_lock()` for the entire sequence to prevent concurrent
+/// writers from clobbering each other's changes.
+///
+/// For cross-process safety, `file_lock()` also acquires an OS-backed
+/// advisory lock on a `.cogz/.lock` file. This prevents concurrent
+/// CogZ processes (hooks, CLI, MCP server) from performing
+/// read-modify-write sequences simultaneously.
 pub struct Storage {
     conn: Mutex<Connection>,
+    file_mutex: Mutex<()>,
+    lock_file: Option<std::fs::File>,
 }
 
 impl Storage {
@@ -97,14 +111,55 @@ impl Storage {
         schema::run_migrations(&conn, embedding_dim)?;
         schema::check_version(&conn)?;
 
+        // Open a cross-process lock file alongside the DB. The lock
+        // is acquired on demand via `file_lock()`. For in-memory DBs
+        // (tests), no lock file is needed.
+        let lock_file = if path == Path::new(":memory:") {
+            None
+        } else {
+            let lock_path = path.parent().unwrap_or(Path::new(".")).join(".lock");
+            std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&lock_path)
+                .ok()
+        };
+
         Ok(Self {
             conn: Mutex::new(conn),
+            file_mutex: Mutex::new(()),
+            lock_file,
         })
     }
 
     /// Open an in-memory database (for tests). Uses 768-dim embeddings.
     pub fn open_memory() -> Result<Self, StorageError> {
         Self::open(Path::new(":memory:"), 768)
+    }
+
+    /// Acquire the canonical-file write lock. Hold this guard across
+    /// any read-modify-write sequence on canonical entity files to
+    /// prevent concurrent writers from discarding each other's
+    /// changes. Do NOT hold the DB connection guard simultaneously
+    /// unless the operation requires both — release the file lock
+    /// before long-running I/O.
+    ///
+    /// This acquires both an in-process mutex (fast path) and an
+    /// OS-backed advisory lock on `.cogz/.lock` (cross-process safety).
+    /// The OS lock is released when the guard is dropped.
+    pub fn file_lock(&self) -> FileLockGuard<'_> {
+        let mutex_guard = self.file_mutex.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref lock_file) = self.lock_file {
+            use fs2::FileExt;
+            // Block until we get an exclusive lock. This serializes
+            // canonical writes across processes.
+            let _ = lock_file.lock_exclusive();
+        }
+        FileLockGuard {
+            _mutex: mutex_guard,
+            lock_file: self.lock_file.as_ref(),
+        }
     }
 
     /// Access the underlying connection. For internal use within
@@ -129,6 +184,23 @@ impl Storage {
         match path {
             Some(ref p) if !p.is_empty() => std::fs::metadata(p).map(|m| m.len()).unwrap_or(0),
             _ => 0,
+        }
+    }
+}
+
+/// Guard for the canonical-file write lock. Releases both the
+/// in-process mutex and the OS-backed advisory lock on drop.
+pub struct FileLockGuard<'a> {
+    _mutex: std::sync::MutexGuard<'a, ()>,
+    lock_file: Option<&'a std::fs::File>,
+}
+
+impl Drop for FileLockGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(lock_file) = self.lock_file {
+            // fs2::FileExt::unlock — the trait is already in scope
+            // from the `file_lock()` method above.
+            let _ = fs2::FileExt::unlock(lock_file);
         }
     }
 }

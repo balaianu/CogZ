@@ -121,15 +121,23 @@ impl OnnxEmbeddingModel {
 
     /// Try to load the model and tokenizer.
     fn try_load(&self) -> EmbeddingResult<()> {
-        // Fast path: model already loaded.
+        // Check if model is loaded. If loaded but idle (TTL expired),
+        // unload it and fall through to the reload path. This ensures
+        // idle models are reaped rather than staying resident forever.
         if self
             .session
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_some()
         {
-            self.idle_tracker.touch();
-            return Ok(());
+            if self.idle_tracker.is_idle() {
+                tracing::debug!("unloading idle model {} (TTL expired)", self.model_id);
+                self.unload();
+                // Fall through to reload.
+            } else {
+                self.idle_tracker.touch();
+                return Ok(());
+            }
         }
 
         // Fast path: no model configured (FTS-only mode). Skip ONNX
@@ -138,11 +146,6 @@ impl OnnxEmbeddingModel {
             return Err(EmbeddingError::ModelUnavailable(
                 "no model configured (FTS-only mode)".to_string(),
             ));
-        }
-
-        // Unload idle model to free memory before reloading.
-        if self.idle_tracker.is_idle() {
-            self.unload();
         }
 
         if !super::resources::has_enough_memory(self.min_free_mb) {
@@ -186,26 +189,29 @@ impl OnnxEmbeddingModel {
         }
 
         let session = {
-            let mut builder = Session::builder().map_err(|e| {
-                warn!("ONNX session builder failed: {}", e);
-                EmbeddingError::ModelUnavailable(format!("session builder: {}", e))
-            })?;
-            builder = builder
-                .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
-                .map_err(|e| {
-                    warn!("ONNX optimization level failed: {}", e);
-                    EmbeddingError::ModelUnavailable(format!("optimization level: {}", e))
+            // Suppress ONNX schema registration warnings during session creation.
+            crate::embed::suppress::suppress_stderr_during(|| {
+                let mut builder = Session::builder().map_err(|e| {
+                    warn!("ONNX session builder failed: {}", e);
+                    EmbeddingError::ModelUnavailable(format!("session builder: {}", e))
                 })?;
-            // Disable memory pattern to prevent ORT's arena from
-            // growing unbounded across batched inference calls. Without
-            // this, RSS climbs to 5GB+ during large embedding workloads.
-            builder = builder.with_memory_pattern(false).map_err(|e| {
-                warn!("ONNX memory pattern failed: {}", e);
-                EmbeddingError::ModelUnavailable(format!("memory pattern: {}", e))
-            })?;
-            builder.commit_from_file(&model_path).map_err(|e| {
-                warn!("ONNX session load failed: {}", e);
-                EmbeddingError::ModelUnavailable(format!("failed to load ONNX model: {}", e))
+                builder = builder
+                    .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
+                    .map_err(|e| {
+                        warn!("ONNX optimization level failed: {}", e);
+                        EmbeddingError::ModelUnavailable(format!("optimization level: {}", e))
+                    })?;
+                // Disable memory pattern to prevent ORT's arena from
+                // growing unbounded across batched inference calls. Without
+                // this, RSS climbs to 5GB+ during large embedding workloads.
+                builder = builder.with_memory_pattern(false).map_err(|e| {
+                    warn!("ONNX memory pattern failed: {}", e);
+                    EmbeddingError::ModelUnavailable(format!("memory pattern: {}", e))
+                })?;
+                builder.commit_from_file(&model_path).map_err(|e| {
+                    warn!("ONNX session load failed: {}", e);
+                    EmbeddingError::ModelUnavailable(format!("failed to load ONNX model: {}", e))
+                })
             })?
         };
 

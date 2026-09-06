@@ -209,7 +209,8 @@ pub fn open_repo(
     let config = crate::config::load(&config_path)
         .map_err(|e| mcp_internal_error("config", &e.to_string()))?;
 
-    let db_path = canonical.join(&config.storage.db_path);
+    let db_path = crate::config::resolve_db_path(canonical, &config.storage.db_path)
+        .map_err(|e| mcp_internal_error("config", &e.to_string()))?;
     if !db_path.exists() {
         return Err(mcp_invalid_parameter(&format!(
             "Database not found at {}. Run `cogz index` first.",

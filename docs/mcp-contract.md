@@ -19,6 +19,12 @@ shape, and error behavior. This is the contract the agent depends on.
 - **All tools are synchronous from the agent's perspective** —
   background operations (embedding, consolidation) happen after the
   tool returns
+- **Every tool requires an explicit `repo` parameter** — absolute path
+  to the project root containing `.cogz/`. No fallback to cwd, no
+  implicit session context. This aligns with the 2026-07-28 MCP spec
+  (SEP-2577) which deprecated Roots in favor of tool parameters. The
+  `repo` parameter is omitted from individual tool schemas below for
+  brevity but is required on every tool.
 
 ---
 
@@ -676,7 +682,7 @@ Get system status — DB stats, model availability, entity counts.
 ```json
 {
   "version": "0.1.0",
-  "schema_version": 2,
+  "schema_version": 3,
   "db_path": ".cogz/cogz.db",
   "db_size_bytes": 1048576,
   "entities": {
@@ -711,14 +717,14 @@ Capture a lifecycle event from hook scripts. Called by
 ```json
 {
   "name": "capture_event",
-  "description": "Capture a lifecycle event. Called by hook scripts (session_start, prompt_submit, pre_tool_use, post_tool_use). For session_start and prompt_submit, returns a context pack for injection.",
+  "description": "Capture a lifecycle event. Called by hook scripts (session_start, prompt_submit, pre_tool_use, post_tool_use, file_save, session_end, stop). For session_start and prompt_submit, returns a context pack for injection.",
   "inputSchema": {
     "type": "object",
     "required": ["event_type"],
     "properties": {
       "event_type": {
         "type": "string",
-        "enum": ["session_start", "prompt_submit", "pre_tool_use", "post_tool_use"],
+        "enum": ["session_start", "prompt_submit", "pre_tool_use", "post_tool_use", "file_save", "session_end", "stop"],
         "description": "The lifecycle event type."
       },
       "prompt": {
@@ -732,6 +738,10 @@ Capture a lifecycle event from hook scripts. Called by
       "tool_result": {
         "type": "string",
         "description": "The tool result summary (for post_tool_use)."
+      },
+      "file_path": {
+        "type": "string",
+        "description": "Saved file path, relative to repo root (for file_save)."
       }
     }
   }

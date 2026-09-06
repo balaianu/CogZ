@@ -77,12 +77,21 @@ fn sync_creates_new_entities() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        &knowledge_file("k1-uuid", "Overview", "architecture", "System overview"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "System overview",
+        ),
     );
     write_file(
         dir.path(),
         "rules/use-sqlite.md",
-        &rule_file("r1-uuid", "Use SQLite", "Always use SQLite"),
+        &rule_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000003",
+            "Use SQLite",
+            "Always use SQLite",
+        ),
     );
 
     let result = sync_all(&storage, dir.path());
@@ -102,7 +111,12 @@ fn sync_updates_changed_files() {
     let path = write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        &knowledge_file("k1-uuid", "Overview", "architecture", "Original content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "Original content",
+        ),
     );
 
     // First sync creates
@@ -112,7 +126,12 @@ fn sync_updates_changed_files() {
     // Modify the file
     std::fs::write(
         &path,
-        knowledge_file("k1-uuid", "Overview", "architecture", "Updated content"),
+        knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "Updated content",
+        ),
     )
     .unwrap();
 
@@ -122,7 +141,7 @@ fn sync_updates_changed_files() {
     assert_eq!(result.created, 0);
 
     let conn = storage.conn();
-    let entity = storage::crud::get_entity(&conn, "k1-uuid").unwrap();
+    let entity = storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000001").unwrap();
     assert_eq!(entity.content, "Updated content");
 }
 
@@ -134,7 +153,12 @@ fn sync_incremental_skips_unchanged() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        &knowledge_file("k1-uuid", "Overview", "architecture", "Content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "Content",
+        ),
     );
 
     // First sync creates
@@ -156,7 +180,11 @@ fn sync_marks_deleted_files_stale() {
     let path = write_file(
         dir.path(),
         "rules/test-rule.md",
-        &rule_file("r1-uuid", "Test Rule", "Rule body"),
+        &rule_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000003",
+            "Test Rule",
+            "Rule body",
+        ),
     );
 
     // First sync creates
@@ -170,7 +198,7 @@ fn sync_marks_deleted_files_stale() {
     assert_eq!(result.marked_stale, 1);
 
     let conn = storage.conn();
-    let entity = storage::crud::get_entity(&conn, "r1-uuid").unwrap();
+    let entity = storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000003").unwrap();
     assert_eq!(entity.status, "stale");
 }
 
@@ -183,12 +211,17 @@ fn sync_preserves_edges_on_stale() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        &knowledge_file("k1-uuid", "Overview", "architecture", "Content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "Content",
+        ),
     );
     write_file(
         dir.path(),
         "rules/ref-rule.md",
-        "---\nid: r1-uuid\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"k1-uuid\"]\n---\n\nRule body",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000003\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"a1b2c3d4-e5f6-4789-abcd-000000000001\"]\n---\n\nRule body",
     );
 
     sync_all(&storage, dir.path());
@@ -217,12 +250,17 @@ fn sync_references_edges() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        &knowledge_file("k1-uuid", "Overview", "architecture", "Content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "Content",
+        ),
     );
     write_file(
         dir.path(),
         "rules/ref-rule.md",
-        "---\nid: r1-uuid\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"k1-uuid\"]\n---\n\nRule body",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000003\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"a1b2c3d4-e5f6-4789-abcd-000000000001\"]\n---\n\nRule body",
     );
 
     let result = sync_all(&storage, dir.path());
@@ -230,9 +268,10 @@ fn sync_references_edges() {
     assert_eq!(result.errors.len(), 0);
 
     let conn = storage.conn();
-    let edges = storage::edges::get_edges_from(&conn, "r1-uuid").unwrap();
+    let edges =
+        storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000003").unwrap();
     assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0].target_id, "k1-uuid");
+    assert_eq!(edges[0].target_id, "a1b2c3d4-e5f6-4789-abcd-000000000001");
     assert_eq!(edges[0].edge_type, "references");
 }
 
@@ -248,12 +287,12 @@ fn sync_forward_reference_edge_created() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"r1-uuid\"]\ncategory: architecture\n---\n\nContent",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000001\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"a1b2c3d4-e5f6-4789-abcd-000000000003\"]\ncategory: architecture\n---\n\nContent",
     );
     write_file(
         dir.path(),
         "rules/ref-rule.md",
-        "---\nid: r1-uuid\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: []\n---\n\nRule body",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000003\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: []\n---\n\nRule body",
     );
 
     let result = sync_all(&storage, dir.path());
@@ -261,9 +300,10 @@ fn sync_forward_reference_edge_created() {
     assert_eq!(result.errors.len(), 0);
 
     let conn = storage.conn();
-    let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+    let edges =
+        storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000001").unwrap();
     assert_eq!(edges.len(), 1);
-    assert_eq!(edges[0].target_id, "r1-uuid");
+    assert_eq!(edges[0].target_id, "a1b2c3d4-e5f6-4789-abcd-000000000003");
     assert_eq!(edges[0].edge_type, "references");
 }
 
@@ -281,7 +321,7 @@ fn sync_incremental_restores_forward_ref_to_new_entity() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"r1-uuid\"]\ncategory: architecture\n---\n\nContent",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000001\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"a1b2c3d4-e5f6-4789-abcd-000000000003\"]\ncategory: architecture\n---\n\nContent",
     );
 
     // First sync — A is created, reference to B is skipped (FK).
@@ -292,7 +332,8 @@ fn sync_incremental_restores_forward_ref_to_new_entity() {
     // No edge yet — B doesn't exist.
     {
         let conn = storage.conn();
-        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        let edges =
+            storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000001").unwrap();
         assert!(edges.is_empty(), "no edges expected — target doesn't exist");
     }
 
@@ -300,7 +341,7 @@ fn sync_incremental_restores_forward_ref_to_new_entity() {
     write_file(
         dir.path(),
         "rules/ref-rule.md",
-        "---\nid: r1-uuid\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: []\n---\n\nRule body",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000003\ntitle: \"Ref Rule\"\ntype: rule\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: []\n---\n\nRule body",
     );
 
     // Second sync — incremental. A is unchanged (skipped), B is new.
@@ -312,9 +353,10 @@ fn sync_incremental_restores_forward_ref_to_new_entity() {
     // Edge from A to B should now exist.
     {
         let conn = storage.conn();
-        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        let edges =
+            storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000001").unwrap();
         assert_eq!(edges.len(), 1, "forward reference edge must be created");
-        assert_eq!(edges[0].target_id, "r1-uuid");
+        assert_eq!(edges[0].target_id, "a1b2c3d4-e5f6-4789-abcd-000000000003");
         assert_eq!(edges[0].edge_type, "references");
     }
 }
@@ -328,13 +370,13 @@ fn sync_supports_edges_from_supporting_ids() {
     write_file(
         dir.path(),
         "observations/2026-01/target.md",
-        "---\nid: target-uuid\ntitle: \"Target Obs\"\ntype: observation\nstatus: active\ncreated_at: 2026-01-01T00:00:00Z\nupdated_at: 2026-01-01T00:00:00Z\nreferences: []\nsource: agent\nconfidence: 0.5\n---\n\nTarget content",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000004\ntitle: \"Target Obs\"\ntype: observation\nstatus: active\ncreated_at: 2026-01-01T00:00:00Z\nupdated_at: 2026-01-01T00:00:00Z\nreferences: []\nsource: agent\nconfidence: 0.5\n---\n\nTarget content",
     );
     // Supporting observation with supporting_ids pointing to target.
     write_file(
         dir.path(),
         "observations/2026-01/supporter.md",
-        "---\nid: supporter-uuid\ntitle: \"Supporter\"\ntype: observation\nstatus: active\ncreated_at: 2026-01-02T00:00:00Z\nupdated_at: 2026-01-02T00:00:00Z\nreferences: []\nsupporting_ids: [\"target-uuid\"]\nsource: agent\nconfidence: 0.5\n---\n\nSupporting content",
+        "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000005\ntitle: \"Supporter\"\ntype: observation\nstatus: active\ncreated_at: 2026-01-02T00:00:00Z\nupdated_at: 2026-01-02T00:00:00Z\nreferences: []\nsupporting_ids: [\"a1b2c3d4-e5f6-4789-abcd-000000000004\"]\nsource: agent\nconfidence: 0.5\n---\n\nSupporting content",
     );
 
     let result = sync_all(&storage, dir.path());
@@ -342,10 +384,14 @@ fn sync_supports_edges_from_supporting_ids() {
     assert_eq!(result.errors.len(), 0);
 
     let conn = storage.conn();
-    let edges = storage::edges::get_edges_from(&conn, "supporter-uuid").unwrap();
+    let edges =
+        storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000005").unwrap();
     let supports_edges: Vec<_> = edges.iter().filter(|e| e.edge_type == "supports").collect();
     assert_eq!(supports_edges.len(), 1);
-    assert_eq!(supports_edges[0].target_id, "target-uuid");
+    assert_eq!(
+        supports_edges[0].target_id,
+        "a1b2c3d4-e5f6-4789-abcd-000000000004"
+    );
 }
 
 #[test]
@@ -355,15 +401,19 @@ fn sync_observations_with_properties() {
 
     write_file(
         dir.path(),
-        "observations/2026-08/obs-uuid.md",
-        &observation_file("obs-uuid", "Test Bug", "Found a bug"),
+        "observations/2026-08/a1b2c3d4-e5f6-4789-abcd-000000000006.md",
+        &observation_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000006",
+            "Test Bug",
+            "Found a bug",
+        ),
     );
 
     let result = sync_all(&storage, dir.path());
     assert_eq!(result.created, 1);
 
     let conn = storage.conn();
-    let entity = storage::crud::get_entity(&conn, "obs-uuid").unwrap();
+    let entity = storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000006").unwrap();
     assert_eq!(entity.r#type, "observation");
     assert_eq!(entity.properties["source"], "agent");
     assert_eq!(entity.properties["confidence"], 0.5);
@@ -377,12 +427,22 @@ fn sync_finds_files_in_subdirectories() {
     write_file(
         dir.path(),
         "knowledge/decisions/use-sqlite.md",
-        &knowledge_file("k1", "Use SQLite", "decisions", "Content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000007",
+            "Use SQLite",
+            "decisions",
+            "Content",
+        ),
     );
     write_file(
         dir.path(),
         "knowledge/gotchas/fts5-bug.md",
-        &knowledge_file("k2", "FTS5 Bug", "gotchas", "Content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000008",
+            "FTS5 Bug",
+            "gotchas",
+            "Content",
+        ),
     );
 
     let result = sync_all(&storage, dir.path());
@@ -397,12 +457,21 @@ fn sync_resets_db_rebuilds_from_files() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        &knowledge_file("k1-uuid", "Overview", "architecture", "Content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "Content",
+        ),
     );
     write_file(
         dir.path(),
         "rules/test-rule.md",
-        &rule_file("r1-uuid", "Test Rule", "Rule body"),
+        &rule_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000003",
+            "Test Rule",
+            "Rule body",
+        ),
     );
 
     // First sync
@@ -425,7 +494,7 @@ fn sync_resets_db_rebuilds_from_files() {
         assert_eq!(storage::crud::count_all(&conn).unwrap(), 2);
 
         // Verify content is correct
-        let k = storage::crud::get_entity(&conn, "k1-uuid").unwrap();
+        let k = storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000001").unwrap();
         assert_eq!(k.content, "Content");
     }
 }
@@ -460,24 +529,40 @@ fn sync_records_create_and_edit_events() {
     let path = write_file(
         dir.path(),
         "rules/test-rule.md",
-        &rule_file("r1-uuid", "Test Rule", "Original body"),
+        &rule_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000003",
+            "Test Rule",
+            "Original body",
+        ),
     );
 
     // First sync — should record a rule_created event
     sync_all(&storage, dir.path());
     {
         let conn = storage.conn();
-        let events = storage::events::get_events_for_entity(&conn, "r1-uuid").unwrap();
+        let events =
+            storage::events::get_events_for_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000003")
+                .unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].event_type, "rule_created");
     }
 
     // Edit the body — should record a rule_edited event
-    std::fs::write(&path, rule_file("r1-uuid", "Test Rule", "Updated body")).unwrap();
+    std::fs::write(
+        &path,
+        rule_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000003",
+            "Test Rule",
+            "Updated body",
+        ),
+    )
+    .unwrap();
     sync_all(&storage, dir.path());
     {
         let conn = storage.conn();
-        let events = storage::events::get_events_for_entity(&conn, "r1-uuid").unwrap();
+        let events =
+            storage::events::get_events_for_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000003")
+                .unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "rule_edited");
         assert_eq!(events[1].event_type, "rule_created");
@@ -493,7 +578,12 @@ fn sync_single_file_syncs_reference_edges() {
     write_file(
         dir.path(),
         "knowledge/architecture/overview.md",
-        &knowledge_file("k1-uuid", "Overview", "architecture", "Content"),
+        &knowledge_file(
+            "a1b2c3d4-e5f6-4789-abcd-000000000001",
+            "Overview",
+            "architecture",
+            "Content",
+        ),
     );
 
     // Initial full sync.
@@ -502,12 +592,18 @@ fn sync_single_file_syncs_reference_edges() {
     // Verify no references edge.
     {
         let conn = storage.conn();
-        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        let edges =
+            storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000001").unwrap();
         assert!(edges.is_empty(), "no references expected initially");
     }
 
     // Edit the file to add a reference to a new entity.
-    let target_content = knowledge_file("k2-uuid", "Target", "architecture", "Target content");
+    let target_content = knowledge_file(
+        "a1b2c3d4-e5f6-4789-abcd-000000000002",
+        "Target",
+        "architecture",
+        "Target content",
+    );
     write_file(
         dir.path(),
         "knowledge/architecture/target.md",
@@ -518,7 +614,7 @@ fn sync_single_file_syncs_reference_edges() {
     sync_all(&storage, dir.path());
 
     // Now edit the source file to add a reference to k2-uuid.
-    let updated_source = "---\nid: k1-uuid\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"k2-uuid\"]\ncategory: architecture\n---\n\nContent";
+    let updated_source = "---\nid: a1b2c3d4-e5f6-4789-abcd-000000000001\ntitle: \"Overview\"\ntype: knowledge\nstatus: active\ncreated_at: 2026-08-27T14:30:00Z\nupdated_at: 2026-08-27T14:30:00Z\nreferences: [\"a1b2c3d4-e5f6-4789-abcd-000000000002\"]\ncategory: architecture\n---\n\nContent";
     let source_path = dir.path().join("knowledge/architecture/overview.md");
     std::fs::write(&source_path, updated_source).unwrap();
 
@@ -530,9 +626,10 @@ fn sync_single_file_syncs_reference_edges() {
     // Verify the references edge was created.
     {
         let conn = storage.conn();
-        let edges = storage::edges::get_edges_from(&conn, "k1-uuid").unwrap();
+        let edges =
+            storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000001").unwrap();
         assert_eq!(edges.len(), 1, "one references edge expected");
         assert_eq!(edges[0].edge_type, "references");
-        assert_eq!(edges[0].target_id, "k2-uuid");
+        assert_eq!(edges[0].target_id, "a1b2c3d4-e5f6-4789-abcd-000000000002");
     }
 }

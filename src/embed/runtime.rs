@@ -21,6 +21,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+#[path = "checksum.rs"]
+mod checksum;
+
+use super::suppress::suppress_stderr_during;
+pub use checksum::ort_lib_path;
+use checksum::{cogz_lib_dir, find_ort_checksum, lib_exists, sha256_file};
 use tracing::{info, warn};
 
 /// ONNX Runtime version to download. ort 2.0.0-rc.13 supports ORT 1.28;
@@ -55,16 +61,16 @@ const ORT_ASSET: &str = "";
 
 /// The shared library file name for the current platform.
 #[cfg(target_os = "linux")]
-const ORT_LIB_NAME: &str = "libonnxruntime.so";
+pub(crate) const ORT_LIB_NAME: &str = "libonnxruntime.so";
 
 #[cfg(target_os = "macos")]
-const ORT_LIB_NAME: &str = "libonnxruntime.dylib";
+pub(crate) const ORT_LIB_NAME: &str = "libonnxruntime.dylib";
 
 #[cfg(target_os = "windows")]
-const ORT_LIB_NAME: &str = "onnxruntime.dll";
+pub(crate) const ORT_LIB_NAME: &str = "onnxruntime.dll";
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-const ORT_LIB_NAME: &str = "";
+pub(crate) const ORT_LIB_NAME: &str = "";
 
 /// Archive extension for the current platform's ORT download.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -83,24 +89,6 @@ const fn ort_download_supported() -> bool {
 
 /// Static init guard — ensures `ort::init_from` is called exactly once.
 static ORT_INIT: OnceLock<bool> = OnceLock::new();
-
-/// Get the cogz lib directory: `~/.local/share/cogz/lib/`.
-fn cogz_lib_dir() -> PathBuf {
-    super::models_dir()
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("lib")
-}
-
-/// The expected path for the downloaded ONNX Runtime library.
-pub fn ort_lib_path() -> PathBuf {
-    cogz_lib_dir().join(ORT_LIB_NAME)
-}
-
-/// Check if the ONNX Runtime library is available at a given path.
-fn lib_exists(path: &Path) -> bool {
-    path.exists() && path.is_file()
-}
 
 /// System library paths to check for an existing ONNX Runtime install.
 /// Returns platform-appropriate candidate paths.
@@ -220,10 +208,9 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     drop(file);
 
     // Verify checksum from the release's SHA256SUMS file.
-    // Per the checksum verification rule: if SHA256SUMS is available
-    // but has no entry for the target asset, fail — this is a
-    // security hole, not degraded mode. If SHA256SUMS is unavailable
-    // (network error, 404), warn and proceed (degraded mode).
+    // The checksum manifest is required — a missing or unreadable
+    // manifest is a hard failure, not degraded mode. Installing an
+    // unverified native library is a supply-chain bypass.
     let checksum_url = format!(
         "https://github.com/microsoft/onnxruntime/releases/download/v{}/SHA256SUMS",
         ORT_VERSION
@@ -255,11 +242,13 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
             }
         }
         Err(e) => {
-            warn!(
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(std::io::Error::other(format!(
                 "ONNX Runtime SHA256SUMS not available ({}): \
-                 proceeding without checksum verification (degraded mode)",
+                 refusing to install unverified runtime — \
+                 continuing in FTS-only mode",
                 e
-            );
+            )));
         }
     }
 
@@ -340,30 +329,6 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     Ok(lib_path)
 }
 
-/// Parse a SHA256SUMS file and find the checksum for the target asset.
-fn find_ort_checksum(sums_content: &str, asset_name: &str) -> Option<String> {
-    for line in sums_content.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() == 2 && parts[1] == asset_name {
-            return Some(parts[0].to_string());
-        }
-    }
-    None
-}
-
-/// Compute SHA-256 of a file.
-fn sha256_file(path: &Path) -> Result<String, std::io::Error> {
-    use sha2::{Digest, Sha256};
-    let data = std::fs::read(path)?;
-    let mut hasher = Sha256::new();
-    hasher.update(&data);
-    Ok(hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{:02x}", b))
-        .collect())
-}
-
 /// Ensure the ONNX Runtime is available and initialize `ort` with the
 /// correct library path. Must be called before any `ort` API usage.
 ///
@@ -395,9 +360,15 @@ pub fn ensure_ort() -> bool {
         // Initialize ort with the discovered library path.
         // This must happen before any Session::builder() call.
         // In ort 2.0.0-rc.13, init_from returns Result and commit returns bool.
-        match ort::init_from(lib_path.to_string_lossy().to_string()) {
+        //
+        // The ONNX Runtime C++ library emits ~1258 duplicate schema
+        // registration warnings directly to stderr (fd 2) during init.
+        // These are harmless (idempotent re-registration) but flood
+        // terminal output. Suppress stderr during init, then restore.
+        match suppress_stderr_during(|| ort::init_from(lib_path.to_string_lossy().to_string())) {
             Ok(builder) => {
-                builder.commit();
+                // commit() may also emit warnings — suppress here too.
+                let _ = suppress_stderr_during(|| builder.commit());
                 info!("ONNX Runtime initialized from {}", lib_path.display());
                 true
             }
@@ -414,38 +385,5 @@ pub fn ensure_ort() -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ort_lib_path_is_under_cogz_lib() {
-        let path = ort_lib_path();
-        assert!(path.ends_with(ORT_LIB_NAME));
-    }
-
-    #[test]
-    fn find_existing_lib_returns_none_when_nothing_installed() {
-        // SAFETY: this test runs single-threaded; removing an env var
-        // here is safe because no other thread is reading the environment.
-        unsafe {
-            std::env::remove_var("ORT_DYLIB_PATH");
-        }
-        let _ = find_existing_lib();
-    }
-
-    #[test]
-    fn find_ort_checksum_matches_correct_asset() {
-        let sums =
-            "abc123  onnxruntime-linux-x64-1.27.0.tgz\ndef456  onnxruntime-win-x64-1.27.0.zip\n";
-        assert_eq!(
-            find_ort_checksum(sums, "onnxruntime-linux-x64-1.27.0.tgz"),
-            Some("abc123".to_string())
-        );
-    }
-
-    #[test]
-    fn find_ort_checksum_returns_none_for_missing_asset() {
-        let sums = "abc123  onnxruntime-linux-x64-1.27.0.tgz\n";
-        assert_eq!(find_ort_checksum(sums, "onnxruntime-windows.zip"), None);
-    }
-}
+#[path = "runtime_tests.rs"]
+mod tests;

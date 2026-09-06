@@ -2,9 +2,9 @@
 id: b3c4d5e6-0002-4aaa-bbbb-000000000003
 title: cold_start and search use opposite None semantics for status filtering
 type: knowledge
-status: active
-created_at: 2026-08-28T19:40:00Z
-updated_at: 2026-08-28T19:40:00Z
+status: stale
+created_at: "2026-08-28T19:40:00Z"
+updated_at: "2026-09-06T12:44:41.464882401+00:00"
 references: ["b3c4d5e6-0001-4aaa-bbbb-000000000002"]
 category: gotchas
 tags: ["status", "filtering", "cold_start", "search", "gotcha"]

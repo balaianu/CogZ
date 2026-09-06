@@ -39,6 +39,19 @@ pub fn slugify(title: &str) -> String {
     truncate_slug(&slugified)
 }
 
+/// Sanitize a knowledge category for use as a directory name.
+/// Rejects path traversal attempts (.., /, \, absolute paths) by
+/// slugifying the value, which strips all path separators and
+/// special characters.
+pub fn sanitize_category(category: &str) -> String {
+    let slugified = slug::slugify(category);
+    if slugified.is_empty() {
+        "uncategorized".to_string()
+    } else {
+        slugified
+    }
+}
+
 /// Truncate slug to MAX_SLUG_LEN, breaking on hyphen boundaries
 /// when possible.
 fn truncate_slug(s: &str) -> String {
@@ -178,6 +191,16 @@ impl EntityFile {
             })?
             .to_string();
 
+        // Validate that the ID is a well-formed UUID. Entity IDs must
+        // be UUIDs to preserve the self-contained, portable invariant
+        // — non-UUID IDs would break references and DB rebuilds.
+        if uuid::Uuid::parse_str(&id).is_err() {
+            return Err(FrontmatterError::Parse {
+                line: 0,
+                message: format!("invalid id '{}': must be a valid UUID", id),
+            });
+        }
+
         let title = fm
             .get("title")
             .and_then(|v| v.as_str())
@@ -206,8 +229,17 @@ impl EntityFile {
         let status = fm
             .get("status")
             .and_then(|v| v.as_str())
-            .unwrap_or("active")
-            .to_string();
+            .unwrap_or("active");
+        if !crate::storage::status::is_valid_status(status) {
+            return Err(FrontmatterError::Parse {
+                line: 0,
+                message: format!(
+                    "invalid status '{}': must be one of active, stale, superseded, rejected, pruned",
+                    status
+                ),
+            });
+        }
+        let status = status.to_string();
 
         let created_at = fm
             .get("created_at")
@@ -232,6 +264,18 @@ impl EntityFile {
             .and_then(|v| v.as_array())
             .map(|a| a.to_vec())
             .unwrap_or_default();
+
+        // Validate that every reference ID is a well-formed UUID.
+        // Dangling or malformed references break graph edges and
+        // DB rebuilds.
+        for ref_id in &references {
+            if uuid::Uuid::parse_str(ref_id).is_err() {
+                return Err(FrontmatterError::Parse {
+                    line: 0,
+                    message: format!("invalid reference '{}': must be a valid UUID", ref_id),
+                });
+            }
+        }
 
         Ok(Self {
             id,
@@ -259,10 +303,11 @@ impl EntityFile {
                     .get("category")
                     .and_then(|v| v.as_str())
                     .unwrap_or("uncategorized");
+                let safe_category = sanitize_category(category);
                 let slug = slugify(&self.title);
                 cogz_dir
                     .join("knowledge")
-                    .join(category)
+                    .join(safe_category)
                     .join(format!("{}.md", slug))
             }
             FileEntityType::Rule => {
@@ -310,9 +355,10 @@ impl EntityFile {
                     .get("category")
                     .and_then(|v| v.as_str())
                     .unwrap_or("uncategorized");
+                let safe_category = sanitize_category(category);
                 cogz_dir
                     .join("knowledge")
-                    .join(category)
+                    .join(safe_category)
                     .join(format!("{}.md", hashed))
             }
             FileEntityType::Rule => cogz_dir.join("rules").join(format!("{}.md", hashed)),
@@ -338,3 +384,7 @@ pub fn write_entity_file(path: &Path, entity: &EntityFile) -> Result<(), std::io
     let content = entity.to_file_content();
     std::fs::write(path, content)
 }
+
+#[cfg(test)]
+#[path = "entities_tests.rs"]
+mod tests;

@@ -6,6 +6,7 @@
 //! - `supports` ← `supporting_ids` field (array of UUIDs)
 //! - `contradicts` ← `contradicts` field (array of UUIDs)
 //! - `derived_from` ← `derived_from` field (single UUID string)
+//! - `superseded_by` ← `superseded_by` field (single UUID string)
 
 use rusqlite::Connection;
 
@@ -25,6 +26,7 @@ pub fn sync_references(conn: &Connection, entity_file: &EntityFile) -> Result<()
     delete_edges_by_source_and_type(conn, &entity_file.id, "supports")?;
     delete_edges_by_source_and_type(conn, &entity_file.id, "contradicts")?;
     delete_edges_by_source_and_type(conn, &entity_file.id, "derived_from")?;
+    delete_edges_by_source_and_type(conn, &entity_file.id, "superseded_by")?;
 
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -85,6 +87,25 @@ pub fn sync_references(conn: &Connection, entity_file: &EntityFile) -> Result<()
             source_id: entity_file.id.clone(),
             target_id: derived_from.to_string(),
             edge_type: "derived_from".to_string(),
+            weight: 1.0,
+            created_at: now.clone(),
+        };
+        insert_edge_skip_fk_violation(conn, &edge)?;
+    }
+
+    // Sync superseded_by edge from superseded_by frontmatter field.
+    // This makes the supersession relationship canonical and survives
+    // DB rebuilds. Graph expansion can follow this edge to find the
+    // survivor when encountering a superseded entity.
+    if let Some(superseded_by) = entity_file
+        .frontmatter
+        .get("superseded_by")
+        .and_then(|v| v.as_str())
+    {
+        let edge = Edge {
+            source_id: entity_file.id.clone(),
+            target_id: superseded_by.to_string(),
+            edge_type: "superseded_by".to_string(),
             weight: 1.0,
             created_at: now.clone(),
         };

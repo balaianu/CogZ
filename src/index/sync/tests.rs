@@ -54,7 +54,7 @@ fn sync_inserts_code_entities() {
     )];
 
     let entities = parse_files(&files);
-    let result = sync_code_entities(&storage, &entities);
+    let result = sync_code_entities(&storage, &entities, &Default::default());
     assert_eq!(result.created, 2); // file + function
     assert_eq!(result.updated, 0);
     assert_eq!(result.marked_stale, 0);
@@ -78,11 +78,11 @@ fn sync_skips_unchanged_entities() {
 
     // First sync — creates
     let entities = parse_files(&files);
-    let result1 = sync_code_entities(&storage, &entities);
+    let result1 = sync_code_entities(&storage, &entities, &Default::default());
     assert_eq!(result1.created, 2);
 
     // Second sync — skips (same content)
-    let result2 = sync_code_entities(&storage, &entities);
+    let result2 = sync_code_entities(&storage, &entities, &Default::default());
     assert_eq!(result2.created, 0);
     assert_eq!(result2.skipped, 2);
 }
@@ -100,7 +100,7 @@ fn sync_updates_changed_entities() {
 
     // First sync
     let entities1 = parse_files(&files1);
-    sync_code_entities(&storage, &entities1);
+    sync_code_entities(&storage, &entities1, &Default::default());
 
     // Second sync with changed content
     let files2 = vec![(
@@ -109,7 +109,7 @@ fn sync_updates_changed_entities() {
         Language::Rust,
     )];
     let entities2 = parse_files(&files2);
-    let result2 = sync_code_entities(&storage, &entities2);
+    let result2 = sync_code_entities(&storage, &entities2, &Default::default());
     assert_eq!(result2.updated, 2);
     assert_eq!(result2.skipped, 0);
 }
@@ -126,10 +126,10 @@ fn sync_marks_stale_when_file_removed() {
 
     // First sync — creates
     let entities = parse_files(&files);
-    sync_code_entities(&storage, &entities);
+    sync_code_entities(&storage, &entities, &Default::default());
 
     // Second sync — empty file list, should mark stale
-    let result = sync_code_entities(&storage, &[]);
+    let result = sync_code_entities(&storage, &[], &Default::default());
     assert_eq!(result.marked_stale, 2);
 }
 
@@ -145,13 +145,13 @@ fn sync_reactivates_stale_entities() {
 
     // First sync — creates
     let entities = parse_files(&files);
-    sync_code_entities(&storage, &entities);
+    sync_code_entities(&storage, &entities, &Default::default());
 
     // Second sync — empty, marks stale
-    sync_code_entities(&storage, &[]);
+    sync_code_entities(&storage, &[], &Default::default());
 
     // Third sync — file is back, should reactivate
-    let result = sync_code_entities(&storage, &entities);
+    let result = sync_code_entities(&storage, &entities, &Default::default());
     assert_eq!(result.updated, 2);
     assert_eq!(result.marked_stale, 0);
 
@@ -179,7 +179,7 @@ fn rebuild_produces_same_uuids() {
     // First sync
     let storage = Storage::open_memory().unwrap();
     let entities = parse_files(&files);
-    sync_code_entities(&storage, &entities);
+    sync_code_entities(&storage, &entities, &Default::default());
     let conn = storage.conn();
     let ids_before: Vec<String> = conn
         .prepare("SELECT id FROM entities ORDER BY id")
@@ -192,7 +192,7 @@ fn rebuild_produces_same_uuids() {
     // Reset and rebuild
     drop(conn);
     let storage2 = Storage::open_memory().unwrap();
-    sync_code_entities(&storage2, &entities);
+    sync_code_entities(&storage2, &entities, &Default::default());
     let conn2 = storage2.conn();
     let ids_after: Vec<String> = conn2
         .prepare("SELECT id FROM entities ORDER BY id")
@@ -217,7 +217,7 @@ fn incremental_sync_marks_renamed_entities_stale() {
         Language::Rust,
     )];
     let entities_v1 = parse_files(&files_v1);
-    sync_code_entities(&storage, &entities_v1);
+    sync_code_entities(&storage, &entities_v1, &Default::default());
 
     let old_fn_id = code_entity_uuid("src/test.rs", "function", "old_fn");
     let keeper_id = code_entity_uuid("src/test.rs", "function", "keeper");

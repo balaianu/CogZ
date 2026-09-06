@@ -33,18 +33,43 @@ fn dry_run_reports_candidates_without_changes() {
     let embedding = vec![0.1_f32; 768];
     {
         let conn = storage.conn();
-        let mut e1 = Entity::new("obs-1", "observation", "A", "content");
+        let mut e1 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000041",
+            "observation",
+            "A",
+            "content",
+        );
         e1.created_at = "2026-01-01T00:00:00Z".to_string();
         insert_entity(&conn, &e1).unwrap();
-        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000041",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
 
-        let mut e2 = Entity::new("obs-2", "observation", "B", "content");
+        let mut e2 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000042",
+            "observation",
+            "B",
+            "content",
+        );
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
         insert_entity(&conn, &e2).unwrap();
-        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000042",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
 
         // Write observation files so merge_one could read them.
-        for (id, title) in [("obs-1", "A"), ("obs-2", "B")] {
+        for (id, title) in [
+            ("a1b2c3d4-e5f6-4789-abcd-000000000041", "A"),
+            ("a1b2c3d4-e5f6-4789-abcd-000000000042", "B"),
+        ] {
             let path = cogz_dir
                 .join("observations")
                 .join("2026-01")
@@ -77,12 +102,19 @@ fn dry_run_reports_candidates_without_changes() {
     let results = run_merge(&storage, &cogz_dir, &config(), true).unwrap();
     assert_eq!(results.len(), 1);
     // obs-1 created first → survivor.
-    assert_eq!(results[0].survivor_id, "obs-1");
-    assert_eq!(results[0].superseded_id, "obs-2");
+    assert_eq!(
+        results[0].survivor_id,
+        "a1b2c3d4-e5f6-4789-abcd-000000000041"
+    );
+    assert_eq!(
+        results[0].superseded_id,
+        "a1b2c3d4-e5f6-4789-abcd-000000000042"
+    );
 
     // No status change.
     let conn = storage.conn();
-    let e2 = crate::storage::crud::get_entity(&conn, "obs-2").unwrap();
+    let e2 =
+        crate::storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000042").unwrap();
     assert_eq!(e2.status, "active");
 }
 
@@ -97,26 +129,59 @@ fn merge_redirects_edges_and_marks_superseded() {
     let embedding = vec![0.1_f32; 768];
     {
         let conn = storage.conn();
-        let mut e1 = Entity::new("obs-1", "observation", "A", "content");
+        let mut e1 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000041",
+            "observation",
+            "A",
+            "content",
+        );
         e1.created_at = "2026-01-01T00:00:00Z".to_string();
         // Relative path as stored by sync.rs (relative to .cogz).
-        e1.file_path = Some("observations/2026-01/obs-1.md".to_string());
+        e1.file_path =
+            Some("observations/2026-01/a1b2c3d4-e5f6-4789-abcd-000000000041.md".to_string());
         insert_entity(&conn, &e1).unwrap();
-        insert_embedding(&conn, "obs-1", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000041",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
 
-        let mut e2 = Entity::new("obs-2", "observation", "B", "content");
+        let mut e2 = Entity::new(
+            "a1b2c3d4-e5f6-4789-abcd-000000000042",
+            "observation",
+            "B",
+            "content",
+        );
         e2.created_at = "2026-02-01T00:00:00Z".to_string();
-        e2.file_path = Some("observations/2026-01/obs-2.md".to_string());
+        e2.file_path =
+            Some("observations/2026-01/a1b2c3d4-e5f6-4789-abcd-000000000042.md".to_string());
         insert_entity(&conn, &e2).unwrap();
-        insert_embedding(&conn, "obs-2", "observation", &embedding).unwrap();
+        insert_embedding(
+            &conn,
+            "a1b2c3d4-e5f6-4789-abcd-000000000042",
+            "observation",
+            &embedding,
+        )
+        .unwrap();
 
         // A third entity references obs-2.
-        insert_entity(&conn, &Entity::new("kn-1", "knowledge", "K", "c")).unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000043",
+                "knowledge",
+                "K",
+                "c",
+            ),
+        )
+        .unwrap();
         insert_edge(
             &conn,
             &Edge {
-                source_id: "kn-1".to_string(),
-                target_id: "obs-2".to_string(),
+                source_id: "a1b2c3d4-e5f6-4789-abcd-000000000043".to_string(),
+                target_id: "a1b2c3d4-e5f6-4789-abcd-000000000042".to_string(),
                 edge_type: "references".to_string(),
                 weight: 1.0,
                 created_at: chrono::Utc::now().to_rfc3339(),
@@ -126,8 +191,16 @@ fn merge_redirects_edges_and_marks_superseded() {
 
         // Write observation files.
         for (id, title, created) in [
-            ("obs-1", "A", "2026-01-01T00:00:00Z"),
-            ("obs-2", "B", "2026-02-01T00:00:00Z"),
+            (
+                "a1b2c3d4-e5f6-4789-abcd-000000000041",
+                "A",
+                "2026-01-01T00:00:00Z",
+            ),
+            (
+                "a1b2c3d4-e5f6-4789-abcd-000000000042",
+                "B",
+                "2026-02-01T00:00:00Z",
+            ),
         ] {
             let path = obs_dir.join(format!("{id}.md"));
             let mut fm = Frontmatter::new();
@@ -154,24 +227,36 @@ fn merge_redirects_edges_and_marks_superseded() {
 
     let conn = storage.conn();
     // obs-2 should be superseded.
-    let e2 = crate::storage::crud::get_entity(&conn, "obs-2").unwrap();
+    let e2 =
+        crate::storage::crud::get_entity(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000042").unwrap();
     assert_eq!(e2.status, "superseded");
     assert_eq!(
         e2.properties["superseded_by"],
-        serde_json::Value::String("obs-1".to_string())
+        serde_json::Value::String("a1b2c3d4-e5f6-4789-abcd-000000000041".to_string())
     );
 
-    // The references edge from kn-1 should now point to obs-1.
-    let edges_to_survivor = crate::storage::edges::get_edges_to(&conn, "obs-1").unwrap();
+    // The superseded_by edge should connect obs-2 to obs-1.
+    let edges_from_superseded =
+        crate::storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000042")
+            .unwrap();
     assert!(
-        edges_to_survivor
+        edges_from_superseded
             .iter()
-            .any(|e| e.source_id == "kn-1" && e.edge_type == "references")
+            .any(|e| e.edge_type == "superseded_by"
+                && e.target_id == "a1b2c3d4-e5f6-4789-abcd-000000000041")
     );
 
-    // No edges should point to obs-2 anymore.
-    let edges_to_superseded = crate::storage::edges::get_edges_to(&conn, "obs-2").unwrap();
-    assert!(edges_to_superseded.is_empty());
+    // The original references edge from kn-1 to obs-2 is preserved
+    // (not redirected). Graph expansion follows superseded_by to
+    // reach the survivor.
+    let edges_to_superseded =
+        crate::storage::edges::get_edges_to(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000042").unwrap();
+    assert!(
+        edges_to_superseded
+            .iter()
+            .any(|e| e.source_id == "a1b2c3d4-e5f6-4789-abcd-000000000043"
+                && e.edge_type == "references")
+    );
 }
 
 #[test]
@@ -182,8 +267,26 @@ fn no_merge_without_embeddings() {
 
     {
         let conn = storage.conn();
-        insert_entity(&conn, &Entity::new("obs-1", "observation", "A", "c")).unwrap();
-        insert_entity(&conn, &Entity::new("obs-2", "observation", "B", "c")).unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000041",
+                "observation",
+                "A",
+                "c",
+            ),
+        )
+        .unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000042",
+                "observation",
+                "B",
+                "c",
+            ),
+        )
+        .unwrap();
     }
 
     let results = run_merge(&storage, &cogz_dir, &config(), false).unwrap();

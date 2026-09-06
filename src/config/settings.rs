@@ -280,6 +280,30 @@ impl Config {
                 "project name must not be empty".to_string(),
             ));
         }
+        // db_path must be relative, contained beneath .cogz/, and
+        // have no parent-component traversal. This prevents the
+        // configured path from opening or creating a database outside
+        // the repository. Defense-in-depth canonicalization at open
+        // time further guards against symlinks.
+        let db_path = std::path::Path::new(&self.storage.db_path);
+        if db_path.is_absolute() {
+            return Err(super::ConfigError::Validation(
+                "storage.db_path must be a relative path beneath .cogz/".to_string(),
+            ));
+        }
+        if db_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(super::ConfigError::Validation(
+                "storage.db_path must not contain '..' parent components".to_string(),
+            ));
+        }
+        if !self.storage.db_path.starts_with(".cogz/") {
+            return Err(super::ConfigError::Validation(
+                "storage.db_path must be rooted beneath .cogz/ (e.g. '.cogz/cogz.db')".to_string(),
+            ));
+        }
         if self.embedding.dimension == 0 {
             return Err(super::ConfigError::Validation(
                 "embedding dimension must be greater than 0".to_string(),
@@ -349,98 +373,5 @@ impl Config {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn serde_roundtrip() {
-        let config = Config::default_for("roundtrip-test");
-        let toml_str = toml::to_string(&config).unwrap();
-        let parsed: Config = toml::from_str(&toml_str).unwrap();
-        assert_eq!(parsed.project.name, "roundtrip-test");
-        assert_eq!(parsed, config);
-    }
-
-    #[test]
-    fn allow_and_deny_default_to_empty() {
-        let toml_str = r#"
-[project]
-name = "test"
-
-[storage]
-db_path = ".cogz/cogz.db"
-
-[embedding]
-code_model = "test"
-knowledge_model = "test"
-dimension = 384
-
-[search]
-fts_weight = 0.4
-vec_weight = 0.6
-rrf_k = 60
-max_results = 20
-
-[consolidation]
-dedup_threshold = 0.92
-title_match_threshold = 0.85
-contradiction_check = true
-promotion_threshold = 3
-
-[retention]
-observation_prune_after_days = 90
-tombstone_max_count = 1000
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        assert!(config.index.allow.is_empty());
-        assert!(config.index.deny.is_empty());
-        assert_eq!(config.context, ContextConfig::default());
-    }
-
-    #[test]
-    fn old_config_without_per_mode_token_budgets_uses_serde_defaults() {
-        let toml_str = r#"
-[project]
-name = "test"
-
-[storage]
-db_path = ".cogz/cogz.db"
-
-[embedding]
-code_model = "test"
-knowledge_model = "test"
-dimension = 384
-
-[search]
-fts_weight = 0.4
-vec_weight = 0.6
-rrf_k = 60
-max_results = 20
-
-[consolidation]
-dedup_threshold = 0.92
-title_match_threshold = 0.85
-contradiction_check = true
-promotion_threshold = 3
-
-[context]
-default_token_budget = 4096
-cold_start_rules = 5
-task_max_results = 25
-task_max_hops = 2
-escalation_max_results = 20
-escalation_max_hops = 3
-
-[retention]
-observation_prune_after_days = 90
-tombstone_max_count = 1000
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        // Old configs without task/escalation token budget fields
-        // must fall back to serde defaults, not fail or panic.
-        assert_eq!(config.context.default_token_budget, 4096);
-        assert_eq!(config.context.task_token_budget, 8192);
-        assert_eq!(config.context.escalation_token_budget, 8192);
-        assert!(config.validate().is_ok());
-    }
-}
+#[path = "settings_tests.rs"]
+mod tests;

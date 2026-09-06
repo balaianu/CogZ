@@ -13,7 +13,7 @@ fn index_files(storage: &Storage, files: &[(std::path::PathBuf, String, Language
         entities_by_file.push((path_str.clone(), entities));
         raw_edges_by_file.push((path_str, raw_edges));
     }
-    sync_code_entities(storage, &entities_by_file);
+    sync_code_entities(storage, &entities_by_file, &Default::default());
     sync_code_edges(storage, &entities_by_file, &raw_edges_by_file);
 }
 

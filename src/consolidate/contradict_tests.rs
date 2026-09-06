@@ -184,17 +184,54 @@ fn low_contradiction_probability_not_flagged() {
 #[test]
 fn record_contradictions_creates_edges_and_event() {
     use crate::files::frontmatter::{FmValue, Frontmatter, serialize as serialize_fm};
+    use crate::storage::Storage;
 
-    let conn = setup();
-    insert_entity(&conn, &Entity::new("u1", "observation", "A", "c")).unwrap();
-    insert_entity(&conn, &Entity::new("u2", "observation", "B", "c")).unwrap();
-    insert_entity(&conn, &Entity::new("u3", "observation", "C", "c")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let cogz_dir = dir.path().join(".cogz");
+    std::fs::create_dir_all(&cogz_dir).unwrap();
+
+    let storage = Storage::open(&cogz_dir.join("test.db"), 768).unwrap();
+    {
+        let conn = storage.conn();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000031",
+                "observation",
+                "A",
+                "c",
+            ),
+        )
+        .unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000032",
+                "observation",
+                "B",
+                "c",
+            ),
+        )
+        .unwrap();
+        insert_entity(
+            &conn,
+            &Entity::new(
+                "a1b2c3d4-e5f6-4789-abcd-000000000033",
+                "observation",
+                "C",
+                "c",
+            ),
+        )
+        .unwrap();
+    }
 
     // Write a file for u3 so record_contradictions can update it.
-    let dir = tempfile::tempdir().unwrap();
-    let file_path = dir.path().join("u3.md");
+    let file_path = cogz_dir.join("u3.md");
     let mut fm = Frontmatter::new();
-    fm.insert("id", FmValue::String("u3".to_string()));
+    fm.insert(
+        "id",
+        FmValue::String("a1b2c3d4-e5f6-4789-abcd-000000000033".to_string()),
+    );
     fm.insert("title", FmValue::String("C".to_string()));
     fm.insert("type", FmValue::String("observation".to_string()));
     fm.insert("status", FmValue::String("active".to_string()));
@@ -210,21 +247,32 @@ fn record_contradictions_creates_edges_and_event() {
     std::fs::write(&file_path, format!("---\n{}---\n\nc", serialize_fm(&fm))).unwrap();
 
     record_contradictions(
-        &conn,
-        "u3",
-        &["u1".to_string(), "u2".to_string()],
+        &storage,
+        &cogz_dir,
+        "a1b2c3d4-e5f6-4789-abcd-000000000033",
+        &[
+            "a1b2c3d4-e5f6-4789-abcd-000000000031".to_string(),
+            "a1b2c3d4-e5f6-4789-abcd-000000000032".to_string(),
+        ],
         &file_path,
     )
     .unwrap();
 
-    let edges = crate::storage::edges::get_edges_from(&conn, "u3").unwrap();
+    let conn = storage.conn();
+    let edges =
+        crate::storage::edges::get_edges_from(&conn, "a1b2c3d4-e5f6-4789-abcd-000000000033")
+            .unwrap();
     let contradict_edges: Vec<_> = edges
         .iter()
         .filter(|e| e.edge_type == "contradicts")
         .collect();
     assert_eq!(contradict_edges.len(), 2);
 
-    let events = crate::storage::events::get_events_for_entity(&conn, "u3").unwrap();
+    let events = crate::storage::events::get_events_for_entity(
+        &conn,
+        "a1b2c3d4-e5f6-4789-abcd-000000000033",
+    )
+    .unwrap();
     assert!(events.iter().any(|e| e.event_type == "contradiction_found"));
 
     // Verify the file was updated with contradicts frontmatter.

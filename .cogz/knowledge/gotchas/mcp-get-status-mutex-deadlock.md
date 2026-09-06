@@ -1,12 +1,13 @@
 ---
 id: 6fd6f5fe-d983-4c9c-be26-405606749540
-type: knowledge
-status: active
 title: get_status Mutex Deadlock
+type: knowledge
+status: stale
+created_at: "2026-08-29T02:35:00Z"
+updated_at: "2026-09-06T10:31:59.659446237+00:00"
+references: []
 category: gotchas
-tags: [mcp, deadlock, mutex, storage]
-created_at: 2026-08-29T02:35:00Z
-updated_at: 2026-08-29T02:35:00Z
+tags: ["mcp", "deadlock", "mutex", "storage"]
 ---
 
 # get_status Mutex Deadlock

@@ -8,7 +8,9 @@
 use rmcp::{ErrorData as McpError, handler::server::wrapper::Parameters, model::CallToolResult};
 
 use crate::context::{AssembleParams, assemble_context};
-use crate::mcp::helpers::{embed_query_for_search, mcp_internal_error, parse_context_mode};
+use crate::mcp::helpers::{
+    embed_query_for_search, mcp_internal_error, parse_context_mode, validate_query_limit,
+};
 use crate::mcp::params::*;
 use crate::mcp::responses::{context_response, search_response, tool_success};
 use crate::mcp::server::CogzServer;
@@ -26,6 +28,7 @@ pub async fn search(
     let query_model = repo.query_model.clone();
     let code_model = repo.code_model.clone();
     let use_code = params.code_search.unwrap_or(false);
+    let limit = validate_query_limit(params.limit.unwrap_or(default_limit).into())? as u32;
 
     let results = tokio::task::spawn_blocking(move || {
         let knowledge_emb = if use_code {
@@ -43,7 +46,7 @@ pub async fn search(
         let search_params = SearchParams {
             entity_type: params.entity_type,
             status: params.status,
-            limit: params.limit.unwrap_or(default_limit),
+            limit,
             expand,
             max_hops: if expand { task_max_hops } else { 0 },
             include_tests: false,

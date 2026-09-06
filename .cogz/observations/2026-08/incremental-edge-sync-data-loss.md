@@ -1,5 +1,5 @@
 ---
-id: a1b2c3d4-bug1-4eee-aaaa-000000000001
+id: 63d8e153-f773-4975-9674-1ca830f1110d
 title: Incremental reindex lost all structural edges (sync_code_edges global delete)
 type: observation
 status: stale

@@ -69,51 +69,70 @@ cogz/
       settings.rs        — typed config structs (serde)
 
     storage/
-      mod.rs             — storage root, Storage struct, meta table
-      schema.rs          — table definitions, migrations
+      mod.rs             — storage root, Storage struct, meta table, file locking
+      schema.rs          — table definitions, migrations (schema v3)
       crud.rs            — entity CRUD operations
+      crud_batch.rs      — batched entity operations (stale marking, pruning, merge)
       query.rs           — read queries (by type, status, FTS search)
       edges.rs           — edge CRUD, batch edge queries
       graph.rs           — graph traversal (neighbors, batch, path queries)
-      embeddings.rs      — vec0 insert, delete, KNN search
+      embeddings.rs      — vec0 insert, delete, KNN search (code + knowledge tables)
       events.rs          — domain event recording
       status.rs          — status state machine validation
+      access.rs          — entity access tracking (derived, not in canonical files)
 
     index/
       mod.rs             — orchestration: scan → parse → sync → edges
       git_diff.rs        — git diff-based change detection for incremental reindex
       gitignore.rs       — gitignore-aware source file scanner
       stale_flagging.rs  — mark observations/rules stale when referenced code changes
-      tree_sitter.rs     — shared types, Rust entity extraction
-      tree_sitter/
+      auto_link.rs       — auto-link knowledge to code entities by content scanning
+      tree_sitter/       — multi-language AST extraction
+        mod.rs           — shared types, language dispatch
+        rust.rs          — Rust entity extraction
         python.rs        — Python entity extraction
+        javascript.rs    — JavaScript entity extraction
+        js_edges.rs      — JavaScript edge extraction
+        js_ts_types.rs   — JavaScript/TypeScript type extraction
+        go.rs            — Go entity extraction
+        bash.rs          — Bash entity extraction
+        raw_edges.rs     — shared edge extraction utilities
+        tests.rs         — parser tests
+        tests_extra.rs   — extended parser tests
       sync/
         mod.rs           — code entity sync (UUID v5, content hash, stale)
       code_graph/
         mod.rs           — Rust edge extraction + shared utilities
         incremental.rs   — incremental edge sync (changed files only)
         python.rs        — Python edge extraction
+        tests.rs         — code graph tests
 
     embed/
       mod.rs             — embedding root
       model.rs           — EmbeddingModel trait
-      onnx.rs            — ONNX implementation
-      cache.rs           — embedding cache (avoid re-embedding unchanged content)
+      onnx.rs            — ONNX implementation (CodeRankEmbed, bge-base)
       nli.rs             — NLI model for contradiction detection
+      cache.rs           — embedding cache (avoid re-embedding unchanged content)
       download.rs        — model download via hf-hub + broken cache cleanup (Phase 12)
+      runtime.rs         — ONNX Runtime library discovery and auto-download
+      inference.rs       — batched ONNX inference (pad/collate, single session.run)
+      registry.rs        — model type registry (code vs knowledge vs NLI)
+      model_type.rs      — ModelType enum (Code, Knowledge, Nli)
 
     search/
       mod.rs             — search root
-      hybrid.rs          — FTS5 + vec search
+      hybrid.rs          — FTS5 + vec search with separate code/knowledge KNN
       rrf.rs             — reciprocal rank fusion
       expand.rs          — graph-aware expansion from search results
       describe.rs        — batched path description (provenance strings)
+      balance.rs         — query-sensitive source balancing (experimental)
 
     context/
       mod.rs             — context root
       assemble.rs        — context pack assembly
       compress.rs        — token budget management, section prioritization
       modes.rs           — cold_start, task, escalation mode definitions
+      code_map.rs        — code entity title/lookup mapping for context
 
     consolidate/         — (Phase 9)
       mod.rs             — consolidation root
@@ -127,16 +146,30 @@ cogz/
       entities.rs        — entity file structs, UUID generation
       frontmatter.rs     — YAML frontmatter parser (custom, no yaml crate)
       sync.rs            — file → database synchronization (one-directional)
+      sync_ops.rs        — sync operations (stale marking, deleted-file handling)
       refs.rs            — reference edge sync from frontmatter
       embed_sync.rs      — embedding integration for sync pipeline
       events.rs          — file-layer event recording helpers
+      helpers.rs         — atomic file writes, path validation
+      entities_tests.rs  — entity file tests
+
+    security/
+      mod.rs             — security root
+      scan.rs            — secret scanning for MCP write paths
 
     mcp/
       mod.rs             — MCP root, re-exports
       server.rs          — CogzServer struct, ServerHandler impl
       tools.rs           — #[tool] method definitions (13 tools implemented)
+      tools_write.rs     — write tool implementations (record/create/update)
+      tools_query.rs     — query tool implementations (query/list)
+      tools_search.rs    — search + context tool implementations
+      tools_system.rs    — get_status, consolidate, capture_event
       params.rs          — parameter structs (serde + schemars)
       helpers.rs         — file-first write logic, response builders, embedding
+      entity_helpers.rs  — entity creation helpers (dedup, contradict, embed)
+      update_knowledge.rs — update_knowledge tool implementation
+      repo_cache.rs      — repo path validation and caching
       dedup.rs           — title match + embedding similarity dedup
       responses.rs       — response JSON builders
       errors.rs          — MCP error helpers
@@ -144,12 +177,14 @@ cogz/
 
     hooks/               — (Phase 11)
       mod.rs             — hooks root, re-exports
-      lifecycle.rs       — session_start, prompt_submit, pre/post_tool_use
+      lifecycle.rs       — session_start, prompt_submit, pre/post_tool_use, file_save, session_end, stop
       capture.rs         — CLI handler for cogz capture-event
+      handlers.rs        — file_save and session_end handlers
 
     doctor/              — (Phase 12)
       mod.rs             — doctor root, re-exports
       checks.rs          — health checks (DB integrity, file sync, policy violations)
+      checks_analysis.rs — near-duplicate, corrupt JSON, vec dimension checks
       prune.rs           — observation pruning with tombstones
 
     update.rs            — (Phase 12) self-update from GitHub releases
@@ -406,9 +441,17 @@ CREATE TABLE edges (
 CREATE INDEX idx_edges_source ON edges(source_id, edge_type);
 CREATE INDEX idx_edges_target ON edges(target_id, edge_type);
 
--- Embeddings: one vec0 table for all entity types
--- entity_id is a TEXT column (UUID) mapping to entities.id
-CREATE VIRTUAL TABLE entity_embeddings USING vec0(
+-- Embeddings: separate vec0 tables for code and knowledge.
+-- Code and knowledge entities use different embedding models with
+-- incompatible vector spaces even at the same dimensionality. Separate
+-- tables ensure KNN only compares vectors within the same space.
+-- Schema v3: migrated from a single entity_embeddings table.
+CREATE VIRTUAL TABLE code_embeddings USING vec0(
+    embedding FLOAT[dimension],
+    entity_id TEXT
+);
+
+CREATE VIRTUAL TABLE knowledge_embeddings USING vec0(
     embedding FLOAT[dimension],
     entity_id TEXT
 );
@@ -430,7 +473,10 @@ CREATE TABLE events (
                                          -- 'session_start',
                                          -- 'prompt_submit',
                                          -- 'pre_tool_use',
-                                         -- 'post_tool_use'
+                                         -- 'post_tool_use',
+                                         -- 'file_save',
+                                         -- 'session_end',
+                                         -- 'stop'
     entity_id   TEXT REFERENCES entities(id),
     payload     TEXT DEFAULT '{}',       -- JSON
     created_at  TEXT NOT NULL
@@ -443,6 +489,15 @@ CREATE INDEX idx_events_entity ON events(entity_id);
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+-- Entity access tracking (derived, not in canonical files).
+-- Tracks how often entities are accessed for potential future
+-- relevance boosting. Not exposed via any MCP tool yet.
+CREATE TABLE entity_access (
+    entity_id     TEXT PRIMARY KEY REFERENCES entities(id),
+    access_count  INTEGER DEFAULT 0,
+    last_accessed TEXT
 );
 ```
 
@@ -504,6 +559,10 @@ The MCP server is async (tokio + rmcp). DB operations are synchronous
 // The storage layer owns this. MCP handlers borrow it via spawn_blocking.
 pub struct Storage {
     conn: Mutex<Connection>,
+    // In-process mutex for canonical file read-modify-write sequences.
+    file_mutex: Mutex<()>,
+    // OS-backed lock file for cross-process safety (hooks, CLI, MCP).
+    lock_file: Option<std::fs::File>,
 }
 
 // MCP handler (async):
@@ -649,17 +708,17 @@ are excluded from search and context unless explicitly requested).
 
 ### Multi-model embedding
 
-Code entities and knowledge entities use different embedding models
-(inherited from CogZ-py):
+Code entities and knowledge entities use different embedding models:
 
-- Code: `BAAI/bge-small-en-v1.5 (384d, default for both code and knowledge))
-- Knowledge: `BAAI/bge-small-en-v1.5 (384d, default for both code and knowledge))
+- Code: `nomic-ai/CodeRankEmbed-int8` (768d, default)
+- Knowledge: `BAAI/bge-base-en-v1.5` (768d, default)
 
-Both share the same vec0 table (same dimension). The `type` field
-distinguishes which model produced the embedding. The query embedding
-uses the knowledge model (bge-small). Code entities are findable via
-FTS5 (model-independent) and graph expansion. A future improvement
-will run separate KNN queries per embedding model and merge results.
+Both models produce 768-dimensional vectors but use incompatible
+vector spaces. Separate vec0 tables (`code_embeddings`,
+`knowledge_embeddings`) ensure KNN only compares vectors within the
+same space. The query embedding uses the knowledge model for
+knowledge search and the code model for code search. Both are
+configurable in `config.toml` under `[embedding]`.
 
 ---
 
@@ -974,10 +1033,10 @@ name = "cogz"                    # autodetected on init, saved, versioned
 db_path = ".cogz/cogz.db"        # per-repo database
 
 [embedding]
-code_model = "BAAI/bge-small-en-v1.5"  # used for code entity embeddings
-knowledge_model = "BAAI/bge-small-en-v1.5"  # used for knowledge entity + query embeddings
-nli_model = "nli-deberta-v3-xsmall"          # NLI model for contradiction detection
-dimension = 384
+code_model = "nomic-ai/CodeRankEmbed-int8"   # used for code entity embeddings
+knowledge_model = "BAAI/bge-base-en-v1.5"     # used for knowledge entity + query embeddings
+nli_model = "cross-encoder/nli-deberta-v3-xsmall"  # NLI model for contradiction detection
+dimension = 768
 auto_download = true                          # auto-download models on first use (Phase 12)
 model_idle_ttl = 300                         # unload idle models after 5 minutes (0 = never)
 model_min_free_mb = 512                      # don't load models if < 512MB free (0 = no check)
@@ -985,14 +1044,21 @@ model_min_free_mb = 512                      # don't load models if < 512MB free
 [search]
 fts_weight = 0.4
 vec_weight = 0.6
+code_vec_weight = 0.3                        # weight for code vector search results in RRF
 rrf_k = 60
 max_results = 20
+min_source_proportion = 0.2                  # floor for each source type's proportion in fusion
+source_balance_enabled = false               # query-sensitive source balancing (experimental)
 
 [consolidation]
 dedup_threshold = 0.92
 title_match_threshold = 0.85     # Levenshtein-based fuzzy title match
 contradiction_check = true
 promotion_threshold = 3          # min supporting observations to promote
+contradiction_threshold = 0.70   # min P(contradiction) to flag a pair
+contradiction_cosine_threshold = 0.85  # cosine pre-filter for contradiction candidates
+contradiction_length_ratio = 5.0       # skip pairs with length ratio above this
+dedup_nli_threshold = 0.85       # NLI-based dedup threshold
 
 [index]
 allow = []                       # explicit gitignore overrides (paths to index despite being gitignored)

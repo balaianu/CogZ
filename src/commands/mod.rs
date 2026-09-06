@@ -29,7 +29,7 @@ pub(crate) fn load_config(repo: &Path) -> anyhow::Result<(Config, std::path::Pat
     }
 
     let config = cogz::config::load(&config_path)?;
-    let db_path = repo.join(&config.storage.db_path);
+    let db_path = cogz::config::resolve_db_path(repo, &config.storage.db_path)?;
     Ok((config, db_path))
 }
 
@@ -164,7 +164,11 @@ pub fn run_index(repo: &Path, no_download: bool) -> anyhow::Result<()> {
     let total = cogz::storage::crud::count_all(&conn)?;
     println!("\n  Total entities: {}", total);
 
-    if let Some(sha) = cogz::index::git_diff::head_sha(repo)
+    // Only advance the baseline if all source files were successfully
+    // read and parsed. On partial failure, preserve the previous
+    // baseline so the next reindex retries the failed files.
+    if code_result.failed_files == 0
+        && let Some(sha) = cogz::index::git_diff::head_sha(repo)
         && let Err(e) = cogz::storage::set_meta(&conn, "last_indexed_commit", &sha)
     {
         tracing::warn!("failed to record last_indexed_commit: {}", e);

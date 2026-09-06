@@ -8,6 +8,13 @@
 //! - New file → create DB entity, index in FTS
 //! - Changed file (content hash differs) → update DB entity
 //! - Deleted file → mark DB entity status = 'stale' (preserve edges)
+//!
+//! Deleted-file stale entities are a transitional DB state. After
+//! `cogz reset`, they are gone — no canonical file exists to recreate
+//! them. This is intentional: the file was deleted, so the entity
+//! should not persist. References to the deleted entity in surviving
+//! files' frontmatter are the historical record. Graph expansion
+//! skips dangling references gracefully.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,10 +22,14 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
-use crate::storage;
-use crate::storage::crud::{ENTITY_COLUMNS, Entity, EntityType};
+#[path = "sync_ops.rs"]
+mod sync_ops;
 
-use super::entities::{EntityFile, FileEntityType, fm_value_to_json};
+pub(crate) use sync_ops::{mark_deleted_as_stale, read_and_parse, sync_parsed_file};
+
+use crate::storage;
+
+use super::entities::EntityFile;
 
 /// Subdirectories of `.cogz/` that contain entity files.
 const ENTITY_DIRS: &[&str] = &["knowledge", "rules", "observations"];
@@ -187,6 +198,12 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
 
     // Phase 1: scan and parse all files (no lock held).
     let disk_files = scan_entity_files(cogz_dir);
+    // Track all paths that exist on disk, independently of parse
+    // success. A malformed file is NOT a deletion — only a missing
+    // file is. Using the disk file set (not the parsed set) for
+    // stale marking prevents false lifecycle transitions from I/O
+    // or parse errors.
+    let disk_paths: std::collections::HashSet<PathBuf> = disk_files.iter().cloned().collect();
     let mut parsed: Vec<(PathBuf, EntityFile, String, String)> = Vec::new();
     for file_path in &disk_files {
         match read_and_parse(file_path, cogz_dir) {
@@ -200,8 +217,23 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
         }
     }
 
-    // Phase 2: DB operations (lock held).
+    // Phase 2: DB operations (lock held, single transaction).
+    // Wrapping entity + reference sync in one transaction avoids
+    // partially synchronized state if a later write fails, and reduces
+    // commit overhead. Canonical files remain on disk for retry.
     let conn = storage.conn();
+    let tx = match conn.unchecked_transaction() {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::warn!("failed to begin sync transaction: {e}");
+            result.errors.push(SyncFailure {
+                file_path: cogz_dir.to_path_buf(),
+                error: SyncError::Storage(e.into()),
+            });
+            return result;
+        }
+    };
+
     let mut seen_ids: HashMap<String, PathBuf> = HashMap::new();
     // All successfully parsed entity files — used for the reference
     // sync pass. We include ALL entities (not just changed ones) so
@@ -212,7 +244,7 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
     let mut all_parsed_files: Vec<EntityFile> = Vec::new();
 
     for (file_path, ef, hash, rel_path) in &parsed {
-        match sync_parsed_file(&conn, ef, hash, rel_path, incremental) {
+        match sync_parsed_file(&tx, ef, hash, rel_path, incremental) {
             Ok(action) => {
                 record_action(&mut result, action, &ef.id);
                 seen_ids.insert(ef.id.clone(), file_path.clone());
@@ -231,7 +263,7 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
     // changed ones) ensures that an unchanged entity referencing a
     // newly created entity gets its edge created.
     for ef in &all_parsed_files {
-        if let Err(e) = super::refs::sync_references(&conn, ef) {
+        if let Err(e) = super::refs::sync_references(&tx, ef) {
             result.errors.push(SyncFailure {
                 file_path: ef.file_path(cogz_dir),
                 error: SyncError::Storage(e),
@@ -239,12 +271,20 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
         }
     }
 
-    mark_deleted_as_stale(&conn, &seen_ids, cogz_dir, &mut result);
+    mark_deleted_as_stale(&tx, &disk_paths, cogz_dir, &mut result);
 
     // Record last index timestamp in meta table.
     let now = chrono::Utc::now().to_rfc3339();
-    if let Err(e) = storage::set_meta(&conn, "last_index", &now) {
+    if let Err(e) = storage::set_meta(&tx, "last_index", &now) {
         tracing::warn!("failed to record last_index: {}", e);
+    }
+
+    if let Err(e) = tx.commit() {
+        tracing::warn!("failed to commit sync transaction: {e}");
+        result.errors.push(SyncFailure {
+            file_path: cogz_dir.to_path_buf(),
+            error: SyncError::Storage(e.into()),
+        });
     }
 
     result
@@ -252,7 +292,7 @@ fn sync_inner(storage: &storage::Storage, cogz_dir: &Path, incremental: bool) ->
 
 /// Action taken for a single file during sync.
 #[derive(Debug, PartialEq, Eq)]
-enum SyncAction {
+pub(crate) enum SyncAction {
     Created,
     Updated,
     Skipped,
@@ -270,212 +310,5 @@ fn record_action(result: &mut SyncResult, action: SyncAction, entity_id: &str) {
             result.synced_entity_ids.push(entity_id.to_string());
         }
         SyncAction::Skipped => result.skipped += 1,
-    }
-}
-
-/// Read a file from disk, parse it, and compute its content hash.
-/// No DB lock required — pure filesystem I/O.
-fn read_and_parse(
-    file_path: &Path,
-    cogz_dir: &Path,
-) -> Result<(EntityFile, String, String), SyncError> {
-    let raw_content = std::fs::read_to_string(file_path)?;
-    let entity_file = EntityFile::from_content(&raw_content)?;
-    let hash = content_hash(&raw_content);
-    let relative_path = file_path
-        .strip_prefix(cogz_dir)
-        .unwrap_or(file_path)
-        .to_string_lossy()
-        .to_string();
-    Ok((entity_file, hash, relative_path))
-}
-
-/// Sync a parsed entity file to the DB. Requires the storage lock.
-fn sync_parsed_file(
-    conn: &rusqlite::Connection,
-    entity_file: &EntityFile,
-    hash: &str,
-    relative_path: &str,
-    incremental: bool,
-) -> Result<SyncAction, SyncError> {
-    match storage::crud::get_entity(conn, &entity_file.id) {
-        Ok(existing) => {
-            if incremental && existing.content_hash.as_deref() == Some(hash) {
-                return Ok(SyncAction::Skipped);
-            }
-            let content_changed = existing.content != entity_file.body;
-            let entity = build_entity(entity_file, hash, relative_path);
-            update_entity_preserving_status(conn, &existing, &entity)?;
-            if content_changed {
-                super::events::record_edit_event(conn, entity_file, &existing.content);
-            }
-            Ok(SyncAction::Updated)
-        }
-        Err(storage::StorageError::EntityNotFound(_)) => {
-            let entity = build_entity(entity_file, hash, relative_path);
-            storage::crud::insert_entity(conn, &entity)?;
-            super::events::record_create_event(conn, entity_file);
-            Ok(SyncAction::Created)
-        }
-        Err(e) => Err(SyncError::Storage(e)),
-    }
-}
-
-/// Update an entity, preserving the DB status if the file's status
-/// would require an illegal transition. The file is canonical, but
-/// status transitions must go through the state machine.
-fn update_entity_preserving_status(
-    conn: &rusqlite::Connection,
-    existing: &Entity,
-    new_entity: &Entity,
-) -> Result<(), SyncError> {
-    if existing.status != new_entity.status
-        && storage::status::transition_status(&existing.status, &new_entity.status).is_err()
-    {
-        // Illegal transition — keep existing DB status, update other fields
-        let mut entity = new_entity.clone();
-        entity.status = existing.status.clone();
-        storage::crud::update_entity(conn, &entity)?;
-    } else {
-        storage::crud::update_entity(conn, new_entity)?;
-    }
-    Ok(())
-}
-
-/// Build a storage Entity from an EntityFile.
-fn build_entity(entity_file: &EntityFile, hash: &str, relative_path: &str) -> Entity {
-    let entity_type = match entity_file.entity_type {
-        FileEntityType::Observation => EntityType::Observation,
-        FileEntityType::Rule => EntityType::Rule,
-        FileEntityType::Knowledge => EntityType::Knowledge,
-    };
-
-    let mut properties = serde_json::Map::new();
-    const COMMON_FIELDS: &[&str] = &[
-        "id",
-        "title",
-        "type",
-        "status",
-        "created_at",
-        "updated_at",
-        "references",
-    ];
-    for (key, value) in &entity_file.frontmatter.entries {
-        if !COMMON_FIELDS.contains(&key.as_str()) {
-            properties.insert(key.clone(), fm_value_to_json(value));
-        }
-    }
-
-    Entity {
-        id: entity_file.id.clone(),
-        r#type: entity_type.as_str().to_string(),
-        title: Some(entity_file.title.clone()),
-        content: entity_file.body.clone(),
-        properties: serde_json::Value::Object(properties),
-        file_path: Some(relative_path.to_string()),
-        status: entity_file.status.clone(),
-        content_hash: Some(hash.to_string()),
-        created_at: entity_file.created_at.clone(),
-        updated_at: entity_file.updated_at.clone(),
-    }
-}
-
-/// Mark DB entities as stale if their file_path no longer exists on disk.
-fn mark_deleted_as_stale(
-    conn: &rusqlite::Connection,
-    seen_ids: &HashMap<String, PathBuf>,
-    cogz_dir: &Path,
-    result: &mut SyncResult,
-) {
-    let file_backed = match get_file_backed_entities(conn) {
-        Ok(e) => e,
-        Err(error) => {
-            result.errors.push(SyncFailure {
-                file_path: cogz_dir.to_path_buf(),
-                error,
-            });
-            return;
-        }
-    };
-
-    for entity in file_backed {
-        if !seen_ids.contains_key(&entity.id) && entity.status == "active" {
-            match storage::crud::update_status(conn, &entity.id, "stale") {
-                Ok(()) => result.marked_stale += 1,
-                Err(error) => result.errors.push(SyncFailure {
-                    file_path: PathBuf::from(entity.file_path.unwrap_or_default()),
-                    error: SyncError::Storage(error),
-                }),
-            }
-        }
-    }
-}
-
-/// Get all file-backed entities (knowledge, rules, observations —
-/// not code entities, which are derived from source files and managed
-/// by the index layer).
-fn get_file_backed_entities(conn: &rusqlite::Connection) -> Result<Vec<Entity>, SyncError> {
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT {ENTITY_COLUMNS} FROM entities \
-             WHERE type IN ('observation', 'rule', 'knowledge')"
-        ))
-        .map_err(|e| SyncError::Storage(e.into()))?;
-    let rows = stmt
-        .query_map([], storage::crud::row_to_entity)
-        .map_err(|e| SyncError::Storage(e.into()))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| SyncError::Storage(e.into()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::storage::Storage;
-    use tempfile::TempDir;
-
-    fn setup_storage(dir: &Path) -> Storage {
-        let db_path = dir.join("test.db");
-        Storage::open(&db_path, 768).unwrap()
-    }
-
-    #[test]
-    fn sync_single_file_rejects_path_traversal() {
-        let dir = TempDir::new().unwrap();
-        let cogz_dir = dir.path().join(".cogz");
-        std::fs::create_dir_all(&cogz_dir).unwrap();
-
-        // Create a file outside .cogz/ that we'll try to traverse to.
-        let outside = dir.path().join("secret.md");
-        std::fs::write(
-            &outside,
-            "---\nid: test\ntitle: Test\ntype: observation\n---\nbody\n",
-        )
-        .unwrap();
-
-        let storage = setup_storage(dir.path());
-
-        // Try to traverse: ../../../secret.md
-        let result = sync_single_file(&storage, &cogz_dir, "../../../secret.md");
-        assert!(
-            result.errors.is_empty(),
-            "path traversal should be silently rejected, not errored"
-        );
-        assert_eq!(
-            result.created, 0,
-            "no entity should be created from path traversal"
-        );
-    }
-
-    #[test]
-    fn sync_single_file_handles_nonexistent_file() {
-        let dir = TempDir::new().unwrap();
-        let cogz_dir = dir.path().join(".cogz");
-        std::fs::create_dir_all(&cogz_dir).unwrap();
-        let storage = setup_storage(dir.path());
-
-        let result = sync_single_file(&storage, &cogz_dir, "observations/nonexistent.md");
-        assert_eq!(result.created, 0);
-        assert_eq!(result.errors.len(), 0);
     }
 }

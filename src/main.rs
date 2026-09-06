@@ -210,7 +210,12 @@ enum Commands {
     },
 
     /// Self-update — download and install the latest release from GitHub.
-    Update {},
+    /// Use --check to see if an update is available without installing.
+    Update {
+        /// Check for updates without downloading or installing.
+        #[arg(long)]
+        check: bool,
+    },
 
     /// Background code embedding — spawned by `cogz index` for large
     /// codebases. Not intended for direct use.
@@ -355,13 +360,25 @@ fn main() -> anyhow::Result<()> {
             prune_observations,
             confirm,
         } => commands::run_doctor(&repo, prune_observations, confirm),
-        Commands::Update {} => match cogz::update::run_update() {
-            Ok(msg) => {
-                println!("{}", msg);
-                Ok(())
+        Commands::Update { check } => {
+            if check {
+                match cogz::update::check_latest_version() {
+                    Ok(cogz::update::VersionStatus::UpToDate(v)) => {
+                        println!("CogZ is up to date (v{})", v)
+                    }
+                    Ok(cogz::update::VersionStatus::UpdateAvailable { current, latest }) => {
+                        println!("Update available: v{} → v{}", current, latest)
+                    }
+                    Err(e) => anyhow::bail!("update check failed: {}", e),
+                }
+            } else {
+                match cogz::update::run_update() {
+                    Ok(msg) => println!("{}", msg),
+                    Err(e) => anyhow::bail!("update failed: {}", e),
+                }
             }
-            Err(e) => anyhow::bail!("update failed: {}", e),
-        },
+            Ok(())
+        }
         Commands::EmbedBg {
             db,
             ids_file,

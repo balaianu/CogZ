@@ -64,7 +64,10 @@ fn entity_file_roundtrip() {
 #[test]
 fn entity_file_with_references() {
     let mut entity = EntityFile::new("Test Obs", FileEntityType::Observation, "Content");
-    entity.references = vec!["abc-123".to_string(), "def-456".to_string()];
+    entity.references = vec![
+        "a1b2c3d4-e5f6-4789-abcd-000000000001".to_string(),
+        "a1b2c3d4-e5f6-4789-abcd-000000000002".to_string(),
+    ];
 
     let content = entity.to_file_content();
     let parsed = EntityFile::from_content(&content).unwrap();

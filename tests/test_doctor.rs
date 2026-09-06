@@ -229,7 +229,11 @@ fn prune_confirm_deletes_file_and_creates_tombstone() {
     let report = run_prune(&storage, &config, &cogz_dir, true);
 
     assert_eq!(report.pruned, 1);
-    assert!(!file_path.exists(), "observation file should be deleted");
+    // File is kept as a tombstone (status=pruned, empty body) for rebuildability.
+    assert!(
+        file_path.exists(),
+        "tombstone file should be kept for rebuildability"
+    );
 
     let conn = storage.conn();
     let status: String = conn
@@ -376,7 +380,7 @@ fn doctor_detects_corrupt_entity_json() {
         FileEntityType::Observation,
         "Some content",
     );
-    obs.id = "corrupt-test-uuid".to_string();
+    obs.id = "a1b2c3d4-e5f6-4789-abcd-000000000071".to_string();
     let path = obs.file_path(&cogz_dir);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).unwrap();
@@ -388,7 +392,7 @@ fn doctor_detects_corrupt_entity_json() {
     let conn = storage.conn();
     conn.execute(
         "UPDATE entities SET properties = ? WHERE id = ?",
-        rusqlite::params!["{not valid json", "corrupt-test-uuid"],
+        rusqlite::params!["{not valid json", "a1b2c3d4-e5f6-4789-abcd-000000000071"],
     )
     .unwrap();
     drop(conn);
@@ -406,7 +410,7 @@ fn doctor_detects_corrupt_entity_json() {
     assert!(
         corrupt_issues
             .iter()
-            .any(|i| i.entity_id == Some("corrupt-test-uuid".to_string())),
+            .any(|i| i.entity_id == Some("a1b2c3d4-e5f6-4789-abcd-000000000071".to_string())),
         "corrupt JSON issue should reference the entity ID"
     );
 }

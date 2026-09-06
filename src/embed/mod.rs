@@ -15,6 +15,7 @@ pub mod pooling;
 pub mod registry;
 pub mod resources;
 pub mod runtime;
+pub mod suppress;
 
 pub use cache::EmbeddingCache;
 pub use download::{

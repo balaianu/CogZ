@@ -1,11 +1,13 @@
 ---
 id: a7c8e9f0-1234-5678-9abc-def012345678
-type: knowledge
-category: decision
 title: bge-small-en-v1.5 as default embedding model
-tags: [embedding, model, performance, onnx]
-created_at: 2026-08-31T19:45:00Z
-updated_at: 2026-08-31T19:45:00Z
+type: knowledge
+status: stale
+created_at: "2026-08-31T19:45:00Z"
+updated_at: "2026-09-06T10:32:00.028233412+00:00"
+references: []
+category: decision
+tags: ["embedding", "model", "performance", "onnx"]
 ---
 
 # Decision: bge-small-en-v1.5 as default embedding model

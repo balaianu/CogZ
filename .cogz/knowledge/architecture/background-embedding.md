@@ -1,11 +1,13 @@
 ---
 id: c9e0a1b2-3456-789a-bcde-f23456789012
-type: knowledge
-category: architecture
 title: Background code embedding after index
-tags: [embedding, index, performance, background]
-created_at: 2026-08-31T19:55:00Z
-updated_at: 2026-08-31T19:55:00Z
+type: knowledge
+status: stale
+created_at: "2026-08-31T19:55:00Z"
+updated_at: "2026-09-06T10:32:00.206147701+00:00"
+references: []
+category: architecture
+tags: ["embedding", "index", "performance", "background"]
 ---
 
 # Background code embedding after index
