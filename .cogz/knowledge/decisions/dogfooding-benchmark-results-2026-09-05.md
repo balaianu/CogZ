@@ -5,7 +5,7 @@ type: knowledge
 status: stale
 created_at: "2026-09-05T07:41:48.634115327+00:00"
 updated_at: "2026-09-06T06:35:34.308338721+00:00"
-references: ["src/search/mod.rs", "src/context/assemble.rs", "src/mcp/server.rs"]
+references: ["4dca380d-5f31-5532-bc15-ed61df929434", "66bf462e-c70e-564b-828f-4e354e24cd9b", "de4d1cde-3233-5d67-bb3b-0ab2330c47ae"]
 category: decisions
 tags: ["benchmark", "dogfooding", "quality", "metrics"]
 ---
