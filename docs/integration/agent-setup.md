@@ -2,6 +2,8 @@
 
 CogZ integrates with any AI coding agent that supports MCP servers or shell command hooks. This guide covers configuration for common agents.
 
+The MCP server configuration is the same for all agents — only the config file location differs. Hook configuration varies by agent; see [Hooks](hooks.md) for the full event reference and canonical hook JSON config.
+
 ## MCP server configuration
 
 For any MCP-compatible agent, add CogZ as a server:
@@ -21,165 +23,60 @@ The server starts empty. Every tool call must include a `repo` parameter with th
 
 See [MCP Tools](mcp-tools.md) for the full tool reference.
 
-## Devin
+## Per-agent setup
 
-### MCP server
+### Devin
 
-Add to `~/.config/devin/mcp_config.json`:
+**MCP config:** `~/.config/devin/mcp_config.json`
 
-```json
-{
-  "mcpServers": {
-    "cogz": {
-      "command": "cogz",
-      "args": ["mcp-stdio"]
-    }
-  }
-}
-```
+**Hooks config:** `~/.config/devin/hooks/hooks.v1.json`
 
-### Hooks
+Devin supports the full hook lifecycle: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `FileSave` (via `PostToolUse` matcher on `edit|write|notebook_edit`), `SessionEnd`, `Stop`, and `PostCompaction`.
 
-Add to `~/.config/devin/hooks/hooks.v1.json`:
+See [Hooks](hooks.md#full-hook-configuration) for the canonical JSON config. Devin-specific notes:
 
-```json
-{
-  "hooks": {
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "cogz capture-event session_start --hook-json --fts-only",
-        "timeout": 10
-      }]
-    }],
-    "UserPromptSubmit": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "cogz capture-event prompt_submit --hook-json --fts-only",
-        "timeout": 10
-      }]
-    }],
-    "PostToolUse": [
-      {
-        "matcher": "",
-        "hooks": [{
-          "type": "command",
-          "command": "cogz capture-event post_tool_use --hook-json --fts-only",
-          "timeout": 10
-        }]
-      },
-      {
-        "matcher": "edit|write|notebook_edit",
-        "hooks": [{
-          "type": "command",
-          "command": "cogz capture-event file_save --hook-json --fts-only",
-          "timeout": 20
-        }]
-      }
-    ],
-    "SessionEnd": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "cogz capture-event session_end --hook-json --fts-only",
-        "timeout": 30
-      }]
-    }],
-    "Stop": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "cogz capture-event stop --hook-json --fts-only",
-        "timeout": 5
-      }]
-    }]
-  }
-}
-```
+- `PostCompaction` re-injects context after compaction by calling `session_start` — add it if you want context preserved across compaction events.
+- `FileSave` is implemented as a `PostToolUse` hook with matcher `edit|write|notebook_edit` rather than a separate event type.
 
-**Timeouts:** `session_start` and `prompt_submit` need 10s (FTS-only context assembly). `file_save` needs 20s (incremental reindex). `session_end` needs 30s (consolidation). `stop` needs 5s (event recording only).
+### Claude Code
 
-**PostCompaction:** After context compaction, the agent loses its injected context. Re-inject by treating it as a session start:
+**MCP config:** `.claude/mcp.json` in the project root, or via `claude mcp add cogz cogz mcp-stdio`
 
-```json
-"PostCompaction": [{
-  "matcher": "",
-  "hooks": [{
-    "type": "command",
-    "command": "cogz capture-event session_start --hook-json --fts-only",
-    "timeout": 10
-  }]
-}]
-```
+**Hooks config:** `.claude/hooks.json` in the project root
 
-## Claude Code
+Claude Code supports hooks via `.claude/hooks.json`. The event names and format match the [canonical hook config](hooks.md#full-hook-configuration). Supported events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`.
 
-### MCP server
+Claude Code does not currently support `SessionEnd` or `PostCompaction` hooks. To run consolidation, use `cogz consolidate` manually or via the MCP `consolidate` tool.
 
-Add to Claude Code's MCP configuration (`.claude/mcp.json` or via `claude mcp add`):
+### Cursor
 
-```json
-{
-  "mcpServers": {
-    "cogz": {
-      "command": "cogz",
-      "args": ["mcp-stdio"]
-    }
-  }
-}
-```
+**MCP config:** Settings > Features > MCP, or `.cursor/mcp.json` in the project root
 
-### Hooks
+**Hooks:** Not supported.
 
-Claude Code supports hooks via `.claude/hooks.json`. The format is similar to Devin's:
+Cursor supports MCP servers but not lifecycle hooks. Use the MCP tools directly — the agent can call `get_context` at the start of a task and `record_observation` when it learns something.
 
-```json
-{
-  "hooks": {
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "cogz capture-event session_start --hook-json --fts-only",
-        "timeout": 10
-      }]
-    }],
-    "UserPromptSubmit": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "cogz capture-event prompt_submit --hook-json --fts-only",
-        "timeout": 10
-      }]
-    }]
-  }
-}
-```
+### Codex (OpenAI)
 
-Adjust the hook event names and matchers to match Claude Code's supported events.
+**MCP config:** Add to Codex's MCP server configuration (see [Codex docs](https://developers.openai.com/codex/))
 
-## Cursor
+**Hooks:** Not supported.
 
-Cursor supports MCP servers via Settings > Features > MCP:
+Codex supports MCP servers. Use the MCP tools directly for context retrieval and observation recording.
 
-```json
-{
-  "mcpServers": {
-    "cogz": {
-      "command": "cogz",
-      "args": ["mcp-stdio"]
-    }
-  }
-}
-```
+### Windsurf
 
-Cursor does not currently support lifecycle hooks. Use the MCP tools directly — the agent can call `get_context` at the start of a task and `record_observation` when it learns something.
+**MCP config:** Windsurf Settings > MCP Servers
 
-## Generic MCP client
+**Hooks:** Not supported.
+
+Windsurf supports MCP servers. Use the MCP tools directly for context retrieval and observation recording.
+
+### Generic MCP client
 
 Any MCP-compatible client can connect to CogZ. The server speaks MCP over stdio with protocol version negotiation handled by the `rmcp` SDK. No environment variables are required — the `repo` parameter on each tool call is the only configuration needed.
+
+For agents without hook support, the agent can call `get_context` (cold_start mode) at the start of a session and `record_observation` when it learns something. This gives most of the benefit of hooks without lifecycle integration.
 
 ## Verifying the setup
 

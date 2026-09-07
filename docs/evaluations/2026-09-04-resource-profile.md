@@ -1,7 +1,6 @@
 # CogZ Resource Consumption Profile
 
 **Date:** 2026-09-04
-**CogZ version:** 0.1.0
 **Repository under test:** CogZ itself (1276 entities, 3906 edges, 1276 embeddings)
 
 ## Reference Machine

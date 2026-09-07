@@ -66,6 +66,82 @@ cogz capture-event session_end --hook-json --fts-only
 cogz capture-event session_start --repo ~/my-project
 ```
 
+## Full hook configuration
+
+This is the canonical hook config. Copy it into your agent's hook configuration file — see [Agent Setup](agent-setup.md) for the file path and any agent-specific differences (event names, matchers, supported events).
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "cogz capture-event session_start --hook-json --fts-only",
+        "timeout": 10
+      }]
+    }],
+    "UserPromptSubmit": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "cogz capture-event prompt_submit --hook-json --fts-only",
+        "timeout": 10
+      }]
+    }],
+    "PostToolUse": [
+      {
+        "matcher": "",
+        "hooks": [{
+          "type": "command",
+          "command": "cogz capture-event post_tool_use --hook-json --fts-only",
+          "timeout": 10
+        }]
+      },
+      {
+        "matcher": "edit|write|notebook_edit",
+        "hooks": [{
+          "type": "command",
+          "command": "cogz capture-event file_save --hook-json --fts-only",
+          "timeout": 20
+        }]
+      }
+    ],
+    "SessionEnd": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "cogz capture-event session_end --hook-json --fts-only",
+        "timeout": 30
+      }]
+    }],
+    "Stop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "cogz capture-event stop --hook-json --fts-only",
+        "timeout": 5
+      }]
+    }]
+  }
+}
+```
+
+**Timeouts:** `session_start` and `prompt_submit` need 10s (FTS-only context assembly). `file_save` needs 20s (incremental reindex). `session_end` needs 30s (consolidation). `stop` needs 5s (event recording only).
+
+**PostCompaction:** After context compaction, the agent loses its injected context. Re-inject by treating it as a session start:
+
+```json
+"PostCompaction": [{
+  "matcher": "",
+  "hooks": [{
+    "type": "command",
+    "command": "cogz capture-event session_start --hook-json --fts-only",
+    "timeout": 10
+  }]
+}]
+```
+
 ## Context pack output
 
 For `session_start` and `prompt_submit`, the context pack is printed as formatted text inside the `additionalContext` field of the hook JSON output. The pack includes:
@@ -77,6 +153,6 @@ For `session_start` and `prompt_submit`, the context pack is printed as formatte
 
 ## See also
 
-- [Agent Setup](agent-setup.md) — complete hook configurations for Devin, Claude Code, and other agents
+- [Agent Setup](agent-setup.md) — per-agent config file locations and supported events
 - [CLI Reference](../cli-reference.md) — all `capture-event` flags
 - [Design: Degradation](../design/degradation.md) — how hooks work without models
