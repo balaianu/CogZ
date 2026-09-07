@@ -79,7 +79,7 @@ jobs:
           fi
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             ${{ matrix.asset_name }}
@@ -106,7 +106,7 @@ jobs:
           cat *.sha256 > SHA256SUMS
 
       - name: Upload SHA256SUMS
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: SHA256SUMS
         env:
