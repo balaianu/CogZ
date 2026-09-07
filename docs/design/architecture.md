@@ -18,7 +18,7 @@ CogZ is a local-first, code-aware engineering cognition runtime. This document d
 
 | Component | Choice | Rationale |
 |---|---|---|
-| Language | Rust (edition 2024) | 23 MB binary, ~11 MB idle RAM. Real threads. Single binary deployment. |
+| Language | Rust (edition 2024) | ~28 MB binary, ~11 MB idle RAM. Real threads. Single binary deployment. |
 | Storage | SQLite (WAL mode) | Local-first, embedded, no server. Per-repo, not global. |
 | Vector search | sqlite-vec | Same SQLite database, no separate vector store. |
 | Full-text search | SQLite FTS5 | Same database. Porter + unicode61 tokenizer. |

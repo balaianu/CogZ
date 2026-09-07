@@ -86,14 +86,14 @@ The `ort` crate loads the ONNX Runtime dynamically — it is not compiled into t
 2. If not found, downloads the appropriate shared library to CogZ's local data directory (`~/.local/share/cogz/` on Linux).
 3. Extracts and loads it.
 
-This keeps the binary small (~8 MB) and allows runtime upgrades without recompiling.
+This keeps the binary small (~28 MB) and allows runtime upgrades without recompiling.
 
 ## Binary size
 
 | Component | Size |
 |---|---|
-| Stripped release binary | ~8 MB |
-| ONNX Runtime (downloaded on first use) | ~50 MB |
+| Stripped release binary | ~28 MB |
+| ONNX Runtime (downloaded on first use) | ~24 MB |
 | CodeRankEmbed INT8 model | 139 MB |
 | bge-base-en-v1.5 model | 210 MB |
 | nli-deberta-v3-xsmall model (quantized) | 87 MB |

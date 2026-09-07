@@ -3,7 +3,7 @@
 [![CI](https://github.com/balaianu/CogZ/actions/workflows/ci.yml/badge.svg)](https://github.com/balaianu/CogZ/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/balaianu/CogZ/releases)
+[![Version](https://img.shields.io/badge/version-0.1.2-green.svg)](https://github.com/balaianu/CogZ/releases)
 [![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)
 
 Local-first, code-aware engineering cognition runtime for AI coding agents.
@@ -69,7 +69,7 @@ CogZ runs as a stateless MCP server over stdio, aligned with the 2026-07-28 MCP 
 
 The server exposes 13 tools: `record_observation`, `query_observations`, `create_rule`, `query_rules`, `create_knowledge`, `update_knowledge`, `query_knowledge`, `search`, `get_context`, `get_status`, `list_entities`, `consolidate`, `capture_event`.
 
-See [MCP Tools](docs/integration/mcp-tools.md) for full parameter reference and example responses. See [Agent Setup](docs/integration/agent-setup.md) for configuration examples for Devin, Claude Code, and other agents.
+See [MCP Tools](docs/integration/mcp-tools.md) for full parameter reference and example responses. See [Agent Setup](docs/integration/agent-setup.md) for configuration examples for Claude Code, Cursor, Devin, and other agents.
 
 ## Hook integration
 
@@ -170,7 +170,7 @@ Cross-platform team collaboration is supported: code entity UUIDs use forward-sl
 **Integration:**
 - [MCP Tools](docs/integration/mcp-tools.md) — 13 tool parameters and responses
 - [Hooks](docs/integration/hooks.md) — lifecycle events and output format
-- [Agent Setup](docs/integration/agent-setup.md) — Devin, Claude Code, generic MCP
+- [Agent Setup](docs/integration/agent-setup.md) — Claude Code, Cursor, Devin, generic MCP
 
 **Design:**
 - [Architecture](docs/design/architecture.md) — system overview and module map

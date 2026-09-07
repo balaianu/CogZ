@@ -66,7 +66,7 @@ Hooks should always use `--fts-only` to avoid loading the ONNX runtime on every 
 
 | State | RAM | Disk |
 |---|---|---|
-| Binary only (no models, no DB) | ~11 MB | ~8 MB |
+| Binary only (no models, no DB) | ~11 MB | ~28 MB |
 | FTS-only mode (DB loaded, no models) | ~30 MB | ~50 MB |
 | All models loaded | ~300–500 MB | ~550 MB |
 | Models loaded then unloaded (idle) | ~11 MB | ~550 MB |

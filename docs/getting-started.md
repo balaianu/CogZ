@@ -48,7 +48,7 @@ This means:
 ### Step 1: Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/master/install.sh | bash
 ```
 
 This installs the `cogz` binary to `~/.local/bin/cogz` and creates the model cache directory at `~/.local/share/cogz/models/`.

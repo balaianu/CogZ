@@ -316,7 +316,7 @@ CLI code uses `println!` for user-facing output.
 | `docs/cli-reference.md` | Every command and flag |
 | `docs/integration/mcp-tools.md` | 13 MCP tool signatures and return shapes |
 | `docs/integration/hooks.md` | Lifecycle events and output format |
-| `docs/integration/agent-setup.md` | Devin, Claude Code, generic MCP setup |
+| `docs/integration/agent-setup.md` | Claude Code, Cursor, Devin, generic MCP setup |
 | `docs/design/architecture.md` | System overview, module map, data flow |
 | `docs/design/entity-model.md` | File format, frontmatter schema, update policy, state machine |
 | `docs/design/search.md` | Hybrid FTS + vector, RRF, graph expansion |
