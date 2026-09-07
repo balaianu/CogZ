@@ -2,7 +2,7 @@
 # CogZ install script — downloads the latest release binary from GitHub.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/master/install.sh | bash
 #
 # Or:
 #   ./install.sh

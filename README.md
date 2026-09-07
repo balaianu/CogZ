@@ -23,7 +23,7 @@ Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Devin, and an
 **Linux / macOS:**
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/master/install.sh | bash
 
 # Initialize in a repo
 cd ~/your-project
@@ -42,7 +42,7 @@ cogz context --mode task "implement rate limiting"
 **Windows (PowerShell):**
 ```powershell
 # Install
-irm https://raw.githubusercontent.com/balaianu/CogZ/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/balaianu/CogZ/master/install.ps1 | iex
 
 # Initialize in a repo
 cd your-project

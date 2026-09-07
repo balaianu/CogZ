@@ -1,7 +1,7 @@
 # CogZ install script for Windows — downloads the latest release binary from GitHub.
 #
 # Usage:
-#   irm https://raw.githubusercontent.com/balaianu/CogZ/main/install.ps1 | iex
+#   irm https://raw.githubusercontent.com/balaianu/CogZ/master/install.ps1 | iex
 #
 # Or:
 #   .\install.ps1
