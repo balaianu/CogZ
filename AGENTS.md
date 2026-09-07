@@ -11,16 +11,16 @@ commit) still applies. This file adds CogZ-specific rules on top.
 
 ## Before Starting Any Phase
 
-1. **Read the relevant doc section.** Each phase in `implementation-plan.md`
-   names what's built and what's NOT built yet. Read it before coding.
-2. **Check `dependencies.md`** for pinned versions. Use exact pins for
+1. **Read the relevant design doc.** `docs/design/architecture.md`
+   covers the system overview and module map. Read it before coding.
+2. **Check `docs/dev/dependencies.md`** for pinned versions. Use exact pins for
    pre-release crates (ort). Use caret pins for stable crates. Never
    use floating ranges (`*`, `latest`). Never use versions published
    less than 7 days ago.
-3. **Check `testing-strategy.md`** for what tests that phase needs.
+3. **Check `docs/dev/testing.md`** for what tests that phase needs.
    Write tests alongside the implementation, not after.
-4. **Check `entity-spec.md`** for frontmatter schema and field types.
-   Check `mcp-contract.md` for exact tool signatures and return shapes.
+4. **Check `docs/design/entity-model.md`** for frontmatter schema and field types.
+   Check `docs/integration/mcp-tools.md` for exact tool signatures and return shapes.
 
 ---
 
@@ -156,7 +156,7 @@ disclaimers.
 
 ## Testing Philosophy
 
-`testing-strategy.md` defines *what* to test per phase. This section
+`docs/dev/testing.md` defines *what* to test per phase. This section
 defines *how to think about* testing.
 
 ### Test when
@@ -185,7 +185,7 @@ defines *how to think about* testing.
 - **Prefer integration over isolation.** A test that chains
   file-read → sync → DB-query and verifies DB state catches more than
   three unit tests testing each in isolation. This aligns with
-  `testing-strategy.md`: real SQLite, real filesystem.
+  `docs/dev/testing.md`: real SQLite, real filesystem.
 - **Loop over cases, don't duplicate.** One test function with a
   `for (input, expected) in cases` loop beats N copy-pasted test
   functions.
@@ -298,9 +298,9 @@ CLI code uses `println!` for user-facing output.
 - [ ] `cargo fmt --check` passes
 - [ ] No integer entity IDs introduced (grep for `i64` in new code)
 - [ ] No direct DB writes outside `storage/` (file-first invariant)
-- [ ] No new dependencies without checking `dependencies.md` and the
+- [ ] No new dependencies without checking `docs/dev/dependencies.md` and the
       7-day rule
-- [ ] Tests from `testing-strategy.md` for this phase are written and
+- [ ] Tests from `docs/dev/testing.md` for this phase are written and
       passing
 - [ ] Rebuildability check: `cogz reset` + `cogz index` still works
       (if phase touches storage or file sync)
@@ -311,12 +311,19 @@ CLI code uses `println!` for user-facing output.
 
 | Document | What it defines |
 |---|---|
-| `goal.md` | What CogZ is and isn't |
-| `first-principles.md` | Axiomatic design principles |
-| `architecture.md` | Schema, modules, concurrency, search, context, retention |
-| `entity-spec.md` | File format, frontmatter schema, update policy, state machine |
-| `mcp-contract.md` | 13 MCP tool signatures and return shapes |
-| `implementation-plan.md` | 12 phases, what's built, verification criteria |
-| `testing-strategy.md` | Test categories, fixtures, mock model, coverage targets |
-| `dependencies.md` | Pinned crate versions, build decisions, Cargo.toml |
-| `packaging.md` | Distribution, install, update, uninstall, versioning |
+| `docs/getting-started.md` | Mental model and walkthrough |
+| `docs/configuration.md` | Full `config.toml` reference |
+| `docs/cli-reference.md` | Every command and flag |
+| `docs/integration/mcp-tools.md` | 13 MCP tool signatures and return shapes |
+| `docs/integration/hooks.md` | Lifecycle events and output format |
+| `docs/integration/agent-setup.md` | Devin, Claude Code, generic MCP setup |
+| `docs/design/architecture.md` | System overview, module map, data flow |
+| `docs/design/entity-model.md` | File format, frontmatter schema, update policy, state machine |
+| `docs/design/search.md` | Hybrid FTS + vector, RRF, graph expansion |
+| `docs/design/consolidation.md` | Dedup, contradiction, promotion, merge |
+| `docs/design/degradation.md` | FTS-only mode and fallback behavior |
+| `docs/dev/building.md` | Build, release, cross-compile |
+| `docs/dev/testing.md` | Test categories, fixtures, mock model, coverage targets |
+| `docs/dev/conventions.md` | Code patterns and invariants |
+| `docs/dev/dependencies.md` | Pinned crate versions, build decisions, Cargo.toml |
+| `docs/dev/schema.md` | DB schema and migrations |

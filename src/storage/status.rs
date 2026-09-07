@@ -1,6 +1,6 @@
 //! Status state machine — validates all entity status transitions.
 //!
-//! Legal transitions (from `docs/entity-spec.md`):
+//! Legal transitions (from `docs/design/entity-model.md`):
 //!
 //! ```text
 //! active    → stale | rejected | superseded

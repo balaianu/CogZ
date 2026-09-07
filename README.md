@@ -2,21 +2,13 @@
 
 Local-first, code-aware engineering cognition runtime for AI coding agents.
 
-CogZ gives a coding agent persistent memory, contextual retrieval, and
-continuous cognition about a software repository — all running locally
-on your machine, no cloud services required.
+CogZ gives a coding agent persistent memory, contextual retrieval, and continuous cognition about a software repository — all running locally on your machine, no cloud services required.
 
 ## What it does
 
-- **Memory** — stores observations, rules, and knowledge about a
-  codebase as Markdown files, structured by taxonomy and linked to the
-  code itself. Memory persists across sessions.
-- **Context** — assembles scoped context packs with graph provenance:
-  relevant observations, rules, knowledge, and code structures, ranked
-  and traceable.
-- **Cognition** — continuously consolidates memory: deduplicates
-  entries, detects contradictions, promotes supported observations to
-  rules, and flags stale knowledge when code changes.
+- **Memory** — stores observations, rules, and knowledge about a codebase as Markdown files, structured by taxonomy and linked to the code itself. Memory persists across sessions.
+- **Context** — assembles scoped context packs with graph provenance: relevant observations, rules, knowledge, and code structures, ranked and traceable.
+- **Cognition** — continuously consolidates memory: deduplicates entries, detects contradictions, promotes supported observations to rules, and flags stale knowledge when code changes.
 
 ## Quick start
 
@@ -50,60 +42,67 @@ cogz init
 cogz index
 ```
 
+See [Getting Started](docs/getting-started.md) for the mental model and a complete walkthrough.
+
 ## MCP integration
 
-Configure CogZ as an MCP server in your agent's config:
+CogZ runs as a stateless MCP server over stdio. Every tool call specifies which repo it targets via a required `repo` parameter — no session state, no fallbacks.
 
 ```json
 {
   "mcpServers": {
     "cogz": {
       "command": "cogz",
-      "args": ["mcp-stdio"],
-      "env": {
-        "COGZ_REPO": "/home/user/projects/my-project"
-      }
+      "args": ["mcp-stdio"]
     }
   }
 }
 ```
 
-The MCP server exposes 13 tools: `record_observation`,
-`query_observations`, `create_rule`, `query_rules`, `create_knowledge`,
-`update_knowledge`, `query_knowledge`, `search`, `get_context`,
-`get_status`, `consolidate`, `capture_event`, `list_entities`.
+The server exposes 13 tools: `record_observation`, `query_observations`, `create_rule`, `query_rules`, `create_knowledge`, `update_knowledge`, `query_knowledge`, `search`, `get_context`, `get_status`, `list_entities`, `consolidate`, `capture_event`.
+
+See [MCP Tools](docs/integration/mcp-tools.md) for full parameter reference and example responses. See [Agent Setup](docs/integration/agent-setup.md) for configuration examples for Devin, Claude Code, and other agents.
 
 ## Hook integration
 
-Hooks capture lifecycle events and inject context:
+Hooks capture lifecycle events and inject context packs into agent sessions. CogZ's binary is the hook handler — no wrapper scripts needed.
 
 ```json
 {
   "hooks": {
-    "session_start": "cogz capture-event session_start",
-    "prompt_submit": "cogz capture-event prompt_submit --prompt-file $PROMPT_FILE"
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "cogz capture-event session_start --hook-json --fts-only",
+        "timeout": 10
+      }]
+    }]
   }
 }
 ```
+
+See [Hooks](docs/integration/hooks.md) for all 7 event types and per-agent wiring guides.
 
 ## CLI commands
 
 | Command | Description |
 |---|---|
 | `cogz init` | Initialize `.cogz/` in a repository |
-| `cogz index` | Sync files to DB + index source code |
+| `cogz index [--no-download]` | Sync files to DB + index source code |
 | `cogz reindex` | Incremental reindex (changed files only) |
 | `cogz search <query>` | Hybrid FTS + vector search |
 | `cogz context --mode <mode> [query]` | Assemble context pack |
 | `cogz status` | DB stats, entity counts, model status |
-| `cogz consolidate` | Run dedup, promotion, merge |
+| `cogz consolidate [--dry-run]` | Run promotion and merge |
 | `cogz capture-event <type>` | Capture lifecycle event from hooks |
-| `cogz models <sub>` | Model management (download, list, clean) |
-| `cogz doctor` | Health check + policy violation detection |
-| `cogz doctor --prune-observations` | Report/confirm observation pruning |
-| `cogz update` | Self-update from GitHub releases |
+| `cogz models <download\|list\|clean>` | Model management |
+| `cogz doctor [--prune-observations]` | Health check + policy violations |
+| `cogz update [--check]` | Self-update from GitHub releases |
 | `cogz reset [--purge]` | Drop DB (optionally purge observations) |
 | `cogz mcp-stdio` | Run MCP server over stdio |
+
+See [CLI Reference](docs/cli-reference.md) for all flags and options.
 
 ## Requirements
 
@@ -115,10 +114,7 @@ Hooks capture lifecycle events and inject context:
 | Disk | 50 MB (binary + DB, no models) |
 | CPU | any x86_64 or ARM64 |
 
-Works without ONNX Runtime or model downloads. All hooks, FTS search,
-context packs, consolidation, doctor, and prune are functional. Vector
-search, embedding-based dedup, and contradiction detection are not
-available.
+Works without ONNX Runtime or model downloads. All hooks, FTS search, context packs, consolidation, doctor, and prune are functional. Vector search, embedding-based dedup, and contradiction detection are not available.
 
 ### Recommended (hybrid search mode)
 
@@ -128,24 +124,17 @@ available.
 | Disk | 550 MB (binary + ONNX Runtime + 3 models + DB) |
 | CPU | any x86_64 or ARM64, 4+ cores speeds up batch embedding |
 
-Full functionality including vector search, semantic dedup, and NLI
-contradiction detection. Models auto-download on first use and
-auto-unload after 5 min idle (RAM drops back to ~11 MB). See
-`docs/evaluations/2026-09-04-resource-profile.md` for the full
-resource consumption profile.
+Full functionality including vector search, semantic dedup, and NLI contradiction detection. Models auto-download on first use and auto-unload after 5 min idle (RAM drops back to ~11 MB). See `docs/evaluations/2026-09-04-resource-profile.md` for the full resource consumption profile.
 
 ## Architecture
 
-- **Single Rust binary** — no runtime dependencies except optional
-  ONNX models for vector search.
-- **Files are canonical** — all entities are Markdown files. The SQLite
-  DB is a derived index, disposable and rebuildable.
-- **Code-aware** — tree-sitter indexes source code as first-class
-  graph entities. Supported languages: Rust, Python, Go, JavaScript,
-  TypeScript, Bash.
+- **Single Rust binary** — no runtime dependencies except optional ONNX models for vector search.
+- **Files are canonical** — all entities are Markdown files. The SQLite DB is a derived index, disposable and rebuildable.
+- **Code-aware** — tree-sitter indexes source code as first-class graph entities. Supported languages: Rust, Python, Go, JavaScript, TypeScript, TSX, Bash.
 - **Graceful degradation** — works without ML models in FTS-only mode.
-- **Local-first** — no cloud, no telemetry, no accounts. The only
-  network access is optional model downloads.
+- **Local-first** — no cloud, no telemetry, no accounts. The only network access is optional model downloads.
+
+See [Architecture](docs/design/architecture.md) for the full system design.
 
 ## Compatibility
 
@@ -157,32 +146,42 @@ resource consumption profile.
 | macOS x86_64 (Intel) | Not supported | — | — | — |
 | Windows x86_64 | Full | Auto-download | Yes | `install.ps1` |
 
-**macOS Intel** is not supported because Microsoft dropped ONNX
-Runtime macOS Intel binaries after v1.22. Intel Mac users can run
-the arm64 binary under Rosetta 2 (with a compatible ORT build) or
-use `cargo install cogz` for FTS-only mode.
+**macOS Intel** is not supported because Microsoft dropped ONNX Runtime macOS Intel binaries after v1.22. Intel Mac users can run the arm64 binary under Rosetta 2 (with a compatible ORT build) or use `cargo install cogz` for FTS-only mode.
 
-**Windows 10+** is required (bsdtar is bundled since build 17063,
-needed for ONNX Runtime auto-extraction).
+**Windows 10+** is required (bsdtar is bundled since build 17063, needed for ONNX Runtime auto-extraction).
 
-Cross-platform team collaboration is supported: code entity UUIDs
-use forward-slash path normalization so the same source file
-produces the same entity ID on all platforms.
+Cross-platform team collaboration is supported: code entity UUIDs use forward-slash path normalization so the same source file produces the same entity ID on all platforms.
 
 ## Documentation
 
-See `docs/` for detailed design documents:
+**User guides:**
+- [Getting Started](docs/getting-started.md) — mental model and walkthrough
+- [Configuration](docs/configuration.md) — full `config.toml` reference
+- [CLI Reference](docs/cli-reference.md) — every command and flag
 
-- `goal.md` — what CogZ is and isn't
-- `first-principles.md` — axiomatic design principles
-- `architecture.md` — schema, modules, concurrency, search, context
-- `entity-spec.md` — file format, frontmatter, state machine
-- `mcp-contract.md` — MCP tool signatures and return shapes
-- `implementation-plan.md` — 12-phase build plan
-- `testing-strategy.md` — test categories and coverage
-- `dependencies.md` — pinned crate versions
-- `packaging.md` — distribution, install, update, uninstall
+**Integration:**
+- [MCP Tools](docs/integration/mcp-tools.md) — 13 tool parameters and responses
+- [Hooks](docs/integration/hooks.md) — lifecycle events and output format
+- [Agent Setup](docs/integration/agent-setup.md) — Devin, Claude Code, generic MCP
+
+**Design:**
+- [Architecture](docs/design/architecture.md) — system overview and module map
+- [Entity Model](docs/design/entity-model.md) — entity types, frontmatter, state machine
+- [Search](docs/design/search.md) — hybrid FTS + vector, RRF, graph expansion
+- [Consolidation](docs/design/consolidation.md) — dedup, contradiction, promotion, merge
+- [Degradation](docs/design/degradation.md) — FTS-only mode and fallback behavior
+
+**Contributing:**
+- [Building](docs/dev/building.md) — build, release, cross-compile
+- [Testing](docs/dev/testing.md) — test categories and mock models
+- [Conventions](docs/dev/conventions.md) — code patterns and invariants
+- [Dependencies](docs/dev/dependencies.md) — pinned versions and supply-chain policy
+- [Schema](docs/dev/schema.md) — DB schema and migrations
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and PR guidelines.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).

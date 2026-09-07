@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::StorageError;
 
-/// Domain event types (from `docs/architecture.md` schema).
+/// Domain event types (from `docs/dev/schema.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventType {
     ObservationCreated,

@@ -1,6 +1,6 @@
 //! Typed config structs matching `.cogz/config.toml`.
 //!
-//! Schema defined in `docs/architecture.md` → Configuration section.
+//! Schema defined in `docs/configuration.md`.
 
 use serde::{Deserialize, Serialize};
 
