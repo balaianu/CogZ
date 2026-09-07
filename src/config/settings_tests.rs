@@ -95,7 +95,12 @@ tombstone_max_count = 1000
 #[test]
 fn validation_rejects_absolute_db_path() {
     let mut config = Config::default_for("test");
-    config.storage.db_path = "/etc/passwd".to_string();
+    // Use a path that is absolute on both Unix and Windows.
+    config.storage.db_path = if cfg!(windows) {
+        "C:\\Windows\\System32\\cogz.db".to_string()
+    } else {
+        "/etc/passwd".to_string()
+    };
     let err = config.validate().unwrap_err();
     assert!(err.to_string().contains("relative"));
 }
