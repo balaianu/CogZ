@@ -44,7 +44,7 @@ echo "Installing CogZ for ${OS}-${ARCH}..."
 
 # Fetch the latest release download URL.
 echo "Fetching latest release..."
-DOWNLOAD_URL=$(curl -fsSL "${GITHUB_API}" | grep -o "browser_download_url.*${ASSET}\"" | head -1 | sed 's/browser_download_url: "//;s/"$//')
+DOWNLOAD_URL=$(curl -fsSL "${GITHUB_API}" | grep -o '"browser_download_url": "[^"]*'"${ASSET}"'"' | head -1 | sed 's/"browser_download_url": "//;s/"$//')
 
 if [ -z "${DOWNLOAD_URL}" ]; then
     echo "Error: could not find ${ASSET} in the latest release."
@@ -58,7 +58,7 @@ echo "Downloading ${ASSET}..."
 curl -fsSL -o "${TMP_FILE}" "${DOWNLOAD_URL}"
 
 # Verify checksum from SHA256SUMS.
-CHECKSUM_URL=$(curl -fsSL "${GITHUB_API}" | grep -o "browser_download_url.*SHA256SUMS\"" | head -1 | sed 's/browser_download_url: "//;s/"$//')
+CHECKSUM_URL=$(curl -fsSL "${GITHUB_API}" | grep -o '"browser_download_url": "[^"]*SHA256SUMS"' | head -1 | sed 's/"browser_download_url": "//;s/"$//')
 if [ -n "${CHECKSUM_URL}" ]; then
     TMP_SUMS=$(mktemp /tmp/cogz-sums-XXXXXX)
     curl -fsSL -o "${TMP_SUMS}" "${CHECKSUM_URL}"
