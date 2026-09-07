@@ -1,5 +1,11 @@
 # CogZ
 
+[![CI](https://github.com/balaianu/CogZ/actions/workflows/ci.yml/badge.svg)](https://github.com/balaianu/CogZ/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
+[![Version](https://img.shields.io/badge/version-0.1.0-green.svg)](https://github.com/balaianu/CogZ/releases)
+[![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)
+
 Local-first, code-aware engineering cognition runtime for AI coding agents.
 
 CogZ gives a coding agent persistent memory, contextual retrieval, and continuous cognition about a software repository — all running locally on your machine, no cloud services required.
@@ -185,3 +191,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build, test, and PR guidelines.
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Support
+
+If you find this tool useful, consider buying me a coffee:
+
+[![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)
