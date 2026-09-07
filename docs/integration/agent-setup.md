@@ -25,19 +25,6 @@ See [MCP Tools](mcp-tools.md) for the full tool reference.
 
 ## Per-agent setup
 
-### Devin
-
-**MCP config:** `~/.config/devin/mcp_config.json`
-
-**Hooks config:** `~/.config/devin/hooks/hooks.v1.json`
-
-Devin supports the full hook lifecycle: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `FileSave` (via `PostToolUse` matcher on `edit|write|notebook_edit`), `SessionEnd`, `Stop`, and `PostCompaction`.
-
-See [Hooks](hooks.md#full-hook-configuration) for the canonical JSON config. Devin-specific notes:
-
-- `PostCompaction` re-injects context after compaction by calling `session_start` — add it if you want context preserved across compaction events.
-- `FileSave` is implemented as a `PostToolUse` hook with matcher `edit|write|notebook_edit` rather than a separate event type.
-
 ### Claude Code
 
 **MCP config:** `.claude/mcp.json` in the project root, or via `claude mcp add cogz cogz mcp-stdio`
@@ -64,13 +51,34 @@ Cursor supports MCP servers but not lifecycle hooks. Use the MCP tools directly 
 
 Codex supports MCP servers. Use the MCP tools directly for context retrieval and observation recording.
 
-### Windsurf
+### Gemini CLI (Google)
 
-**MCP config:** Windsurf Settings > MCP Servers
+**MCP config:** `~/.gemini/settings.json` (see [Gemini CLI docs](https://github.com/google-gemini/gemini-cli))
 
 **Hooks:** Not supported.
 
-Windsurf supports MCP servers. Use the MCP tools directly for context retrieval and observation recording.
+Gemini CLI supports MCP servers. Use the MCP tools directly for context retrieval and observation recording.
+
+### GitHub Copilot
+
+**MCP config:** `.vscode/mcp.json` or `.github/copilot/mcp.json` (see [Copilot MCP docs](https://docs.github.com/en/copilot/customizing-copilot/extending-copilot-chat-with-mcp))
+
+**Hooks:** Not supported.
+
+GitHub Copilot supports MCP servers in VS Code and GitHub.com. Use the MCP tools directly for context retrieval and observation recording.
+
+### Devin
+
+**MCP config:** `~/.config/devin/mcp_config.json`
+
+**Hooks config:** `~/.config/devin/hooks/hooks.v1.json`
+
+Devin supports the full hook lifecycle: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `FileSave` (via `PostToolUse` matcher on `edit|write|notebook_edit`), `SessionEnd`, `Stop`, and `PostCompaction`.
+
+See [Hooks](hooks.md#full-hook-configuration) for the canonical JSON config. Devin-specific notes:
+
+- `PostCompaction` re-injects context after compaction by calling `session_start` — add it if you want context preserved across compaction events.
+- `FileSave` is implemented as a `PostToolUse` hook with matcher `edit|write|notebook_edit` rather than a separate event type.
 
 ### Generic MCP client
 

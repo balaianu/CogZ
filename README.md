@@ -10,7 +10,7 @@ Local-first, code-aware engineering cognition runtime for AI coding agents.
 
 CogZ gives a coding agent persistent memory, contextual retrieval, and continuous cognition about a software repository — all running locally on your machine, no cloud services required.
 
-Works with Devin, Claude Code, Cursor, Codex, Windsurf, and any MCP-compatible agent.
+Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Devin, and any MCP-compatible agent.
 
 ## What it does
 
