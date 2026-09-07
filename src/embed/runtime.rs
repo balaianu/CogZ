@@ -257,6 +257,10 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
     // - Linux/macOS: GNU tar (always present)
     // - Windows 10 1803+: bsdtar (included with the OS)
     // bsdtar on Windows handles .zip; GNU tar on Unix handles .tgz.
+    //
+    // --no-absolute-names (GNU tar) / --no-same-owner prevents
+    // path-traversal attacks from malicious archives (tar slip).
+    // On bsdtar (Windows), --no-absolute-names is also supported.
     let extract_dir = temp_dir.join("extracted");
     std::fs::create_dir_all(&extract_dir)?;
 
@@ -265,6 +269,7 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
         .arg(&archive_path)
         .arg("-C")
         .arg(&extract_dir)
+        .arg("--no-absolute-names")
         .output()?;
 
     if !output.status.success() {
@@ -275,12 +280,26 @@ fn download_ort() -> Result<PathBuf, std::io::Error> {
         )));
     }
 
-    // Find the shared library in the extracted directory
+    // Find the shared library in the extracted directory.
+    // Verify the found path is inside extract_dir (defense-in-depth
+    // against tar slip even after --no-absolute-names).
     let mut found_lib: Option<PathBuf> = None;
     for entry in walkdir::WalkDir::new(&extract_dir) {
         let entry = entry?;
         if entry.file_name() == ORT_LIB_NAME {
-            found_lib = Some(entry.path().to_path_buf());
+            let path = entry.path().to_path_buf();
+            // Canonicalize both paths to compare them reliably.
+            let canonical_extract = extract_dir
+                .canonicalize()
+                .unwrap_or_else(|_| extract_dir.clone());
+            let canonical_path = path.canonicalize().unwrap_or_else(|_| path.clone());
+            if !canonical_path.starts_with(&canonical_extract) {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(std::io::Error::other(
+                    "archive contains path outside extraction directory — refusing to load",
+                ));
+            }
+            found_lib = Some(path);
             break;
         }
     }

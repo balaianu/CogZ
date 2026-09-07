@@ -99,6 +99,64 @@ This keeps the binary small (~28 MB) and allows runtime upgrades without recompi
 | nli-deberta-v3-xsmall model (quantized) | 87 MB |
 | Total with all models | ~550 MB |
 
+## Trust boundaries and supply chain
+
+CogZ downloads three categories of external code. Each has a different
+trust model and different mitigations.
+
+### Self-update (`cogz update`)
+
+Downloads a new binary from GitHub releases. The SHA-256 checksum is
+verified against `SHA256SUMS` from the same release. If the checksum
+manifest is missing or lacks an entry for the target asset, the update
+fails — it never proceeds with an unverified binary.
+
+**Residual risk:** The checksum and binary live on the same GitHub
+release. A compromised GitHub account or release could replace both.
+There is no out-of-band signature verification (e.g. Sigstore/cosign).
+This is the same trust model as `cargo install` trusting crates.io.
+Users who want stronger guarantees should build from source.
+
+### ONNX Runtime auto-download
+
+Downloads the ONNX Runtime shared library from Microsoft's GitHub
+releases. The SHA-256 checksum is verified against `SHA256SUMS` from
+the same release. If the manifest exists but lacks the asset entry,
+the download fails. If the manifest itself is unreachable (404 or
+network error), the download proceeds over HTTPS as degraded mode —
+Microsoft does not always ship `SHA256SUMS` for every release.
+
+Archive extraction uses `tar --no-absolute-names` to prevent
+path-traversal (tar slip). Extracted paths are verified to be inside
+the extraction directory before loading.
+
+**Residual risk:** A compromised Microsoft GitHub account could
+replace both the library and the checksum. A shared library loaded
+into the process is as powerful as the binary itself.
+
+### HuggingFace model download
+
+Downloads ONNX models from HuggingFace via `hf-hub` with
+content-addressed caching. HuggingFace's git-LFS storage provides
+integrity against transit-level corruption (failed downloads are
+detected by hash mismatch), but not against repo compromise.
+
+**Residual risk:** A compromised model repo could serve a malicious
+model. CogZ does not maintain a hardcoded hash manifest because
+community ONNX exports update independently. Users who want stronger
+guarantees can download models manually, verify them, and place them
+in the cache directory.
+
+### Summary
+
+| Download | Checksum verified | Out-of-band signature | Trust root |
+|---|---|---|---|
+| Self-update | Yes (SHA256SUMS, hard fail on missing) | No | GitHub releases |
+| ONNX Runtime | Yes (SHA256SUMS, hard fail on missing entry) | No | Microsoft GitHub releases |
+| HF models | Content-addressed (hf-hub) | No | HuggingFace Hub |
+
+All downloads use HTTPS. No telemetry, no accounts, no cloud services.
+
 ## See also
 
 - [Dependencies](dependencies.md) — pinned crate versions

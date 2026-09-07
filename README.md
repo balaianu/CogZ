@@ -20,7 +20,7 @@ Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Devin, and an
 
 ## Quick start
 
-**Linux / macOS:**
+**Linux / macOS / Windows (Git Bash):**
 ```bash
 # Install
 curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/master/install.sh | bash
@@ -48,12 +48,6 @@ irm https://raw.githubusercontent.com/balaianu/CogZ/master/install.ps1 | iex
 cd your-project
 cogz init
 cogz index
-```
-
-**Windows (Git Bash / MSYS2):**
-```bash
-# The same install.sh used on Linux/macOS works in Git Bash
-curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/master/install.sh | bash
 ```
 
 See [Getting Started](docs/getting-started.md) for the mental model and a complete walkthrough.
