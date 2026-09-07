@@ -46,7 +46,7 @@ See [Getting Started](docs/getting-started.md) for the mental model and a comple
 
 ## MCP integration
 
-CogZ runs as a stateless MCP server over stdio. Every tool call specifies which repo it targets via a required `repo` parameter — no session state, no fallbacks.
+CogZ runs as a stateless MCP server over stdio, aligned with the 2026-07-28 MCP spec (SEP-2577). Every tool call specifies which repo it targets via a required `repo` parameter — no Roots, no session state, no fallbacks.
 
 ```json
 {

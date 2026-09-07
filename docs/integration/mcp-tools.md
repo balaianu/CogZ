@@ -1,6 +1,6 @@
 # MCP Tools
 
-CogZ exposes 13 tools via the Model Context Protocol (MCP) over stdio. The server is stateless — every tool call must include a `repo` parameter with the absolute path to the project root containing `.cogz/`. There are no fallbacks, no session context, no cwd inference.
+CogZ exposes 13 tools via the Model Context Protocol (MCP) over stdio. The server is stateless per the 2026-07-28 MCP spec (SEP-2577) — no Roots, no sessions, no cwd inference. Every tool call must include a `repo` parameter with the absolute path to the project root containing `.cogz/`.
 
 ## Server setup
 

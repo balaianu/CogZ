@@ -17,7 +17,7 @@ For any MCP-compatible agent, add CogZ as a server:
 }
 ```
 
-The server starts empty. Every tool call must include a `repo` parameter with the absolute path to the project root. There are no fallbacks — the agent must always state which repo it means.
+The server starts empty. Every tool call must include a `repo` parameter with the absolute path to the project root. Per the 2026-07-28 MCP spec, there are no Roots and no session state — the agent must always state which repo it means.
 
 See [MCP Tools](mcp-tools.md) for the full tool reference.
 

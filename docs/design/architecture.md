@@ -12,7 +12,7 @@ CogZ is a local-first, code-aware engineering cognition runtime. This document d
 
 4. **Graceful degradation.** The system must function without ONNX models. FTS-only mode is always available — hooks, context packs, consolidation (title-based dedup), doctor, and prune all work without models.
 
-5. **Agent- and model-agnostic.** CogZ does not tie to any specific agent or model. The MCP interface is stateless — every tool call specifies which repo it targets. Models are configurable and swappable.
+5. **Agent- and model-agnostic.** CogZ does not tie to any specific agent or model. The MCP interface is stateless per the 2026-07-28 MCP spec (SEP-2577) — no Roots, no sessions. Every tool call specifies which repo it targets via an explicit `repo` parameter. Models are configurable and swappable.
 
 ## Tech stack
 
