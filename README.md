@@ -124,7 +124,7 @@ Works without ONNX Runtime or model downloads. All hooks, FTS search, context pa
 | Disk | 550 MB (binary + ONNX Runtime + 3 models + DB) |
 | CPU | any x86_64 or ARM64, 4+ cores speeds up batch embedding |
 
-Full functionality including vector search, semantic dedup, and NLI contradiction detection. Models auto-download on first use and auto-unload after 5 min idle (RAM drops back to ~11 MB). See `docs/evaluations/2026-09-04-resource-profile.md` for the full resource consumption profile.
+Full functionality including vector search, semantic dedup, and NLI contradiction detection. Models auto-download on first use and auto-unload after 5 min idle (RAM drops back to ~11 MB). See [Evaluations](docs/evaluations/) for the full resource consumption profile.
 
 ## Architecture
 

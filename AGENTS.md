@@ -1,7 +1,7 @@
 # CogZ — Agent Guidelines
 
 These are the non-obvious constraints that are easy to violate during
-implementation. The nine design documents define *what to build*.
+implementation. The design documents define *what to build*.
 This file defines *what not to break while building it*.
 
 The global workflow directive (plan → implement one subtask → verify →
@@ -85,8 +85,8 @@ core promises. The compiler won't catch most of them.
   fails.
 - **Partial download cleanup.** `clean_broken_cache()` runs before
   every model load: removes `.incomplete` files >1h old and empty
-  `refs/main` files. Prevents the disk-filling retry loop that
-  affected Mnemos. Never panic on cleanup failures — log and continue.
+  `refs/main` files. Prevents disk-filling retry loops on failed
+  downloads. Never panic on cleanup failures — log and continue.
 - **Title-based dedup works without embeddings.** Exact + fuzzy title
   match does not require the embedding model. Embedding similarity
   dedup degrades to title-only when models are absent.
@@ -149,7 +149,7 @@ assertion, or an edge case not clear from the name.
 ### Tone
 
 Neutral, imperative. No "per architecture.md section X", no "per
-entity-spec". Say what something IS, not what it isn't. No defensive
+entity-model". Say what something IS, not what it isn't. No defensive
 disclaimers.
 
 ---

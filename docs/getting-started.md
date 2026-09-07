@@ -87,10 +87,7 @@ This does two things:
 1. **Syncs entity files** — scans `.cogz/knowledge/`, `.cogz/rules/`, `.cogz/observations/` and syncs them to the SQLite database.
 2. **Indexes source code** — parses source files with tree-sitter, extracting functions, classes, files, and modules as graph entities with structural edges (calls, imports, extends, contains).
 
-On first run with `auto_download = true` (default), it downloads three ONNX models from HuggingFace (~436 MB total):
-- **CodeRankEmbed** (139 MB) — embeddings for code entities
-- **bge-base-en-v1.5** (210 MB) — embeddings for knowledge entities
-- **nli-deberta-v3-xsmall** (87 MB) — NLI model for contradiction detection and merge confirmation
+On first run with `auto_download = true` (default), it downloads three ONNX models from HuggingFace (~436 MB total) for code embeddings, knowledge embeddings, and NLI contradiction detection. See [Configuration](configuration.md#embedding) for the model list and sizes.
 
 To skip downloads and use FTS-only mode:
 ```bash

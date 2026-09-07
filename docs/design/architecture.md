@@ -8,7 +8,7 @@ CogZ is a local-first, code-aware engineering cognition runtime. This document d
 
 2. **Files are canonical, DB is derived.** Every entity is a Markdown file. The SQLite database is a derived index — disposable and fully rebuildable. `cogz reset` + `cogz index` reconstructs everything from files and source code.
 
-3. **Memory is the primary constraint.** The target hardware has 7 GB RAM and a 2012-era CPU. Every component must justify its memory footprint. Model inference is isolated so it can be loaded, unloaded, and swapped without affecting the rest of the system.
+3. **Memory is the primary constraint.** Every component must justify its memory footprint. Model inference is isolated so it can be loaded, unloaded, and swapped without affecting the rest of the system.
 
 4. **Graceful degradation.** The system must function without ONNX models. FTS-only mode is always available — hooks, context packs, consolidation (title-based dedup), doctor, and prune all work without models.
 

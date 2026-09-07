@@ -52,7 +52,7 @@ In all cases, the system logs a warning, sets `available: false` in status respo
 
 Models are lazy-loaded — creating the model object is cheap; the actual ONNX runtime loads on first `embed()` or `classify()` call.
 
-**Auto-unload:** After `model_idle_ttl` seconds (default: 300 = 5 minutes) of inactivity, models are unloaded from memory. On a 7 GB RAM system, this frees ~300–500 MB. RAM drops back to ~11 MB when all models are unloaded.
+**Auto-unload:** After `model_idle_ttl` seconds (default: 300 = 5 minutes) of inactivity, models are unloaded from memory, freeing ~300–500 MB. RAM drops back to ~11 MB when all models are unloaded.
 
 **Auto-download:** When `auto_download = true` (default), `cogz index` fetches models from HuggingFace on first use. `--no-download` or `auto_download = false` disables this. The system still functions in FTS-only mode.
 
@@ -60,12 +60,7 @@ Models are lazy-loaded — creating the model object is cheap; the actual ONNX r
 
 ## Hook-specific degradation
 
-Hooks should always use `--fts-only`:
-
-- **Without `--fts-only`:** each hook call loads the ONNX runtime (~40s on first load, ~2s on subsequent calls with warm models).
-- **With `--fts-only`:** hook calls complete in ~0.5s.
-
-For hooks, speed matters more than ranking quality. The MCP server (persistent process) is the preferred path when vector search is needed — it keeps models loaded across calls.
+Hooks should always use `--fts-only` to avoid loading the ONNX runtime on every call. See [Hooks](../integration/hooks.md) for timing details and rationale.
 
 ## Resource profile
 
@@ -76,7 +71,7 @@ For hooks, speed matters more than ranking quality. The MCP server (persistent p
 | All models loaded | ~300–500 MB | ~550 MB |
 | Models loaded then unloaded (idle) | ~11 MB | ~550 MB |
 
-See `docs/evaluations/2026-09-04-resource-profile.md` for the full resource consumption profile.
+See [Evaluations](../evaluations/) for the full resource consumption profile.
 
 ## See also
 

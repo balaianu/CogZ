@@ -36,7 +36,7 @@ When `contradiction_check = true` and the NLI model is available, new observatio
 
 Flagged pairs get a `contradicts` edge in the DB and frontmatter. The new entity is not rejected — it's created with the contradiction flagged for review.
 
-When the NLI model is unavailable, contradiction detection is skipped. The system continues to function.
+When the NLI model is unavailable, contradiction detection is skipped. Dedup still runs via title match.
 
 ## Promotion
 

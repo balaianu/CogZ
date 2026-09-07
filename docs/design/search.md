@@ -53,7 +53,7 @@ When a source is unavailable (no model), its weight is redistributed to the rema
 
 ## Source balancing
 
-By default (`source_balance_enabled = false`), a fixed 0.5/0.5 split is used between code and knowledge vector results. The evaluation showed this outperforms all balance detection variants on overall retrieval quality.
+By default (`source_balance_enabled = false`), a fixed 0.5/0.5 split is used between code and knowledge vector results. A fixed split outperforms balance detection on overall retrieval quality.
 
 When `source_balance_enabled = true`, the system detects code vs knowledge query intent using two signals:
 1. **KNN distance spread** — a strong match produces a distance gradient; a weak match produces uniform distances.
@@ -98,10 +98,9 @@ Use `--code` for queries about code structure, function behavior, or implementat
 2. **Code/knowledge embedding mismatch.** When a code query is embedded with the knowledge model (or vice versa), the KNN search may miss relevant results. Using `--code` for code-focused queries helps.
 3. **No relevance threshold.** All results up to `max_results` are returned regardless of score. A threshold would filter low-relevance graph-expanded noise but risks missing valid results.
 
-See `docs/evaluations/2026-09-01-hot-path-evaluation.md` for benchmark results.
-
 ## See also
 
 - [Architecture](architecture.md) — system overview
 - [Configuration](../configuration.md) — search config section
 - [Degradation](degradation.md) — FTS-only mode
+- [Evaluations](../evaluations/) — retrieval benchmarks and resource profiles
