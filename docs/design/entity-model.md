@@ -34,7 +34,7 @@ The frontmatter parser is a hand-rolled YAML subset (`src/files/frontmatter.rs`)
 | `status` | string | yes | Entity status (see state machine below). |
 | `created_at` | RFC 3339 string | yes | Creation timestamp. |
 | `updated_at` | RFC 3339 string | yes | Last modification timestamp. |
-| `references` | array of strings | yes | UUIDs or file paths this entity references. Can be empty. |
+| `references` | array of strings | yes | UUIDs this entity references. Can be empty. |
 
 ### Type-specific fields
 

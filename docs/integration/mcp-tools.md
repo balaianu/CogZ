@@ -29,7 +29,7 @@ Record an observation about the codebase. Observations are raw, unvalidated expe
 | `repo` | string | yes | Absolute path to project root |
 | `content` | string | yes | Observation content |
 | `title` | string | no | Short title. Auto-generated from content if omitted. |
-| `references` | array of strings | no | UUIDs or file paths this observation references |
+| `references` | array of strings | no | UUIDs this observation references |
 | `supporting_ids` | array of strings | no | UUIDs of observations this observation supports. Creates `supports` edges for promotion. |
 | `source` | string | no | Who or what produced this observation. Default: `"agent"`. |
 
@@ -45,7 +45,7 @@ Create a rule — a validated directive the agent should follow. Rules are git-t
 | `repo` | string | yes | Absolute path to project root |
 | `content` | string | yes | Rule content |
 | `title` | string | no | Short title. Auto-generated if omitted. |
-| `references` | array of strings | no | UUIDs or file paths this rule references |
+| `references` | array of strings | no | UUIDs this rule references |
 | `confidence` | float | no | Confidence score (0.0–1.0) |
 
 **Returns:** JSON with `id`, `title`, `status`.
@@ -62,7 +62,7 @@ Create a knowledge entry — structured documentation about the codebase. Knowle
 | `content` | string | yes | Knowledge content |
 | `category` | string | yes | Category (becomes a subdirectory under `knowledge/`) |
 | `tags` | array of strings | no | Tags for filtering |
-| `references` | array of strings | no | UUIDs or file paths this knowledge references |
+| `references` | array of strings | no | UUIDs this knowledge references |
 
 **Returns:** JSON with `id`, `title`, `status`, `file_path`.
 
