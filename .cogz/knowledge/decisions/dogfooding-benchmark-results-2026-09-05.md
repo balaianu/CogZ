@@ -2,10 +2,10 @@
 id: 43fb22d9-f9aa-48ae-80e8-be4664bc8b36
 title: Dogfooding benchmark results — 2026-09-05
 type: knowledge
-status: active
+status: stale
 created_at: "2026-09-05T07:41:48.634115327+00:00"
-updated_at: "2026-09-05T07:41:48.634115327+00:00"
-references: []
+updated_at: "2026-09-06T06:35:34.308338721+00:00"
+references: ["src/search/mod.rs", "src/context/assemble.rs", "src/mcp/server.rs"]
 category: decisions
 tags: ["benchmark", "dogfooding", "quality", "metrics"]
 ---

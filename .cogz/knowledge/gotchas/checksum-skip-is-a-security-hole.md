@@ -4,7 +4,7 @@ title: Checksum skip on missing entry is a security hole
 type: knowledge
 status: stale
 created_at: "2026-09-03T11:59:00Z"
-updated_at: "2026-09-06T08:51:51.810513930+00:00"
+updated_at: "2026-09-06T06:35:34.327688543+00:00"
 references: []
 category: gotchas
 tags: ["security", "checksum", "update", "download", "onnx"]
