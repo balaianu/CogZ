@@ -3,7 +3,7 @@
 [![CI](https://github.com/balaianu/CogZ/actions/workflows/ci.yml/badge.svg)](https://github.com/balaianu/CogZ/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org/)
-[![Version](https://img.shields.io/badge/version-0.1.2-green.svg)](https://github.com/balaianu/CogZ/releases)
+[![Version](https://img.shields.io/github/v/release/balaianu/CogZ)](https://github.com/balaianu/CogZ/releases)
 [![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)
 
 Local-first, code-aware engineering cognition runtime for AI coding agents.
