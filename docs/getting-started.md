@@ -47,11 +47,17 @@ This means:
 
 ### Step 1: Install
 
+**Linux, macOS, or Windows (Git Bash):**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/master/install.sh | bash
 ```
 
-This installs the `cogz` binary to `~/.local/bin/cogz` and creates the model cache directory at `~/.local/share/cogz/models/`.
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/balaianu/CogZ/master/install.ps1 | iex
+```
+
+This installs the `cogz` binary to `~/.local/bin/cogz` (or `~/.local/bin/cogz.exe` on Windows) and creates the model cache directory at `~/.local/share/cogz/models/`.
 
 Verify:
 ```bash

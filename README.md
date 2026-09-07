@@ -50,6 +50,12 @@ cogz init
 cogz index
 ```
 
+**Windows (Git Bash / MSYS2):**
+```bash
+# The same install.sh used on Linux/macOS works in Git Bash
+curl -fsSL https://raw.githubusercontent.com/balaianu/CogZ/master/install.sh | bash
+```
+
 See [Getting Started](docs/getting-started.md) for the mental model and a complete walkthrough.
 
 ## MCP integration
@@ -152,7 +158,7 @@ See [Architecture](docs/design/architecture.md) for the full system design.
 | Linux aarch64 | Full | Auto-download | Yes | `install.sh` |
 | macOS arm64 (Apple Silicon) | Full | Auto-download | Yes | `install.sh` |
 | macOS x86_64 (Intel) | Not supported | — | — | — |
-| Windows x86_64 | Full | Auto-download | Yes | `install.ps1` |
+| Windows x86_64 | Full | Auto-download | Yes | `install.ps1` or `install.sh` (Git Bash) |
 
 **macOS Intel** is not supported because Microsoft dropped ONNX Runtime macOS Intel binaries after v1.22. Intel Mac users can run the arm64 binary under Rosetta 2 (with a compatible ORT build) or use `cargo install cogz` for FTS-only mode.
 

@@ -7,7 +7,12 @@
 # Or:
 #   ./install.sh
 #
+# Works on Linux, macOS, and Windows (Git Bash / MSYS2).
+# Windows PowerShell users can alternatively use install.ps1:
+#   irm https://raw.githubusercontent.com/balaianu/CogZ/master/install.ps1 | iex
+#
 # Installs to ~/.local/bin/cogz (or /usr/local/bin/cogz if run as root).
+# On Windows, installs to ~/.local/bin/cogz.exe.
 # Creates ~/.local/share/cogz/models/ for the model cache.
 
 set -euo pipefail
@@ -15,28 +20,49 @@ set -euo pipefail
 REPO="balaianu/CogZ"
 GITHUB_API="https://api.github.com/repos/${REPO}/releases/latest"
 
-# Detect architecture.
+# Detect architecture and platform.
 ARCH=$(uname -m)
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+# Detect Windows under Git Bash / MSYS2 / MinGW.
+# uname -s returns MINGW*_NT-* or MSYS_NT-* in these environments.
+# WSL returns Linux-* and gets the Linux binary (correct — it's a Linux env).
+IS_WINDOWS=false
+case "${OS}" in
+    mingw*|msys*)
+        IS_WINDOWS=true
+        ;;
+esac
 
 case "${OS}-${ARCH}" in
     linux-x86_64)  ASSET="cogz-x86_64-unknown-linux-gnu" ;;
     linux-aarch64) ASSET="cogz-aarch64-unknown-linux-gnu" ;;
     darwin-arm64)  ASSET="cogz-aarch64-apple-darwin" ;;
+    mingw*-x86_64|msys*-x86_64)
+        ASSET="cogz-x86_64-pc-windows-msvc.exe"
+        ;;
     *)
         echo "Unsupported platform: ${OS}-${ARCH}"
         echo "Supported: linux-x86_64, linux-aarch64, darwin-arm64 (Apple Silicon)"
-        echo "Windows: use install.ps1"
+        if [ "${IS_WINDOWS}" = "false" ]; then
+            echo "Windows: use install.ps1 in PowerShell, or this script in Git Bash"
+        fi
         echo "macOS Intel: not supported (use Rosetta 2 or FTS-only mode)"
         exit 1
         ;;
 esac
 
-# Determine install directory.
-if [ "$(id -u)" -eq 0 ]; then
+# Determine install directory and binary name.
+if [ "${IS_WINDOWS}" = "true" ]; then
+    INSTALL_DIR="${HOME}/.local/bin"
+    BINARY_NAME="cogz.exe"
+    mkdir -p "${INSTALL_DIR}"
+elif [ "$(id -u)" -eq 0 ]; then
     INSTALL_DIR="/usr/local/bin"
+    BINARY_NAME="cogz"
 else
     INSTALL_DIR="${HOME}/.local/bin"
+    BINARY_NAME="cogz"
     mkdir -p "${INSTALL_DIR}"
 fi
 
@@ -83,12 +109,13 @@ else
     echo "WARNING: SHA256SUMS not found in release. Installing without checksum verification."
 fi
 
-# Make executable.
-chmod +x "${TMP_FILE}"
+# Make executable (no-op on Windows, harmless under Git Bash).
+chmod +x "${TMP_FILE}" 2>/dev/null || true
 
 # Install.
-mv "${TMP_FILE}" "${INSTALL_DIR}/cogz"
-echo "Installed to ${INSTALL_DIR}/cogz"
+DEST_PATH="${INSTALL_DIR}/${BINARY_NAME}"
+mv "${TMP_FILE}" "${DEST_PATH}"
+echo "Installed to ${DEST_PATH}"
 
 # Create model cache directory.
 MODEL_DIR="${HOME}/.local/share/cogz/models"
@@ -102,15 +129,21 @@ case ":${PATH}:" in
     *)
         echo ""
         echo "WARNING: ${INSTALL_DIR} is not on your PATH."
-        echo "Add this line to your shell config (~/.bashrc, ~/.zshrc, etc.):"
-        echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+        if [ "${IS_WINDOWS}" = "true" ]; then
+            echo "Add ${INSTALL_DIR} to your PATH in Windows Settings,"
+            echo "or add this to your shell profile:"
+            echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+        else
+            echo "Add this line to your shell config (~/.bashrc, ~/.zshrc, etc.):"
+            echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+        fi
         ;;
 esac
 
 # Verify.
 echo ""
 echo "Verification:"
-"${INSTALL_DIR}/cogz" --version
+"${DEST_PATH}" --version
 
 echo ""
 echo "Next steps:"

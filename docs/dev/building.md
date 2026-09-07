@@ -76,7 +76,7 @@ The `release.yml` workflow:
 4. Creates a GitHub release with the binaries.
 5. Generates a combined `SHA256SUMS` manifest.
 
-The install scripts (`install.sh`, `install.ps1`) download from the latest GitHub release and verify checksums against `SHA256SUMS`.
+The install scripts (`install.sh`, `install.ps1`) download from the latest GitHub release and verify checksums against `SHA256SUMS`. `install.sh` works on Linux, macOS, and Windows (Git Bash / MSYS2). `install.ps1` is the PowerShell alternative for Windows.
 
 ## ONNX Runtime
 
