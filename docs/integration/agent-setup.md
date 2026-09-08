@@ -1,8 +1,8 @@
 # Agent Setup
 
-CogZ integrates with any AI coding agent that supports MCP servers or shell command hooks. This guide covers configuration for common agents.
+CogZ integrates with any AI coding agent that supports MCP servers or shell command hooks. This guide covers configuration for the 6 supported agents.
 
-The MCP server configuration is the same for all agents — only the config file location differs. Hook configuration varies by agent; see [Hooks](hooks.md) for the full event reference and canonical hook JSON config.
+All 6 agents support both MCP and hooks, and all support global (user-level) and project-scoped config for both. The MCP server config is the same for all agents — only the file location and format differ. Hook config varies by agent; see [Hooks](hooks.md) for the full event reference and canonical hook JSON.
 
 ## MCP server configuration
 
@@ -23,55 +23,100 @@ The server starts empty. Every tool call must include a `repo` parameter with th
 
 See [MCP Tools](mcp-tools.md) for the full tool reference.
 
+## Support matrix
+
+| Agent | Project MCP | Global MCP | Project hooks | Global hooks | Format |
+|---|---|---|---|---|---|
+| Claude Code | `.mcp.json` | `~/.claude.json` | `.claude/settings.json` | `~/.claude/settings.json` | JSON |
+| Cursor | `.cursor/mcp.json` | `~/.cursor/mcp.json` | `.cursor/hooks.json` | `~/.cursor/hooks.json` | JSON |
+| Codex | `.codex/config.toml` | `~/.codex/config.toml` | `.codex/hooks.json` | `~/.codex/hooks.json` | TOML (MCP) / JSON (hooks) |
+| Gemini CLI | `.gemini/settings.json` | `~/.gemini/settings.json` | `.gemini/settings.json` | `~/.gemini/settings.json` | JSON |
+| Copilot CLI | `.mcp.json` | `~/.copilot/mcp-config.json` | `.github/hooks/*.json` | `~/.copilot/hooks/*.json` | JSON |
+| Devin | `.devin/mcp_config.json` | `~/.config/devin/mcp_config.json` | `.devin/hooks.v1.json` | `~/.config/devin/config.json` (`hooks` key) | JSON |
+
+Hook event names are largely standardized — Claude Code's naming is the de facto standard. Cursor auto-maps Claude Code hook names. Codex reuses the same lifecycle event names. The canonical hook config from [Hooks](hooks.md) works across all agents with minor path adjustments.
+
 ## Per-agent setup
 
 ### Claude Code
 
-**MCP config:** `.claude/mcp.json` in the project root, or via `claude mcp add cogz cogz mcp-stdio`
+**MCP config (project):** `.mcp.json` in the project root, or via `claude mcp add cogz cogz mcp-stdio`
 
-**Hooks config:** `.claude/hooks.json` in the project root
+**MCP config (global):** `~/.claude.json` under the top-level `mcpServers` key, or via `claude mcp add cogz cogz mcp-stdio --scope user`
 
-Claude Code supports hooks via `.claude/hooks.json`. The event names and format match the [canonical hook config](hooks.md#full-hook-configuration). Supported events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`.
+**Hooks config (project):** `.claude/settings.json` under the `hooks` key
+
+**Hooks config (global):** `~/.claude/settings.json` under the `hooks` key
+
+Claude Code supports hooks via the `hooks` key in its settings JSON. The event names and format match the [canonical hook config](hooks.md#full-hook-configuration). Supported events: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`.
 
 Claude Code does not currently support `SessionEnd` or `PostCompaction` hooks. To run consolidation, use `cogz consolidate` manually or via the MCP `consolidate` tool.
 
 ### Cursor
 
-**MCP config:** Settings > Features > MCP, or `.cursor/mcp.json` in the project root
+**MCP config (project):** `.cursor/mcp.json` in the project root
 
-**Hooks:** Not supported.
+**MCP config (global):** `~/.cursor/mcp.json`
 
-Cursor supports MCP servers but not lifecycle hooks. Use the MCP tools directly — the agent can call `get_context` at the start of a task and `record_observation` when it learns something.
+**Hooks config (project):** `.cursor/hooks.json`
+
+**Hooks config (global):** `~/.cursor/hooks.json`
+
+Cursor supports both MCP servers and lifecycle hooks. Hook event names use camelCase (`sessionStart`, `preToolUse`, etc.) and auto-map from Claude Code's PascalCase names. Cursor also loads Claude Code's `.claude/settings.json` hooks directly if third-party hook support is enabled in Settings.
 
 ### Codex (OpenAI)
 
-**MCP config:** Add to Codex's MCP server configuration (see [Codex docs](https://developers.openai.com/codex/))
+**MCP config (project):** `.codex/config.toml` under `[mcp_servers.cogz]` (trusted projects only)
 
-**Hooks:** Not supported.
+**MCP config (global):** `~/.codex/config.toml` under `[mcp_servers.cogz]`
 
-Codex supports MCP servers. Use the MCP tools directly for context retrieval and observation recording.
+**Hooks config (project):** `.codex/hooks.json`
+
+**Hooks config (global):** `~/.codex/hooks.json`
+
+Codex MCP uses TOML, not JSON. The MCP server entry looks like:
+
+```toml
+[mcp_servers.cogz]
+command = "cogz"
+args = ["mcp-stdio"]
+```
+
+Codex hooks use the same JSON format and event names as Claude Code. Hooks require explicit trust review before running — use `/hooks` in the CLI to review and trust CogZ hooks after adding them.
 
 ### Gemini CLI (Google)
 
-**MCP config:** `~/.gemini/settings.json` (see [Gemini CLI docs](https://github.com/google-gemini/gemini-cli))
+**MCP config (project):** `.gemini/settings.json` under the `mcpServers` key
 
-**Hooks:** Not supported.
+**MCP config (global):** `~/.gemini/settings.json` under the `mcpServers` key
 
-Gemini CLI supports MCP servers. Use the MCP tools directly for context retrieval and observation recording.
+**Hooks config (project):** `.gemini/settings.json` under the `hooks` key (same file as MCP)
 
-### GitHub Copilot
+**Hooks config (global):** `~/.gemini/settings.json` under the `hooks` key (same file as MCP)
 
-**MCP config:** `.vscode/mcp.json` or `.github/copilot/mcp.json` (see [Copilot MCP docs](https://docs.github.com/en/copilot/customizing-copilot/extending-copilot-chat-with-mcp))
+Gemini CLI stores both MCP and hooks config in the same `settings.json` file. Hook event names use PascalCase (`SessionStart`, `BeforeTool`, `AfterTool`, etc.) and follow a similar pattern to Claude Code. See the [Gemini CLI hooks reference](https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md) for the full event list.
 
-**Hooks:** Not supported.
+### GitHub Copilot CLI
 
-GitHub Copilot supports MCP servers in VS Code and GitHub.com. Use the MCP tools directly for context retrieval and observation recording.
+**MCP config (project):** `.mcp.json` or `.github/mcp.json` in the project root
+
+**MCP config (global):** `~/.copilot/mcp-config.json`
+
+**Hooks config (project):** `.github/hooks/cogz.json` (one file per hook set in the hooks directory)
+
+**Hooks config (global):** `~/.copilot/hooks/cogz.json`
+
+Copilot CLI loads hooks from JSON files in the hooks directory — each file is a separate hook set. The format uses a `version` field and a `hooks` object with event names in camelCase (`sessionStart`, `preToolUse`, `postToolUse`, etc.). See the [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference) for the full event list.
 
 ### Devin
 
-**MCP config:** `~/.config/devin/mcp_config.json`
+**MCP config (project):** `.devin/mcp_config.json` (committed) or `.devin/mcp_config.local.json` (gitignored)
 
-**Hooks config:** `~/.config/devin/hooks/hooks.v1.json`
+**MCP config (global):** `~/.config/devin/mcp_config.json`
+
+**Hooks config (project):** `.devin/hooks.v1.json` (standalone file, recommended) or `.devin/config.json` under the `hooks` key
+
+**Hooks config (global):** `~/.config/devin/config.json` under the `hooks` key
 
 Devin supports the full hook lifecycle: `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `FileSave` (via `PostToolUse` matcher on `edit|write|notebook_edit`), `SessionEnd`, `Stop`, and `PostCompaction`.
 
