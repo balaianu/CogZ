@@ -6,17 +6,83 @@
 [![Version](https://img.shields.io/github/v/release/balaianu/CogZ)](https://github.com/balaianu/CogZ/releases)
 [![Buy Me A Coffee](https://img.shields.io/badge/☕-Buy%20Me%20A%20Coffee-yellow)](https://buymeacoffee.com/balaianu)
 
-Local-first, code-aware engineering cognition runtime for AI coding agents.
+Local-first, code-aware engineering cognition for AI coding agents.
 
 CogZ gives a coding agent persistent memory, contextual retrieval, and continuous cognition about a software repository — all running locally on your machine, no cloud services required.
 
 Works with Claude Code, Cursor, Codex, Gemini CLI, GitHub Copilot, Devin, and any MCP-compatible agent.
 
+## What it looks like
+
+Real output from CogZ running on its own codebase:
+
+```
+$ cogz context --mode task "token budget estimation and context pack compression"
+
+Context pack (mode: task)
+Search mode: hybrid
+Sections: 50
+Token estimate: 5545
+
+---
+
+## 1. [function] get_context (relevance: 0.5000)
+
+pub async fn get_context(
+    server: &CogzServer,
+    Parameters(params): Parameters<GetContextParams>,
+) -> Result<CallToolResult, McpError> {
+    let mode = parse_context_mode(mode_str, params.query.as_deref())?;
+    ...
+}
+
+## 2. [observation] Token budget truncation must account for title token cost (relevance: 0.5000)
+
+The initial `fit_budget` implementation truncated content to
+the remaining token budget without accounting for the title's
+token cost. A section with a long title could exceed the budget
+by `title_tokens` tokens.
+
+Fix: subtract `estimate_tokens(&section.title)` from the
+remaining budget before calculating the content truncation.
+
+## 3. [knowledge] Context assembly pipeline (relevance: 0.4633)
+
+The context assembly layer sits on top of search and produces
+ContextPack — the primary output of CogZ for agent consumption.
+
+Modules: context/mod.rs (types), context/modes.rs (cold_start,
+task, escalation), context/assemble.rs (orchestrator),
+context/compress.rs (token estimation, priority sorting, budget).
+
+… 47 more sections …
+```
+
+That's not a text chunk from a vector search. It's the actual function, a bug that was found and fixed during development, and the architecture that ties them together — ranked, traceable through the code graph.
+
+This repository already contains real dogfooding knowledge — CogZ has been used on its own codebase throughout development. You can clone it, install CogZ, and try the commands above against it directly.
+
 ## What it does
 
-- **Memory** — stores observations, rules, and knowledge about a codebase as Markdown files, structured by taxonomy and linked to the code itself. Memory persists across sessions.
-- **Context** — assembles scoped context packs with graph provenance: relevant observations, rules, knowledge, and code structures, ranked and traceable.
-- **Cognition** — continuously consolidates memory: deduplicates entries, detects contradictions, promotes supported observations to rules, and flags stale knowledge when code changes.
+CogZ maintains a project-specific knowledge layer that connects what an agent learns to the code it is working with.
+
+**Memory**
+
+CogZ stores three kinds of project knowledge:
+
+- **Observations** — things an agent has learned or noticed. Raw, unvalidated experience: bugs found, decisions made, patterns noticed.
+- **Rules** — validated knowledge that should influence future work. Coding standards, design decisions, confirmed patterns.
+- **Knowledge** — structured information about the codebase. Architecture explanations, module responsibilities, trade-off rationale.
+
+These are stored as Markdown files with YAML frontmatter, linked to each other and to code entities in the repository. The files are the canonical source of truth — SQLite is a derived index, disposable and rebuildable. Your knowledge is portable, version-controlled, and editable by hand.
+
+**Context**
+
+Instead of giving an agent everything it knows, CogZ builds scoped context packs for the current situation. A context pack combines relevant rules, observations, knowledge, and code structures — ranked by relevance, traceable through the code graph, and limited by a token budget so the agent gets what matters for the task rather than the entire project history.
+
+**Cognition**
+
+CogZ periodically consolidates what has been learned: deduplicates entries, detects contradictions, promotes well-supported observations to rules, merges superseded entries, and flags knowledge as stale when the code it references changes.
 
 ## Quick start
 
@@ -32,11 +98,8 @@ cogz init
 # Index (downloads models on first run, or use --no-download for FTS-only)
 cogz index
 
-# Search
-cogz search "authentication flow"
-
-# Assemble context for an agent
-cogz context --mode task "implement rate limiting"
+# Verify it's working — entity counts, model status, DB stats
+cogz status
 ```
 
 **Windows (PowerShell):**
@@ -54,7 +117,7 @@ See [Getting Started](docs/getting-started.md) for the mental model and a comple
 
 ## MCP integration
 
-CogZ runs as a stateless MCP server over stdio, aligned with the 2026-07-28 MCP spec (SEP-2577). Every tool call specifies which repo it targets via a required `repo` parameter — no Roots, no session state, no fallbacks.
+CogZ runs as a stateless MCP server over stdio. Every tool call specifies which repo it targets via a required `repo` parameter — no Roots, no session state, no fallbacks.
 
 ```json
 {
@@ -93,6 +156,8 @@ Hooks capture lifecycle events and inject context packs into agent sessions. Cog
 See [Hooks](docs/integration/hooks.md) for all 7 event types and per-agent wiring guides.
 
 ## CLI commands
+
+Normal operation is automatic: hooks fire on lifecycle events, the agent drives CogZ through MCP. The CLI is not needed for day-to-day use — it's available for setup, manual exploration, and automation if you want or need it.
 
 | Command | Description |
 |---|---|
