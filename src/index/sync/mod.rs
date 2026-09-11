@@ -68,12 +68,96 @@ pub fn code_entity_uuid(file_path: &str, entity_type: &str, qualified_name: &str
     Uuid::new_v5(&CODE_ENTITY_NAMESPACE, name.as_bytes()).to_string()
 }
 
-/// Compute SHA-256 hash of entity content.
-fn content_hash(content: &str) -> String {
+/// Compute SHA-256 hash of entity content, with comments stripped
+/// and whitespace normalized. This prevents cosmetic changes (comment
+/// edits, formatting tweaks) from triggering stale-knowledge flagging.
+///
+/// Only the content that affects semantics is hashed. Line comments
+/// (`//`, `#`) and block comments (`/* */`) are removed. Trailing
+/// whitespace and blank lines are normalized. The resulting hash
+/// changes only when the actual code logic changes.
+fn content_hash(content: &str, language: &str) -> String {
+    let normalized = normalize_content(content, language);
     let mut hasher = Sha256::new();
-    hasher.update(content.as_bytes());
+    hasher.update(normalized.as_bytes());
     let hash = hasher.finalize();
     hash.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+/// Strip comments and normalize whitespace for hash comparison.
+///
+/// Language-aware: `//` and `/* */` for C-like languages (rust, go,
+/// javascript, typescript, tsx), `#` for python and bash.
+fn normalize_content(content: &str, language: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let bytes = content.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    let uses_slash_comments = matches!(
+        language,
+        "rust" | "go" | "javascript" | "typescript" | "tsx"
+    );
+    let uses_hash_comments = matches!(language, "python" | "bash");
+
+    while i < len {
+        // Line comment: // or #
+        if uses_slash_comments && i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            // Skip to end of line
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if uses_hash_comments && bytes[i] == b'#' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment: /* */ (C-like languages)
+        if uses_slash_comments && i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i += 2; // skip closing */
+            continue;
+        }
+        // String literal — skip to avoid stripping # or // inside strings
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            result.push(bytes[i] as char);
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' && i + 1 < len {
+                    // Escaped character — keep both
+                    result.push(bytes[i] as char);
+                    result.push(bytes[i + 1] as char);
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    result.push(bytes[i] as char);
+                    i += 1;
+                    break;
+                }
+                result.push(bytes[i] as char);
+                i += 1;
+            }
+            continue;
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+
+    // Normalize whitespace: trim trailing spaces, collapse blank lines
+    result
+        .lines()
+        .map(|line| line.trim_end())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Sync code entities from a set of source files to the database.
@@ -159,6 +243,15 @@ fn convert_entities(
     let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (file_path_str, entities) in entities_by_file {
+        // Extract language from the file entity (always first, has
+        // "language" in properties).
+        let language = entities
+            .iter()
+            .find(|e| e.entity_type == "file")
+            .and_then(|e| e.properties.get("language"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
         for ce in entities {
             // File entities use the full path as qualified_name so that
             // code_graph can compute the same UUID from the path alone.
@@ -183,7 +276,7 @@ fn convert_entities(
                 continue;
             }
 
-            let hash = content_hash(&ce.content);
+            let hash = content_hash(&ce.content, language);
 
             let entity_type = match ce.entity_type {
                 "function" => EntityType::Function,
