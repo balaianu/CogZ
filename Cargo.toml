@@ -28,7 +28,7 @@ tokio = { version = "1", features = ["rt", "macros", "io-util", "sync"] }
 schemars = "1"
 
 # File system / Git
-git2 = { version = "0.19", default-features = false }
+git2 = { version = "0.20", default-features = false }
 walkdir = "2"
 slug = "0.1"
 ignore = "0.4"
