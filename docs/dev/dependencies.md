@@ -25,7 +25,7 @@ CogZ's dependency policy and pinned versions. New dependencies must follow the r
 | `serde` | `1` (derive) | Serialization framework |
 | `serde_json` | `1` | JSON for MCP responses and event payloads |
 | `toml` | `1.1` | Config file parsing |
-| `toml_edit` | `=0.25.15` | Format-preserving TOML merge for `cogz configure` (exact pin — newest releases inside 7-day window) |
+| `toml_edit` | `=0.25.17` | Format-preserving TOML merge for `cogz configure` (exact pin — newest releases inside 7-day window) |
 
 ### Embedding / ML
 
@@ -40,7 +40,7 @@ CogZ's dependency policy and pinned versions. New dependencies must follow the r
 
 | Crate | Version | Purpose |
 |---|---|---|
-| `rmcp` | `=3.5.1` (transport-io) | MCP protocol implementation (exact pin — API stability) |
+| `rmcp` | `=3.7.0` (transport-io) | MCP protocol implementation (exact pin — API stability) |
 | `tokio` | `1` (rt, macros, io-util, sync) | Async runtime for MCP server |
 | `schemars` | `1` | JSON Schema generation for MCP tool parameters |
 
@@ -112,7 +112,7 @@ CogZ's dependency policy and pinned versions. New dependencies must follow the r
 |---|---|---|
 | `pretty_assertions` | `1` | Readable assertion failures |
 | `filetime` | `0.2` | File modification time in tests |
-| `rmcp` | `=3.5.1` (transport-io, client) | MCP client for subprocess tests |
+| `rmcp` | `=3.7.0` (transport-io, client) | MCP client for subprocess tests |
 
 ## Build decisions
 
