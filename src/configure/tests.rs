@@ -136,12 +136,25 @@ fn devin_includes_postcompaction() {
     let (repo, home) = dirs();
     run(repo.path(), "devin", Scope::Project, home.path(), "cogz").unwrap();
     let hooks = read_json(&repo.path().join(".devin/hooks.v1.json"));
-    let post = hooks["hooks"]["PostCompaction"].as_array().unwrap();
+    // hooks.v1.json is the hooks object itself — event names sit at
+    // the top level, not under a "hooks" key.
+    assert!(
+        hooks.get("hooks").is_none(),
+        "hooks.v1.json must be the bare event map"
+    );
+    let post = hooks["PostCompaction"].as_array().unwrap();
     assert!(
         post[0]["hooks"][0]["command"]
             .as_str()
             .unwrap()
             .contains("session_start")
+    );
+    // Devin's compact event injects — no record-only suppression.
+    assert!(
+        !post[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("--record-only")
     );
 }
 
@@ -166,7 +179,7 @@ fn absolute_bin_propagates_to_generated_commands() {
     run(repo.path(), "devin", Scope::Project, home.path(), bin).unwrap();
 
     let hooks = read_json(&repo.path().join(".devin/hooks.v1.json"));
-    let cmd = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    let cmd = hooks["SessionStart"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
     assert!(cmd.starts_with(bin), "hook must invoke resolved bin: {cmd}");
@@ -330,7 +343,7 @@ fn bin_with_spaces_is_quoted_in_hooks_raw_in_mcp() {
     run(repo.path(), "devin", Scope::Project, home.path(), bin).unwrap();
 
     let hooks = read_json(&repo.path().join(".devin/hooks.v1.json"));
-    let cmd = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    let cmd = hooks["SessionStart"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
     let quoted = format!("\"{bin}\"");

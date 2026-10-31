@@ -18,11 +18,13 @@ When `--hook-json` is passed, output is wrapped in the JSON format expected by a
 ```json
 {
   "hookSpecificOutput": {
-    "hookEventName": "session_start",
+    "hookEventName": "SessionStart",
     "additionalContext": "...context pack as text..."
   }
 }
 ```
+
+When the agent sends `hook_event_name` in its stdin payload (Devin, Codex, and Gemini all do), the emitted `hookEventName` echoes it — so aliased firings like `PostCompaction` → `session_start` or Gemini's `BeforeAgent` → `prompt_submit` tag the output with the event the consumer actually fired, which strict per-event output schemas require. Without a stdin name, the tag derives from the CogZ lifecycle event.
 
 If no `.cogz/` directory is found in the current repo, CogZ prints nothing and exits silently — the hook is a no-op for repos that don't use CogZ. Empty stdout is the portable no-op across hook consumers, including agents with strict output schemas (e.g. Devin's post_compact).
 
@@ -42,6 +44,10 @@ Measured on reference hardware (x86-64 Linux, models already installed, v0.5.8 r
 `session_start` stays fast in full mode because the cold-start pack does not query the index — models load lazily and are never used. `prompt_submit` runs a real query, so full mode pays ORT init plus model load in every call. First-ever runs (model download, cold page cache) can take tens of seconds; steady-state numbers above are what hooks see in practice.
 
 For hooks, speed matters more than ranking quality — generated hook configs include `--fts-only` by default. The MCP server (persistent process) is the preferred path when vector search is needed — it keeps models loaded across calls.
+
+## The `--record-only` flag
+
+`--record-only` runs the full lifecycle — the event is recorded and reindex/consolidation triggers fire — but suppresses stdout entirely. Use it for hook events whose output schema cannot carry context: generated configs wire it for `PostCompact` (Claude Code, Codex), `preCompact` (Cursor), and `PreCompress` (Gemini), where a populated `hookSpecificOutput` would fail validation or be ignored. Do not confuse it with `--fts-only`: that flag controls retrieval quality, this one controls whether anything is emitted at all.
 
 ## Event types
 
@@ -168,7 +174,11 @@ In every `command` below, `cogz` stands for the absolute path to the installed b
 - The background process syncs `.cogz/` entity files, runs git-diff-based code reindex, runs post-index maintenance (stale flag + provenance backfill + drift recompute + heal), and embeds synced + missing-vector entities (knowledge inline, code inline or via `embed-bg` when many). It runs detached — the hook returns immediately without waiting for it.
 - The debounce marker is a temp file keyed by the canonical repo path, so `.`, absolute paths, and symlinks to the same repo share one marker.
 
-**PostCompaction:** After context compaction, the agent loses its injected context. Re-inject by treating it as a session start:
+**Post-compaction:** After context compaction, the agent loses its injected context. How re-injection works depends on the consumer:
+
+- **Devin** wires `PostCompaction` → `session_start` with normal output — the `hook_event_name` stdin echo tags the emitted pack as `PostCompaction`, matching the event's output schema.
+- **Claude Code and Codex** wire `PostCompact` → `session_start --record-only`. Neither event's output schema accepts `hookSpecificOutput`, so the compaction is recorded (and the debounced reindex fires) with empty stdout — re-injection lands through the `SessionStart` refire on `source: "compact"` instead.
+- **Cursor (`preCompact`) and Gemini (`PreCompress`)** are observe/advisory events with no post-compact counterpart — also `--record-only`, and no re-injection path exists.
 
 ```json
 "PostCompaction": [{

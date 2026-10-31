@@ -37,7 +37,10 @@ fn hook_entries(bin: &str, args: &str, timeout: u64, matcher: &str) -> Value {
 /// Canonical PascalCase event map (Claude Code shape — the de facto
 /// standard Codex and Devin also speak). `edit_matcher` filters
 /// PostToolUse down to file-writing tools for the file_save event.
-/// PostCompact re-injects the session-start pack after compaction.
+/// PostCompact runs record-only: neither Claude's nor Codex's
+/// PostCompact output schema can inject context, so a populated
+/// emission would fail validation — SessionStart refires on
+/// compaction (source=compact) and carries re-injection instead.
 fn hooks_canonical(bin: &str, edit_matcher: &str) -> Map<String, Value> {
     let mut map = Map::new();
     map.insert(
@@ -70,23 +73,24 @@ fn hooks_canonical(bin: &str, edit_matcher: &str) -> Map<String, Value> {
     map.insert("Stop".into(), hook_entries(bin, "stop --fts-only", 5, ""));
     map.insert(
         "PostCompact".into(),
-        hook_entries(bin, "session_start --fts-only", 15, ""),
+        hook_entries(bin, "session_start --fts-only --record-only", 15, ""),
     );
     map
 }
 
 /// Devin speaks the canonical map but calls the compaction event
-/// PostCompaction and uses lowercase tool names in matchers.
+/// PostCompaction and uses lowercase tool names in matchers. Unlike
+/// the canonical compact entry, PostCompaction keeps its emission —
+/// Devin documents it for post-compaction re-injection, and the
+/// stdin `hook_event_name` echo tags the output with the event the
+/// consumer actually fired.
 pub(super) fn hooks_devin(bin: &str) -> Value {
     let mut hooks = hooks_canonical(bin, "edit|write|notebook_edit");
-    match hooks.remove("PostCompact") {
-        Some(post_compact) => {
-            hooks.insert("PostCompaction".into(), post_compact);
-        }
-        None => tracing::warn!(
-            "canonical hook map lost PostCompact; Devin config ships without PostCompaction"
-        ),
-    }
+    hooks.remove("PostCompact");
+    hooks.insert(
+        "PostCompaction".into(),
+        hook_entries(bin, "session_start --fts-only", 15, ""),
+    );
     Value::Object(hooks)
 }
 

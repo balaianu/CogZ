@@ -46,6 +46,8 @@ fn mcp_entry(bin: &str) -> Value {
 /// `beforeSubmitPrompt` cannot inject context (output schema is
 /// continue/user_message only), so prompt_submit runs --fts-only:
 /// the event is recorded without generating an unconsumable pack.
+/// `preCompact` is observe-only the same way — the compaction event
+/// is recorded, nothing is emitted.
 fn cursor_hooks_patch(path: PathBuf, bin: &str) -> Patch {
     let sb = shell_argv0(bin);
     let e = |args: &str, timeout: u64| -> Value {
@@ -65,7 +67,7 @@ fn cursor_hooks_patch(path: PathBuf, bin: &str) -> Patch {
                 "afterFileEdit": e("file_save --fts-only", 20),
                 "sessionEnd": e("session_end --fts-only", 30),
                 "stop": e("stop --fts-only", 5),
-                "preCompact": e("session_start --fts-only", 15),
+                "preCompact": e("session_start --fts-only --record-only", 15),
             }
         }),
     )
@@ -108,7 +110,11 @@ fn copilot_hooks_patch(path: PathBuf, bin: &str) -> Patch {
 /// Gemini nests hooks in settings.json beside mcpServers. Shape is
 /// Claude-like matcher groups, but event names differ (BeforeAgent,
 /// AfterTool, AfterAgent, PreCompress) and `timeout` is in
-/// MILLISECONDS (default 60000), not seconds.
+/// MILLISECONDS (default 60000), not seconds. Gemini sends
+/// `hook_event_name` on stdin and requires that literal in
+/// hookSpecificOutput — capture-event echoes it back, so the native
+/// names tag correctly. PreCompress is advisory-only (no context
+/// injection) — record-only keeps the event record silent.
 fn gemini_settings_patch(path: PathBuf, bin: &str) -> Patch {
     let sb = shell_argv0(bin);
     let g = |args: &str, timeout_ms: u64| -> Value {
@@ -135,7 +141,7 @@ fn gemini_settings_patch(path: PathBuf, bin: &str) -> Patch {
                 ],
                 "SessionEnd": [{"hooks": g("session_end --fts-only", 30000)}],
                 "AfterAgent": [{"matcher": "*", "hooks": g("stop --fts-only", 5000)}],
-                "PreCompress": [{"hooks": g("session_start --fts-only", 15000)}],
+                "PreCompress": [{"hooks": g("session_start --fts-only --record-only", 15000)}],
             }
         }),
     )
@@ -268,19 +274,20 @@ fn copilot_user(home: &Path, bin: &str) -> Vec<Patch> {
 fn devin_project(repo: &Path, bin: &str) -> Vec<Patch> {
     vec![
         mcp_json_patch(repo.join(".devin/mcp_config.json"), bin),
-        claude_devin_patch(repo.join(".devin/hooks.v1.json"), bin),
+        // .devin/hooks.v1.json IS the hooks object — no wrapper key.
+        Patch::Json(repo.join(".devin/hooks.v1.json"), hooks_devin(bin)),
     ]
 }
 
 fn devin_user(home: &Path, bin: &str) -> Vec<Patch> {
     vec![
         mcp_json_patch(home.join(".config/devin/mcp_config.json"), bin),
-        claude_devin_patch(home.join(".config/devin/config.json"), bin),
+        // config.json nests the same map under the "hooks" key.
+        Patch::Json(
+            home.join(".config/devin/config.json"),
+            json!({"hooks": hooks_devin(bin)}),
+        ),
     ]
-}
-
-fn claude_devin_patch(path: PathBuf, bin: &str) -> Patch {
-    Patch::Json(path, json!({"hooks": hooks_devin(bin)}))
 }
 
 pub(super) const HARNESSES: &[Harness] = &[

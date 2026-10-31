@@ -197,7 +197,7 @@ Dedup and contradiction detection happen automatically on every insert. This com
 Capture a lifecycle event. Called by agent hook systems or manually.
 
 ```
-cogz capture-event <event_type> [--repo <path>] [--prompt <text>] [--prompt-file <path>] [--tool-name <name>] [--tool-result <summary>] [--file-path <path>] [--hook-json] [--hook-format <fmt>] [--fts-only]
+cogz capture-event <event_type> [--repo <path>] [--prompt <text>] [--prompt-file <path>] [--tool-name <name>] [--tool-result <summary>] [--file-path <path>] [--hook-json] [--hook-format <fmt>] [--fts-only] [--record-only]
 ```
 
 **Arguments:**
@@ -213,6 +213,7 @@ cogz capture-event <event_type> [--repo <path>] [--prompt <text>] [--prompt-file
 - `--hook-json` — wrap output as JSON for agent hook systems (`{"hookSpecificOutput": {...}}`). Silent skip if no `.cogz/` found.
 - `--hook-format <fmt>` — stdout envelope for non-Claude-shaped agents: `cursor` emits `{"additional_context": ...}`, `copilot` emits `{"additionalContext": ...}`. Default `claude` emits `{"hookSpecificOutput": {...}}` (also correct for Codex, Gemini, Devin). Requires `--hook-json`.
 - `--fts-only` — skip model loading. Use FTS-only search for context assembly. Much faster (~2s vs ~40s) but lower quality ranking. Recommended for hook calls.
+- `--record-only` — run the full lifecycle (event record, reindex triggers) but suppress stdout entirely. For hook events whose output schema cannot carry context (`PostCompact`, `preCompact`, `PreCompress`); `cogz configure` wires it automatically.
 
 **Behavior by event type:**
 - `session_start` — records event, assembles cold_start context pack, prints to stdout, spawns background reindex
