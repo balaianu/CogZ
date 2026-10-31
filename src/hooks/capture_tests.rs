@@ -17,13 +17,13 @@ fn oversized_payload_still_yields_fields() {
     assert_eq!(bytes.len(), 1024 * 1024);
 
     let raw = String::from_utf8_lossy(&bytes);
-    let (prompt, tool_name, tool_result, file_path) = parse_hook_payload(&raw, capped);
-    assert_eq!(tool_name.as_deref(), Some("Write"));
-    assert_eq!(file_path.as_deref(), Some("/repo/src/lib.rs"));
+    let fields = parse_hook_payload(&raw, capped);
+    assert_eq!(fields.tool_name.as_deref(), Some("Write"));
+    assert_eq!(fields.file_path.as_deref(), Some("/repo/src/lib.rs"));
     // The output string was cut mid-value — it must not leak
     // a half-decode into the event.
-    assert_eq!(tool_result, None);
-    assert_eq!(prompt, None);
+    assert_eq!(fields.tool_result, None);
+    assert_eq!(fields.prompt, None);
 }
 
 #[test]
@@ -45,10 +45,57 @@ fn multibyte_char_survives_chunk_boundary() {
     let (bytes, capped) = read_stdin_capped(&mut cursor);
     assert!(!capped);
     let raw = String::from_utf8_lossy(&bytes);
-    let (prompt, ..) = parse_hook_payload(&raw, capped);
-    let prompt = prompt.unwrap();
+    let prompt = parse_hook_payload(&raw, capped).prompt.unwrap();
     assert!(prompt.contains('𝄞'));
     assert!(!prompt.contains('\u{FFFD}'));
+}
+
+#[test]
+fn payload_extracts_hook_event_name() {
+    let payload = r#"{"hook_event_name":"PostCompaction","summary":"compacted"}"#;
+    let fields = parse_hook_payload(payload, false);
+    assert_eq!(fields.hook_event_name.as_deref(), Some("PostCompaction"));
+
+    // Absent from the payload — emitters fall back to the
+    // lifecycle-derived name.
+    let fields = parse_hook_payload(r#"{"prompt":"hi"}"#, false);
+    assert_eq!(fields.hook_event_name, None);
+}
+
+#[test]
+fn record_only_runs_lifecycle_but_emits_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cogz_dir = dir.path().join(".cogz");
+    std::fs::create_dir_all(&cogz_dir).unwrap();
+    std::fs::write(
+        cogz_dir.join("config.toml"),
+        crate::config::default_toml("test"),
+    )
+    .unwrap();
+    let db_path = cogz_dir.join("cogz.db");
+    drop(Storage::open(&db_path, 384).unwrap());
+
+    let input = |record_only: bool| CaptureInput {
+        repo: dir.path(),
+        event_str: "session_start",
+        prompt: None,
+        prompt_file: None,
+        tool_name: None,
+        tool_result: None,
+        file_path: None,
+        hook_json: true,
+        fts_only: true,
+        hook_format: crate::hooks::format::HookFormat::Claude,
+        record_only,
+    };
+
+    // A young corpus nudges — without suppression there is an
+    // emission to suppress.
+    let plain = run_capture_event(&input(false)).unwrap();
+    assert!(!plain.emission.is_empty());
+
+    let suppressed = run_capture_event(&input(true)).unwrap();
+    assert_eq!(suppressed.emission, "");
 }
 
 #[test]
@@ -68,6 +115,7 @@ fn hook_json_silent_skip_emits_nothing() {
             hook_json: true,
             fts_only: true,
             hook_format: crate::hooks::format::HookFormat::Claude,
+            record_only: false,
         };
         run_capture_event(&input).expect("silent skip must succeed")
     }

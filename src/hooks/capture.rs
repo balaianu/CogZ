@@ -87,6 +87,11 @@ pub struct CaptureInput<'a> {
     pub hook_json: bool,
     pub fts_only: bool,
     pub hook_format: crate::hooks::format::HookFormat,
+    /// Record the event and run the lifecycle but emit nothing. For
+    /// hook firings whose consumer event cannot inject context
+    /// (compact events on most agents) — empty stdout is the only
+    /// no-op shape that validates everywhere.
+    pub record_only: bool,
 }
 
 /// Run `cogz capture-event` — the CLI entry point for hook integration.
@@ -110,16 +115,16 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
     // When --hook-json is set, read stdin for hook payload fields.
     // Agent hook systems (Devin, Claude Code) pass event data as JSON
     // on stdin. We extract fields that weren't provided via CLI args.
-    let (stdin_prompt, stdin_tool_name, stdin_tool_result, stdin_file_path) = if input.hook_json {
+    let stdin = if input.hook_json {
         parse_hook_stdin()
     } else {
-        (None, None, None, None)
+        HookStdinFields::default()
     };
 
-    let prompt = input.prompt.or(stdin_prompt.as_deref());
-    let tool_name = input.tool_name.or(stdin_tool_name.as_deref());
-    let tool_result = input.tool_result.or(stdin_tool_result.as_deref());
-    let file_path = input.file_path.or(stdin_file_path.as_deref());
+    let prompt = input.prompt.or(stdin.prompt.as_deref());
+    let tool_name = input.tool_name.or(stdin.tool_name.as_deref());
+    let tool_result = input.tool_result.or(stdin.tool_result.as_deref());
+    let file_path = input.file_path.or(stdin.file_path.as_deref());
 
     let cogz_dir = input.repo.join(".cogz");
     let config_path = cogz_dir.join("config.toml");
@@ -225,8 +230,14 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
     )?;
 
     // Compose stdout text in the requested format — the caller
-    // prints it, so the library stays pure for MCP and tests.
-    let emission = if input.hook_json {
+    // prints it, so the library stays pure for MCP and tests. A
+    // record-only call still runs the lifecycle (event record,
+    // consolidation, reindex) but emits nothing: compact firings
+    // whose native event cannot inject context would otherwise push
+    // an output shape the consumer's schema rejects.
+    let emission = if input.record_only {
+        String::new()
+    } else if input.hook_json {
         crate::hooks::format::hook_json(
             &event,
             output.context_pack.as_ref(),
@@ -234,6 +245,7 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
             output.notices.as_deref(),
             input.hook_format,
             Some(input.repo),
+            stdin.hook_event_name.as_deref(),
         )
     } else {
         let mut text = String::new();
@@ -262,24 +274,37 @@ pub fn run_capture_event(input: &CaptureInput) -> Result<CaptureResult, CaptureE
     })
 }
 
+/// Fields recovered from the agent's hook stdin payload.
+#[derive(Default)]
+struct HookStdinFields {
+    prompt: Option<String>,
+    tool_name: Option<String>,
+    tool_result: Option<String>,
+    file_path: Option<String>,
+    /// The consumer's own name for the firing event. Devin, Claude,
+    /// Codex, and Gemini all send `hook_event_name` on stdin; echoing
+    /// it back in `hookSpecificOutput` keeps the output under the
+    /// event's own schema when a native event is aliased to a
+    /// different lifecycle event (PostCompaction → session_start)
+    /// or uses names we do not map (Gemini's BeforeAgent).
+    hook_event_name: Option<String>,
+}
+
 /// Parse stdin for agent hook payload fields. Agent hook systems
 /// (Devin, Claude Code) pass event data as JSON on stdin. Extracts:
 /// - `prompt` (UserPromptSubmit)
 /// - `tool_name` (PreToolUse, PostToolUse, PermissionRequest)
 /// - `tool_response.output` or `tool_response.error` (PostToolUse)
 /// - `tool_input.file_path` (PostToolUse for edit/write tools)
+/// - `hook_event_name` (echoed back in hookSpecificOutput)
 ///
-/// Returns (None, None, None, None) if stdin is empty or not valid JSON.
-fn parse_hook_stdin() -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+/// Returns the default (all-None) fields if stdin is empty or not
+/// valid JSON.
+fn parse_hook_stdin() -> HookStdinFields {
     let mut stdin_buf = std::io::stdin();
     let (bytes, capped) = read_stdin_capped(&mut stdin_buf);
     if bytes.is_empty() {
-        return (None, None, None, None);
+        return HookStdinFields::default();
     }
 
     let stdin = String::from_utf8_lossy(&bytes);
@@ -316,15 +341,7 @@ fn read_stdin_capped(reader: &mut impl std::io::Read) -> (Vec<u8>, bool) {
 /// Extract hook fields from a decoded payload. `capped` marks input
 /// that was cut at the read cap — a failed parse then falls back to
 /// recovering whichever complete string fields survived.
-fn parse_hook_payload(
-    raw: &str,
-    capped: bool,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+fn parse_hook_payload(raw: &str, capped: bool) -> HookStdinFields {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(raw) else {
         return extract_fields_from_truncated(raw, capped);
     };
@@ -384,7 +401,18 @@ fn parse_hook_payload(
                 .map(|s| s.to_string())
         });
 
-    (prompt, tool_name, tool_result, file_path)
+    let hook_event_name = json
+        .get("hook_event_name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    HookStdinFields {
+        prompt,
+        tool_name,
+        tool_result,
+        file_path,
+        hook_event_name,
+    }
 }
 
 /// Recover fields from a stdin payload cut at the size cap. The tail
@@ -393,17 +421,9 @@ fn parse_hook_payload(
 /// through serde so escapes unmarshal correctly. Fields that didn't
 /// survive whole return None; the event still records prompt, tool
 /// name, and file path instead of dropping entirely.
-fn extract_fields_from_truncated(
-    raw: &str,
-    capped: bool,
-) -> (
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-) {
+fn extract_fields_from_truncated(raw: &str, capped: bool) -> HookStdinFields {
     if !capped {
-        return (None, None, None, None);
+        return HookStdinFields::default();
     }
     let prompt = scan_json_string_field(raw, "prompt");
     let tool_name = scan_json_string_field(raw, "tool_name");
@@ -416,7 +436,14 @@ fn extract_fields_from_truncated(
         .find("\"tool_input\"")
         .and_then(|anchor| scan_json_string_field(&raw[anchor..], "file_path"))
         .or_else(|| scan_json_string_field(raw, "file_path"));
-    (prompt, tool_name, tool_result, file_path)
+    let hook_event_name = scan_json_string_field(raw, "hook_event_name");
+    HookStdinFields {
+        prompt,
+        tool_name,
+        tool_result,
+        file_path,
+        hook_event_name,
+    }
 }
 
 /// Find `"key": "..."` and return the decoded string value, skipping

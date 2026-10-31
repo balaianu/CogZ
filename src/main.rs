@@ -213,11 +213,7 @@ enum Commands {
     },
 
     /// Capture a lifecycle event. Called by agent hook systems or
-    /// manually. For session_start and prompt_submit, prints a context
-    /// pack to stdout for agent injection and spawns a background
-    /// reindex. For file_save, triggers a single-file code reindex.
-    /// For session_end, runs consolidation. For stop, records the
-    /// event (no side effects).
+    /// manually — see cli-reference for per-event behavior.
     CaptureEvent {
         /// Event type: session_start, prompt_submit, pre_tool_use,
         /// post_tool_use, file_save, session_end, stop.
@@ -249,22 +245,24 @@ enum Commands {
 
         /// Wrap output as JSON for agent hook systems
         /// ({"hookSpecificOutput": {...}}). Silent skip if no .cogz/
-        /// found. Use this when calling from agent hook configs.
+        /// found.
         #[arg(long)]
         hook_json: bool,
 
-        /// Skip model loading — use FTS-only search for context
-        /// assembly. Much faster (~2s vs ~40s) but lower quality
-        /// ranking. Recommended for hook calls where speed matters.
+        /// Skip model loading — FTS-only search. Much faster but
+        /// lower quality ranking. Recommended for hook calls.
         #[arg(long)]
         fts_only: bool,
 
         /// Hook response envelope for agents whose stdout contract
         /// isn't Claude-shaped: `cursor` emits {"additional_context"},
-        /// `copilot` emits {"additionalContext"}. Default `claude`
-        /// emits {"hookSpecificOutput": {...}}. Requires --hook-json.
+        /// `copilot` emits {"additionalContext"}. Requires --hook-json.
         #[arg(long, value_parser = ["claude", "cursor", "copilot"], default_value = "claude", requires = "hook_json")]
         hook_format: String,
+
+        /// Record the event and run the lifecycle; emit nothing on stdout.
+        #[arg(long)]
+        record_only: bool,
     },
 
     /// Verify a knowledge entity against its referenced code —
@@ -584,6 +582,7 @@ fn main() -> anyhow::Result<()> {
             hook_json,
             fts_only,
             hook_format,
+            record_only,
         } => cli_events::run_capture_event(&cogz::hooks::CaptureInput {
             repo: &repo,
             event_str: &event_type,
@@ -595,6 +594,7 @@ fn main() -> anyhow::Result<()> {
             hook_json,
             fts_only,
             hook_format: cogz::hooks::format::HookFormat::parse(&hook_format).unwrap_or_default(),
+            record_only,
         }),
         Commands::Models { subcommand } => match subcommand {
             ModelsSub::Download {
