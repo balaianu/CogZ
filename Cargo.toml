@@ -26,7 +26,7 @@ hf-hub = { version = "1.0", features = ["blocking"] }
 reqwest = "0.13"
 
 # MCP server
-rmcp = { version = "=3.5.1", features = ["transport-io"] }
+rmcp = { version = "=3.7.0", features = ["transport-io"] }
 tokio = { version = "1", features = ["rt", "macros", "io-util", "sync"] }
 schemars = "1"
 
@@ -69,7 +69,7 @@ regex = "1.13.1"
 aho-corasick = "1.1.5"
 fs2 = "0.4.3"
 hex = "0.4.3"
-toml_edit = "=0.25.15"
+toml_edit = "=0.25.17"
 
 # Unix-only: stderr suppression during ONNX Runtime init
 [target.'cfg(unix)'.dependencies]
@@ -86,7 +86,7 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 pretty_assertions = "1"
 filetime = "0.2"
-rmcp = { version = "=3.5.1", features = ["transport-io", "client"] }
+rmcp = { version = "=3.7.0", features = ["transport-io", "client"] }
 
 [profile.release]
 opt-level = 3
