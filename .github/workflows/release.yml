@@ -64,18 +64,26 @@ jobs:
             target: x86_64-unknown-linux-gnu
             asset_name: cogz-x86_64-unknown-linux-gnu
             strip: true
+            cc_flags: -march=x86-64
+            isa_check: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset_name: cogz-aarch64-unknown-linux-gnu
             strip: true
+            cc_flags: ''
+            isa_check: false
           - os: macos-15
             target: aarch64-apple-darwin
             asset_name: cogz-aarch64-apple-darwin
             strip: true
+            cc_flags: ''
+            isa_check: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset_name: cogz-x86_64-pc-windows-msvc.exe
             strip: false
+            cc_flags: ''
+            isa_check: false
 
     runs-on: ${{ matrix.os }}
     permissions:
@@ -105,8 +113,30 @@ jobs:
           path: target
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
 
+      # ubuntu26 runner images enable the amd64v3 apt variant, so their GCC
+      # defaults to -march=x86-64-v3. cc-rs picks that up for bundled C deps
+      # (SQLite, libgit2, zlib), producing binaries that SIGILL on pre-AVX2
+      # CPUs. Pin baseline codegen for C objects; rustc targets baseline
+      # already. Per-file flags like aws-lc's -mavx2 still win where intended.
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
+        env:
+          CFLAGS: ${{ matrix.cc_flags }}
+          CXXFLAGS: ${{ matrix.cc_flags }}
+
+      - name: Check baseline ISA level
+        if: matrix.isa_check
+        run: |
+          # Dispatch-gated SIMD stubs (aws-lc, blake3) legitimately contain
+          # AVX2 instructions guarded by cpuid at runtime — a few hundred.
+          # v3-compiled code adds well over a thousand.
+          n=$(objdump -d target/${{ matrix.target }}/release/cogz \
+              | grep -cE 'vinserti128|vextracti128' || true)
+          echo "AVX2 integer instruction count: $n"
+          if [ "$n" -gt 400 ]; then
+            echo "::error::binary carries non-baseline x86 ISA (count $n) — C deps likely compiled -march=x86-64-v3+"
+            exit 1
+          fi
 
       - name: Strip binary
         if: ${{ matrix.strip }}
