@@ -40,7 +40,7 @@ CogZ's dependency policy and pinned versions. New dependencies must follow the r
 
 | Crate | Version | Purpose |
 |---|---|---|
-| `rmcp` | `=3.10.0` (transport-io) | MCP protocol implementation (exact pin — API stability) |
+| `rmcp` | `=3.11.0` (transport-io) | MCP protocol implementation (exact pin — API stability) |
 | `tokio` | `1` (rt, macros, io-util, sync) | Async runtime for MCP server |
 | `schemars` | `1` | JSON Schema generation for MCP tool parameters |
 
@@ -72,7 +72,7 @@ CogZ's dependency policy and pinned versions. New dependencies must follow the r
 
 | Crate | Version | Purpose |
 |---|---|---|
-| `rusqlite` | `0.41` (bundled, functions) | SQLite bindings (bundled = no system SQLite needed; functions = `is_test_path` scalar) |
+| `rusqlite` | `0.43` (bundled, functions) | SQLite bindings (bundled = no system SQLite needed; functions = `is_test_path` scalar) |
 | `sqlite-vec` | `0.1` | Vector search extension for SQLite |
 
 ### Utilities
@@ -112,7 +112,7 @@ CogZ's dependency policy and pinned versions. New dependencies must follow the r
 |---|---|---|
 | `pretty_assertions` | `1` | Readable assertion failures |
 | `filetime` | `0.2` | File modification time in tests |
-| `rmcp` | `=3.10.0` (transport-io, client) | MCP client for subprocess tests |
+| `rmcp` | `=3.11.0` (transport-io, client) | MCP client for subprocess tests |
 
 ## Build decisions
 
