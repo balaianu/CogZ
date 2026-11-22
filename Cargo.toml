@@ -49,7 +49,7 @@ tree-sitter-bash = "0.25"
 globset = "0.4"
 
 # Database
-rusqlite = { version = "0.40", features = ["bundled", "functions"] }
+rusqlite = { version = "0.41", features = ["bundled", "functions"] }
 sqlite-vec = "0.1"
 
 # Utilities
